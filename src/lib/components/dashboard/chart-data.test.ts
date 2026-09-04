@@ -5,6 +5,7 @@ import {
 	MAX_X_TICKS,
 	OTHER_BAND_LABEL,
 	NO_CHAPTER_BAND_LABEL,
+	buildCountySummary,
 	buildDetailFrame,
 	buildOverviewFrame,
 	formatDateTick,
@@ -137,6 +138,41 @@ describe('buildDetailFrame', () => {
 		expect(frame.dates).toEqual(['2026-05-01', '2026-05-02', '2026-05-03']);
 		const a = frame.bands.find((b) => b.label === 'A');
 		expect(a!.values).toEqual([2, 0, 1]);
+	});
+
+	it('buildCountySummary keeps a running tally by county instead of by day', () => {
+		const days: DaySignups[] = [
+			day('2026-05-01', 3, [
+				{ chapterId: 1, chapterName: 'Washtenaw County', count: 2 },
+				{ chapterId: 2, chapterName: 'Oakland County', count: 1 },
+			]),
+			day('2026-05-02', 4, [
+				{ chapterId: 1, chapterName: 'Washtenaw County', count: 3 },
+				{ chapterId: 2, chapterName: 'Oakland County', count: 1 },
+			]),
+		];
+		const counties = buildCountySummary(days);
+		expect(counties).toEqual([
+			{ county: 'Washtenaw', value: 5 },
+			{ county: 'Oakland', value: 2 },
+		]);
+	});
+
+	it('buildCountySummary prefers the real zip-derived county over the chapter-name heuristic', () => {
+		const days: DaySignups[] = [
+			day('2026-05-01', 3, [
+				// Chapter name says "Oakland" but its members actually sit in Wayne.
+				{ chapterId: 1, chapterName: 'Oakland County', count: 2 },
+				// Chapter with no zip data falls back to the name heuristic.
+				{ chapterId: 2, chapterName: 'Kent County', count: 1 },
+			]),
+		];
+		const countyByChapterName = new Map([['oakland county', 'Wayne']]);
+		const counties = buildCountySummary(days, countyByChapterName);
+		expect(counties).toEqual([
+			{ county: 'Wayne', value: 2 },
+			{ county: 'Kent', value: 1 },
+		]);
 	});
 
 	it('null-chapter rows land in the no-chapter band', () => {

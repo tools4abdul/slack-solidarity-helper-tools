@@ -11,6 +11,7 @@
 	import {
 		buildOverviewFrame,
 		buildDetailFrame,
+		buildCountySummary,
 		type ChartBand,
 		type ChartFrame,
 	} from '$lib/components/dashboard/chart-data.js';
@@ -19,7 +20,9 @@
 
 	let { data }: { data: PageData } = $props();
 
-	type ChartMode = 'overview' | 'detail';
+	const countyByChapterName = $derived(new Map(data.countyByChapterName));
+
+	type ChartMode = 'overview' | 'detail' | 'county';
 	type CardState =
 		| { kind: 'empty' }
 		| { kind: 'error'; message: string }
@@ -41,6 +44,16 @@
 		options: { totalOverlay?: boolean } = {},
 	): CardState {
 		if (!source.ok) return { kind: 'error', message: source.error };
+		if (mode === 'county') {
+			const countySummary = buildCountySummary(source.days, countyByChapterName);
+			if (countySummary.length === 0) return { kind: 'empty' };
+			return {
+				kind: 'ready',
+				frame: { dates: [], bands: [], countySummary },
+				showTotalOverlay: false,
+				legendBands: [],
+			};
+		}
 		// Always build the detail frame: even in overview mode its band list
 		// feeds the reserved-but-hidden legend, so toggling never resizes the card.
 		const detailFrame = buildDetailFrame(source.days);

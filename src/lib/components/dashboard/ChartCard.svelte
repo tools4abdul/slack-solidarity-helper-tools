@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { invalidate } from '$app/navigation';
 	import type { ChartBand, ChartFrame } from './chart-data.js';
+	import CountyHeatmap from './CountyHeatmap.svelte';
 	import SignupChart from './SignupChart.svelte';
 
 	type CardState =
@@ -15,7 +16,7 @@
 				legendBands: ChartBand[];
 		  };
 
-	type ChartMode = 'overview' | 'detail';
+	type ChartMode = 'overview' | 'detail' | 'county';
 
 	type Props = {
 		title: string;
@@ -86,6 +87,15 @@
 			>
 				By chapter
 			</button>
+			<button
+				type="button"
+				class="chart-card__toggle-btn"
+				class:active={mode === 'county'}
+				aria-pressed={mode === 'county'}
+				onclick={() => (mode = 'county')}
+			>
+				By county
+			</button>
 		</div>
 	</header>
 	<div class="chart-card__body">
@@ -98,6 +108,20 @@
 		{:else if displayState.kind === 'error'}
 			<p class="chart-card__error">{displayState.message}</p>
 			<button type="button" class="chart-card__retry" onclick={handleRetry}>Retry</button>
+		{:else if mode === 'county'}
+			{#if displayState.frame.countySummary?.length}
+				<CountyHeatmap data={displayState.frame.countySummary} accessibleName={title} />
+				<div class="chart-card__county-summary" aria-label="{title} county totals">
+					{#each displayState.frame.countySummary as county (county.county)}
+						<div class="chart-card__county-row">
+							<span>{county.county}</span>
+							<strong>{county.value}</strong>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<p class="chart-card__empty">No county totals recorded yet</p>
+			{/if}
 		{:else}
 			<SignupChart
 				variant={mode}
@@ -140,8 +164,8 @@
 		     only visible in detail mode. -->
 		<p
 			class="chart-card__legend-note"
-			class:chart-card__legend-note--hidden={mode === 'overview'}
-			aria-hidden={mode === 'overview'}
+			class:chart-card__legend-note--hidden={mode !== 'detail'}
+			aria-hidden={mode !== 'detail'}
 		>
 			Members in multiple chapters are counted in each band but only once in the daily total (shown
 			as the dark marker on each bar).
@@ -226,6 +250,20 @@
 	}
 	.chart-card__toggle-btn:last-child {
 		border-right: 0;
+	}
+	.chart-card__county-summary {
+		display: grid;
+		gap: 0.5rem;
+		padding-top: 1rem;
+	}
+	.chart-card__county-row {
+		display: flex;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: rgba(18, 28, 80, 0.02);
 	}
 	.chart-card__toggle-btn:hover:not(.active) {
 		background: var(--color-border-subtle);
