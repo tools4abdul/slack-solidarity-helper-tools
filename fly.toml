@@ -21,9 +21,12 @@ primary_region = 'ord'
 [http_service]
   internal_port = 3000
   force_https = true
+  # Keep one machine up at all times so the first request after an idle period
+  # doesn't pay cold-start latency. Extra machines scaled up beyond the first
+  # still stop when idle.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
 
 [[http_service.checks]]
