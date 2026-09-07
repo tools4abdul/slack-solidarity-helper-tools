@@ -17,6 +17,7 @@ const LINK: TimeslotLink = {
 	solidaritySessionId: 80929,
 	eventChapterId: 1330,
 	startsAt: Date.now() + 3600_000,
+	sessionCapacity: null,
 };
 
 function attendance(overrides: Partial<MobilizeAttendance> = {}): MobilizeAttendance {
@@ -60,6 +61,8 @@ function mockApis(options: {
 	userLookupAmbiguous?: boolean;
 	/** Refuse any user create that carries a phone, the way Solidarity does. */
 	rejectPhoneOnCreate?: boolean;
+	/** RSVPs Solidarity already holds for the session, for the capacity tests. */
+	sessionRsvps?: { id: number; user_id: number; is_attending: string }[];
 }) {
 	const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
 		const href = String(url);
@@ -83,7 +86,7 @@ function mockApis(options: {
 			// Solidarity returns the created row; the sync reads its id.
 			body = { data: { id: 999 } };
 		} else if (href.includes('/v1/event_rsvps')) {
-			body = { data: [] };
+			body = { data: options.sessionRsvps ?? [] };
 		} else if (href.includes('/v1/users')) {
 			if (options.userLookupAmbiguous) body = { data: [{ id: 998 }, { id: 999 }] };
 			else body = { data: options.userFound ? [{ id: 999 }] : [] };
@@ -501,5 +504,278 @@ describe('runAttendeeSync match-health counters', () => {
 		expect(report.matchedByEmail).toBe(0);
 		expect(report.matchedByPhone).toBe(0);
 		expect(report.profilesCreated).toBe(1);
+	});
+});
+
+/** The RSVP writes a run made, newest last: [method, is_attending]. */
+function rsvpWrites(spy: ReturnType<typeof mockApis>): { method: string; attending: string }[] {
+	return spy.mock.calls
+		.filter(
+			([url, init]) =>
+				String(url).includes('/v1/event_rsvps') &&
+				(init?.method === 'POST' || init?.method === 'PUT'),
+		)
+		.map(([, init]) => ({
+			method: String(init?.method),
+			attending: (JSON.parse(String(init?.body ?? '{}')) as { is_attending?: string })
+				.is_attending as string,
+		}));
+}
+
+const capped = (capacity: number | null): TimeslotLink => ({ ...LINK, sessionCapacity: capacity });
+
+/** Seats held by other people, so the newcomer is the one at the line. */
+const seats = (n: number) =>
+	Array.from({ length: n }, (_, i) => ({ id: 500 + i, user_id: 1 + i, is_attending: 'yes' }));
+
+describe('runAttendeeSync capacity', () => {
+	it('waitlists a new signup for a shift that is already full', async () => {
+		const spy = mockApis({ attendances: [attendance()], userFound: false, sessionRsvps: seats(2) });
+
+		const report = await run(ledgerWith(), true, [capped(2)]);
+
+		expect(report.rsvpsCreated).toBe(1);
+		expect(report.rsvpsWaitlisted).toBe(1);
+		expect(rsvpWrites(spy)).toEqual([{ method: 'POST', attending: 'waitlisted' }]);
+	});
+
+	it('seats a new signup while the shift still has room', async () => {
+		const spy = mockApis({ attendances: [attendance()], userFound: false, sessionRsvps: seats(2) });
+
+		const report = await run(ledgerWith(), true, [capped(5)]);
+
+		expect(report.rsvpsWaitlisted).toBe(0);
+		expect(rsvpWrites(spy)).toEqual([{ method: 'POST', attending: 'yes' }]);
+	});
+
+	it('never waitlists on an uncapped shift, however full it is', async () => {
+		const spy = mockApis({
+			attendances: [attendance()],
+			userFound: false,
+			sessionRsvps: seats(40),
+		});
+
+		const report = await run(ledgerWith(), true, [capped(null)]);
+
+		expect(report.rsvpsWaitlisted).toBe(0);
+		expect(rsvpWrites(spy)).toEqual([{ method: 'POST', attending: 'yes' }]);
+	});
+
+	it('fills the last seat, then waitlists the next arrival in the same run', async () => {
+		// Two people, one seat. The count has to move as the run writes, or both
+		// get seated against the same stale number.
+		const spy = mockApis({
+			attendances: [
+				attendance({
+					id: 1,
+					person: {
+						...attendance().person,
+						email_addresses: [{ primary: true, address: 'one@example.com' }],
+					},
+				}),
+				attendance({
+					id: 2,
+					person: {
+						...attendance().person,
+						email_addresses: [{ primary: true, address: 'two@example.com' }],
+					},
+				}),
+			],
+			userFound: false,
+			sessionRsvps: seats(1),
+		});
+
+		const report = await run(ledgerWith(), true, [capped(2)]);
+
+		expect(report.rsvpsCreated).toBe(2);
+		expect(report.rsvpsWaitlisted).toBe(1);
+		expect(rsvpWrites(spy).map((w) => w.attending)).toEqual(['yes', 'waitlisted']);
+	});
+
+	it('does not demote someone who already holds a seat', async () => {
+		// Their RSVP predates the cap being reached. Taking it away because a later
+		// run happened to read them second is not the sync's call to make.
+		const spy = mockApis({
+			attendances: [attendance()],
+			userFound: true,
+			sessionRsvps: [{ id: 500, user_id: 999, is_attending: 'yes' }],
+		});
+
+		const report = await run(ledgerWith(), true, [capped(1)]);
+
+		expect(report.rsvpsUpdated).toBe(0);
+		expect(rsvpWrites(spy)).toEqual([]);
+	});
+
+	it('leaves a waitlisted RSVP alone rather than promoting it every run', async () => {
+		// Mobilize still says `yes` — `waitlisted` IS this sync's answer to that on
+		// a full shift, so re-promoting would churn the queue nightly.
+		const spy = mockApis({
+			attendances: [attendance()],
+			userFound: true,
+			sessionRsvps: [{ id: 500, user_id: 999, is_attending: 'waitlisted' }],
+		});
+
+		const report = await run(ledgerWith(), true, [capped(1)]);
+
+		expect(report.rsvpsUpdated).toBe(0);
+		expect(rsvpWrites(spy)).toEqual([]);
+	});
+
+	it('still records a cancellation for someone on the waitlist', async () => {
+		const spy = mockApis({
+			attendances: [attendance({ status: 'CANCELLED' })],
+			userFound: true,
+			sessionRsvps: [{ id: 500, user_id: 999, is_attending: 'waitlisted' }],
+		});
+
+		const report = await run(ledgerWith(), true, [capped(1)]);
+
+		expect(report.rsvpsUpdated).toBe(1);
+		expect(rsvpWrites(spy)).toEqual([{ method: 'PUT', attending: 'no' }]);
+	});
+
+	it('reports a shift that was already over capacity before the run', async () => {
+		mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: seats(5) });
+
+		const report = await run(ledgerWith(), true, [capped(2)]);
+
+		expect(report.overCapacity).toEqual([
+			{ solidaritySessionId: LINK.solidaritySessionId, capacity: 2, attending: 5 },
+		]);
+	});
+
+	it('says nothing about a shift sitting inside its cap', async () => {
+		mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: seats(1) });
+
+		const report = await run(ledgerWith(), true, [capped(4)]);
+
+		expect(report.overCapacity).toEqual([]);
+	});
+});
+
+describe('runAttendeeSync seat order', () => {
+	/** A signup with its own identity, signup time and Mobilize event. */
+	function signup(options: {
+		id: number;
+		created: number;
+		email: string;
+		mobilizeEventId?: number;
+		timeslotId?: number;
+	}) {
+		return attendance({
+			id: options.id,
+			created_date: options.created,
+			event: { id: options.mobilizeEventId ?? LINK.mobilizeEventId },
+			timeslot: { id: options.timeslotId ?? LINK.mobilizeTimeslotId },
+			person: {
+				...attendance().person,
+				email_addresses: [{ primary: true, address: options.email }],
+			},
+		});
+	}
+
+	/** Which email got a seat and which was queued, by write order. */
+	const seatedThenWaitlisted = (spy: ReturnType<typeof mockApis>) =>
+		spy.mock.calls
+			.filter(([url, init]) => String(url).includes('/v1/event_rsvps') && init?.method === 'POST')
+			.map(
+				([, init]) =>
+					(JSON.parse(String(init?.body ?? '{}')) as { is_attending?: string }).is_attending,
+			);
+
+	it('gives the last seat to the earliest signup, whatever order Mobilize lists them in', async () => {
+		// Returned newest-first, the reverse of what the live API does today. The
+		// earlier signup must still take the seat.
+		const spy = mockApis({
+			attendances: [
+				signup({ id: 2, created: 1_787_000_500, email: 'late@example.com' }),
+				signup({ id: 1, created: 1_787_000_100, email: 'early@example.com' }),
+			],
+			userFound: false,
+			sessionRsvps: [],
+		});
+
+		const report = await run(ledgerWith(), true, [capped(1)]);
+
+		expect(report.rsvpsWaitlisted).toBe(1);
+		expect(seatedThenWaitlisted(spy)).toEqual(['yes', 'waitlisted']);
+		// The seated one is the earlier signup, not merely the first row returned.
+		const created = spy.mock.calls.filter(
+			([url, init]) => String(url).includes('/v1/users') && init?.method === 'POST',
+		);
+		expect(String(created[0]?.[1]?.body)).toContain('early@example.com');
+	});
+
+	it('orders across Mobilize events, not one event at a time', async () => {
+		// Twelve Solidarity sessions are mirrored by timeslots on two Mobilize
+		// events. Reading one event at a time seated all of the first event's
+		// signups before any of the second's, whoever actually signed up first.
+		const other = { mobilizeEventId: 812346, timeslotId: 6157029 };
+		const spy = mockApis({
+			attendances: [
+				signup({ id: 9, created: 1_787_000_900, email: 'first-event-late@example.com' }),
+				signup({
+					id: 3,
+					created: 1_787_000_200,
+					email: 'second-event-early@example.com',
+					...other,
+				}),
+			],
+			userFound: false,
+			sessionRsvps: [],
+		});
+
+		const links: TimeslotLink[] = [
+			capped(1),
+			{
+				...capped(1),
+				mobilizeTimeslotId: other.timeslotId,
+				mobilizeEventId: other.mobilizeEventId,
+			},
+		];
+		const report = await run(ledgerWith(), true, links);
+
+		expect(report.rsvpsWaitlisted).toBe(1);
+		const created = spy.mock.calls.filter(
+			([url, init]) => String(url).includes('/v1/users') && init?.method === 'POST',
+		);
+		expect(String(created[0]?.[1]?.body)).toContain('second-event-early@example.com');
+	});
+
+	it('puts a signup with no created_date last rather than at the front of the queue', async () => {
+		const spy = mockApis({
+			attendances: [
+				signup({ id: 7, created: 0, email: 'unknown-time@example.com' }),
+				signup({ id: 8, created: 1_787_000_400, email: 'known-time@example.com' }),
+			],
+			userFound: false,
+			sessionRsvps: [],
+		});
+
+		await run(ledgerWith(), true, [capped(1)]);
+
+		const created = spy.mock.calls.filter(
+			([url, init]) => String(url).includes('/v1/users') && init?.method === 'POST',
+		);
+		expect(String(created[0]?.[1]?.body)).toContain('known-time@example.com');
+	});
+
+	it('falls back to the attendance id when two signups share a timestamp', async () => {
+		const spy = mockApis({
+			attendances: [
+				signup({ id: 20, created: 1_787_000_300, email: 'higher-id@example.com' }),
+				signup({ id: 4, created: 1_787_000_300, email: 'lower-id@example.com' }),
+			],
+			userFound: false,
+			sessionRsvps: [],
+		});
+
+		await run(ledgerWith(), true, [capped(1)]);
+
+		const created = spy.mock.calls.filter(
+			([url, init]) => String(url).includes('/v1/users') && init?.method === 'POST',
+		);
+		expect(String(created[0]?.[1]?.body)).toContain('lower-id@example.com');
 	});
 });

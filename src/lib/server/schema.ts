@@ -404,6 +404,12 @@ export const mobilizeSyncedTimeslots = sqliteTable('mobilize_synced_timeslots', 
 	// its event entity and has nothing to do with mobilize.us.
 	solidarityEventId: integer('solidarity_event_id').notNull(),
 	solidaritySessionId: integer('solidarity_session_id').notNull(),
+	// The `max_attendees` last pushed to Mobilize for this shift: the Solidarity
+	// cap minus the seats Solidarity-side signups have already spent. Stored
+	// because Mobilize will not give it back — its event read returns `is_full`
+	// and no cap — so this is the only way to tell an unchanged cap from one that
+	// has moved. NULL means uncapped, which is not the same as 0 (full).
+	pushedMaxAttendees: integer('pushed_max_attendees'),
 	updatedAt: text('updated_at').notNull(),
 });
 

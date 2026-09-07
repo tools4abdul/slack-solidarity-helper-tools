@@ -16,6 +16,8 @@ import { fetchPageDescriptions } from '../../../mobilize-migrator/lib/pages.js';
 import { loadMobilizeApi } from './mobilize-api.js';
 import { TursoLedger } from './mobilize-ledger.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
+import { listSessionRsvps } from '../../../mobilize-migrator/lib/rsvp.js';
+import { countSolidaritySeats } from '../../../mobilize-migrator/lib/seats.js';
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
 import { planMigration } from '../../../mobilize-migrator/lib/transform.js';
 import { loadSettings } from './settings.js';
@@ -38,6 +40,38 @@ type Db = ReturnType<typeof drizzle>;
  * their own, so measuring only the writes would understate it badly.
  */
 const DEFAULT_BUDGET_MS = 120_000;
+
+/** Solidarity allows 60 requests / 30s; one capped shift costs one read. */
+const SEAT_COUNT_PAUSE_MS = 550;
+
+/**
+ * Seats each capped session has already spent on signups that did NOT come from
+ * Mobilize, so the event sync can hand Mobilize only what is left and let it
+ * enforce the cap itself.
+ *
+ * The Mobilize-origin exclusion is the whole trick — see lib/seats.ts. Counting
+ * every RSVP would charge each Mobilize signup twice, once against Mobilize's
+ * own tally and once by shrinking the cap we give it, and the shift would close
+ * at half capacity.
+ *
+ * A session whose read fails is simply left out of the map, which the sync reads
+ * as "no adjustment" rather than as a full or empty shift.
+ */
+async function countSeatsTaken(sessionIds: number[]): Promise<Map<number, number>> {
+	const seats = new Map<number, number>();
+	for (const [index, sessionId] of sessionIds.entries()) {
+		if (index > 0) await new Promise((r) => setTimeout(r, SEAT_COUNT_PAUSE_MS));
+		try {
+			seats.set(
+				sessionId,
+				countSolidaritySeats(await listSessionRsvps(SOLIDARITY_API_TOKEN, sessionId)),
+			);
+		} catch (err) {
+			console.warn(`[mobilize-sync] seat count failed for session ${sessionId}:`, err);
+		}
+	}
+	return seats;
+}
 
 export interface MobilizeSyncOptions {
 	/** When false, plan and report without writing anything. */
@@ -106,6 +140,7 @@ export async function runMobilizeSync(
 			maxCreatesPerRun: options.maxCreates ?? MOBILIZE_SYNC_MAX_CREATES,
 			apply,
 			writeDeadline,
+			seatsTaken: countSeatsTaken,
 			log: (message) => console.log(`[mobilize-sync] ${message}`),
 		},
 		ledger,

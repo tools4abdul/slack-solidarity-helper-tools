@@ -22,6 +22,7 @@ import {
 	type EventContact,
 	type Timeslot,
 } from './payload.js';
+import { applySeatsTaken, cappedSessionIds } from './seats.js';
 import type { PlannedEvent } from './transform.js';
 
 /** Timeslots are matched between systems by start time, within this slack. */
@@ -49,6 +50,24 @@ export interface Ledger {
 	 * Optional so the file-backed CLI ledger doesn't have to implement it.
 	 */
 	recordTimeslots?(pairings: TimeslotPairing[]): Promise<void>;
+	/**
+	 * The `max_attendees` we last pushed for each Mobilize timeslot.
+	 *
+	 * Kept because it CANNOT be read back: Mobilize's event read returns
+	 * `start_date, end_date, instructions, id, is_full` and no cap at all, so
+	 * there is nothing live to diff against. Without a record of what was sent,
+	 * every run would either re-PUT every capped event forever or never notice a
+	 * cap had moved. `is_full` is the only live signal, and it says "at the
+	 * limit", not what the limit is.
+	 */
+	pushedCaps?(): Promise<Map<number, number | null>>;
+	recordPushedCaps?(entries: PushedCap[]): Promise<void>;
+}
+
+export interface PushedCap {
+	mobilizeTimeslotId: number;
+	/** null = uncapped. Distinct from 0, which is a shift that is full. */
+	maxAttendees: number | null;
 }
 
 export interface SyncConfig {
@@ -82,6 +101,17 @@ export interface SyncConfig {
 	writeDeadline?: number;
 	/** Milliseconds between writes, to stay clear of Cloudflare rate limiting. */
 	pauseMs?: number;
+	/**
+	 * Seats already spent, per Solidarity session, on signups that did NOT come
+	 * from Mobilize — so Mobilize can be handed only what is left and enforce the
+	 * cap itself. Injected rather than called directly: this module has no
+	 * Solidarity token, by the same rule that keeps it free of $env.
+	 *
+	 * Omit it and caps go to Mobilize at their full Solidarity value, which is the
+	 * behaviour before any of this existed. A session the counter leaves out is
+	 * treated the same way — a read that failed must not close a shift.
+	 */
+	seatsTaken?: (sessionIds: number[]) => Promise<Map<number, number>>;
 	log?: (message: string) => void;
 }
 
@@ -131,6 +161,9 @@ export interface TimeslotPlan {
 	/** Live shifts with no counterpart in Solidarity — kept, never deleted. */
 	orphanCount: number;
 	changed: boolean;
+	/** A cap moved, though the shifts themselves did not. Tracked apart from
+	 *  `changed` so the update log says "capacity" instead of "timeslots". */
+	capacityChanged: boolean;
 	/**
 	 * Mobilize timeslot -> Solidarity session, for the rows we matched. The
 	 * attendee sync needs this to file a signup against the right session, and
@@ -164,12 +197,15 @@ export function reconcileTimeslots(
 	plan: PlannedEvent,
 	live: MobilizeEvent,
 	now = Date.now(),
+	/** What we last sent as each slot's `max_attendees`; see Ledger.pushedCaps. */
+	pushedCaps: Map<number, number | null> = new Map(),
 ): TimeslotPlan {
 	const liveSlots = [...live.timeslots].sort((a, b) => a.start_date - b.start_date);
 	const consumed = new Set<number>();
 	const timeslots: PutTimeslot[] = [];
 	const pairings: TimeslotPairing[] = [];
 	let changed = false;
+	let capacityChanged = false;
 
 	plan.timeslots.forEach((slot, index) => {
 		const startInstant = plan.startInstants[index];
@@ -183,6 +219,16 @@ export function reconcileTimeslots(
 			// An end-time edit still counts as a change even though the start matched.
 			if (Math.abs(match.end_date * 1000 - plan.endInstants[index]) > START_MATCH_TOLERANCE_MS) {
 				changed = true;
+			}
+			// A cap can only be compared against what we recorded sending, since
+			// Mobilize never gives it back. No record and no cap wanted means there
+			// is nothing to do; no record and a cap wanted means this slot predates
+			// capacity tracking and needs one established.
+			const lastPushed = pushedCaps.has(match.id) ? pushedCaps.get(match.id)! : undefined;
+			if (
+				lastPushed === undefined ? slot.maxAttendees !== null : lastPushed !== slot.maxAttendees
+			) {
+				capacityChanged = true;
 			}
 			timeslots.push({ id: match.id, ...slot });
 			const solidaritySessionId = plan.solidaritySessionIds[index];
@@ -210,11 +256,14 @@ export function reconcileTimeslots(
 			id: orphan.id,
 			startDate: orphan.start_date,
 			endDate: orphan.end_date,
-			maxAttendees: null,
+			// Whatever we last pushed, NOT null. A PUT re-sends every upcoming slot,
+			// so hardcoding null here quietly un-capped every orphan on every edit —
+			// harmless while nothing managed caps, silently destructive now.
+			maxAttendees: pushedCaps.get(orphan.id) ?? null,
 		});
 	}
 
-	return { timeslots, orphanCount: orphans.length, changed, pairings };
+	return { timeslots, orphanCount: orphans.length, changed, capacityChanged, pairings };
 }
 
 /** Fields worth a PUT. Location is compared loosely — Mobilize normalizes it. */
@@ -223,12 +272,14 @@ export function describeChanges(
 	live: MobilizeEvent,
 	wantsImage: boolean,
 	timeslotsChanged: boolean,
+	capacityChanged = false,
 ): string[] {
 	const changes: string[] = [];
 	if (plan.title.trim() !== (live.title ?? '').trim()) changes.push('title');
 	if (plan.description.trim() !== (live.description ?? '').trim()) changes.push('description');
 	if (wantsImage && !live.featured_image_url) changes.push('image');
 	if (timeslotsChanged) changes.push('timeslots');
+	if (capacityChanged) changes.push('capacity');
 	// Events migrated before the v1 switch went in with no postal code at all —
 	// the old dashboard API allowed it. Backfill one when we now have it, rather
 	// than leaving them unfindable by zip in Mobilize's search.
@@ -343,6 +394,40 @@ export async function runSync(
 	}
 
 	/**
+	 * The plan with Mobilize's share of each capped shift, so Mobilize can enforce
+	 * the rest itself — see lib/seats.ts for why Mobilize-origin RSVPs must be
+	 * left out of that subtraction.
+	 *
+	 * Counted lazily, per event, and memoized for the run: this costs one
+	 * Solidarity read per capped session, and a request that runs out of budget is
+	 * re-invoked from the top. Counting every capped session up front therefore
+	 * meant re-counting all of them on every chunk — up to twelve times a pass —
+	 * to serve the handful each chunk actually writes.
+	 */
+	const seatCache = new Map<number, number>();
+	const seated = async (plan: PlannedEvent): Promise<PlannedEvent> => {
+		if (!config.seatsTaken) return plan;
+		const wanted = cappedSessionIds(plan).filter((id) => !seatCache.has(id));
+		if (wanted.length > 0) {
+			try {
+				for (const [id, taken] of await config.seatsTaken(wanted)) seatCache.set(id, taken);
+			} catch (err) {
+				// Push the full caps rather than none: a failed count must never be
+				// read as "every seat is free" or as "the shift is full".
+				report.errors.push(`seat count: ${err instanceof Error ? err.message : err}`);
+				log(`capacity: seat count failed for "${plan.title}" — pushing its caps unadjusted`);
+			}
+		}
+		return applySeatsTaken(plan, seatCache);
+	};
+	const pushedCaps = (await ledger.pushedCaps?.()) ?? new Map<number, number | null>();
+	/** Ids only exist for slots Mobilize already has; new ones get theirs on create. */
+	const capsFrom = (slots: PutTimeslot[]): PushedCap[] =>
+		slots
+			.filter((slot) => slot.id !== undefined)
+			.map((slot) => ({ mobilizeTimeslotId: slot.id!, maxAttendees: slot.maxAttendees }));
+
+	/**
 	 * The plan with a usable `zipcode`, or null when there is none to be had.
 	 *
 	 * `postal_code` is the one location field Mobilize v1 requires, and about a
@@ -390,8 +475,9 @@ export async function runSync(
 	// rather than repeats.
 	const outOfTime = () => config.writeDeadline !== undefined && Date.now() >= config.writeDeadline;
 
-	for (const [index, plan] of toCreate.entries()) {
+	for (const [index, unseated] of toCreate.entries()) {
 		if (config.createLimit !== undefined && report.created >= config.createLimit) break;
+		const plan = await seated(unseated);
 		if (outOfTime()) {
 			report.incomplete = true;
 			report.pending += toCreate.length - index;
@@ -425,7 +511,13 @@ export async function runSync(
 			// so this normally costs no extra request.
 			if (ledger.recordTimeslots) {
 				const created = event ?? (await getOrgEvent(config.api, id));
-				if (created) await ledger.recordTimeslots(reconcileTimeslots(plan, created).pairings);
+				if (created) {
+					const slotPlan = reconcileTimeslots(plan, created, Date.now(), pushedCaps);
+					await ledger.recordTimeslots(slotPlan.pairings);
+					// The caps went out with the create, so record them now — otherwise
+					// the very next pass sees no record and re-pushes every one.
+					await ledger.recordPushedCaps?.(capsFrom(slotPlan.timeslots));
+				}
 			}
 		} catch (err) {
 			if (err instanceof MobilizeError && err.status === 403) {
@@ -439,12 +531,13 @@ export async function runSync(
 		await pause();
 	}
 
-	for (const [index, { plan, record }] of toSync.entries()) {
+	for (const [index, { plan: unseated, record }] of toSync.entries()) {
 		if (outOfTime()) {
 			report.incomplete = true;
 			report.pending += toSync.length - index;
 			break;
 		}
+		const plan = await seated(unseated);
 		try {
 			// Prefer the bulk list; fall back to a direct read only for events it
 			// doesn't cover (all timeslots already past, or not publicly listed).
@@ -457,7 +550,7 @@ export async function runSync(
 				continue;
 			}
 
-			const slotPlan = reconcileTimeslots(plan, live);
+			const slotPlan = reconcileTimeslots(plan, live, Date.now(), pushedCaps);
 			// Recorded before the change check, so the pairing stays fresh even when
 			// the event itself needs no edit — but still only when applying. A dry
 			// run must write nothing, including to the ledger.
@@ -468,7 +561,13 @@ export async function runSync(
 			// change worth pushing to an event that has none.
 			const zipped = (await resolveZip(plan)) ?? plan;
 			const wantsImage = Boolean(plan.sourceImageUrl);
-			const changes = describeChanges(zipped, live, wantsImage, slotPlan.changed);
+			const changes = describeChanges(
+				zipped,
+				live,
+				wantsImage,
+				slotPlan.changed,
+				slotPlan.capacityChanged,
+			);
 			if (changes.length === 0) {
 				report.unchanged++;
 				continue;
@@ -492,6 +591,9 @@ export async function runSync(
 			const payload = payloadForPlan(zipped, config.contact, imageUrl, slotPlan.timeslots);
 
 			await updateEvent(config.api, record.mobilizeEventId, payload);
+			// Only after the PUT lands: recording a cap we did not manage to send
+			// would make the next run believe Mobilize already has it.
+			await ledger.recordPushedCaps?.(capsFrom(slotPlan.timeslots));
 			report.updated++;
 			report.updatedTitles.push(`${plan.title} (${changes.join(', ')})`);
 			log(`updated #${record.mobilizeEventId} "${plan.title}" — ${changes.join(', ')}`);

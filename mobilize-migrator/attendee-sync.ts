@@ -25,6 +25,9 @@ const timeslotId = Number(arg('timeslot'));
 const sessionId = Number(arg('session'));
 const eventId = Number(arg('event'));
 const chapterId = arg('chapter') ? Number(arg('chapter')) : null;
+// The session's max_capacity. Omit for uncapped; the endpoint reads it from
+// Solidarity, but this CLI is handed one shift and has no event to read it from.
+const capacity = arg('capacity') ? Number(arg('capacity')) : null;
 const apply = process.argv.includes('--apply');
 
 if (
@@ -34,7 +37,7 @@ if (
 	!Number.isFinite(eventId)
 ) {
 	console.error(
-		'usage: attendee-sync.ts --mobilize-event <mobilize.us event id> --timeslot <mobilize.us timeslot id> --session <solidarity session id> --event <solidarity event id> [--chapter <id>] [--apply]',
+		'usage: attendee-sync.ts --mobilize-event <mobilize.us event id> --timeslot <mobilize.us timeslot id> --session <solidarity session id> --event <solidarity event id> [--chapter <id>] [--capacity <max>] [--apply]',
 	);
 	process.exit(1);
 }
@@ -56,6 +59,7 @@ const report = await runAttendeeSync(
 			solidaritySessionId: sessionId,
 			eventChapterId: chapterId,
 			startsAt: Date.now(),
+			sessionCapacity: capacity,
 		},
 	],
 	{
@@ -78,6 +82,7 @@ console.log(`  matched by phone:     ${report.matchedByPhone}`);
 console.log(`  would create profile: ${report.profilesCreated}`);
 console.log(`  RSVPs to create:      ${report.rsvpsCreated}`);
 console.log(`  RSVPs to update:      ${report.rsvpsUpdated}`);
+console.log(`  would waitlist:       ${report.rsvpsWaitlisted}`);
 console.log(`  no email or phone:    ${report.skippedNoContact}`);
 console.log(`  phone rejected:       ${report.skippedInvalidPhone}`);
 console.log(`  created sans phone:   ${report.profilesCreatedWithoutPhone}`);

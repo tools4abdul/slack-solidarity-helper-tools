@@ -24,6 +24,7 @@ import {
 	createRsvp,
 	listSessionRsvps,
 	updateRsvp,
+	type AttendingValue,
 } from './rsvp.js';
 
 /** One Mobilize timeslot paired with the Solidarity session it mirrors. */
@@ -37,6 +38,11 @@ export interface TimeslotLink {
 	eventChapterId: number | null;
 	/** Absolute start, so callers can select only imminent events. */
 	startsAt: number;
+	/**
+	 * The Solidarity session's `max_capacity`, or null when it is uncapped.
+	 * Signups past it are filed as `waitlisted` rather than `yes`.
+	 */
+	sessionCapacity: number | null;
 }
 
 export interface RsvpRecord {
@@ -83,6 +89,12 @@ export interface AttendeeSyncReport {
 	participations: number;
 	rsvpsCreated: number;
 	rsvpsUpdated: number;
+	/**
+	 * Of the created ones, those filed as `waitlisted` because the session was
+	 * already at its cap. Mobilize accepted the signup, so the person is not
+	 * turned away — Solidarity just records that they are past the line.
+	 */
+	rsvpsWaitlisted: number;
 	attendancesRecorded: number;
 	profilesCreated: number;
 	/**
@@ -113,6 +125,13 @@ export interface AttendeeSyncReport {
 	 */
 	lookupsAmbiguous: number;
 	unchanged: number;
+	/**
+	 * Sessions holding more attending RSVPs than their cap allows, as they read at
+	 * the START of the run — so this reports a standing condition to be fixed by a
+	 * human, not something this run caused. A session the run then waitlists into
+	 * still appears here only if it was already over.
+	 */
+	overCapacity: { solidaritySessionId: number; capacity: number; attending: number }[];
 	/** No email and no phone — nothing to match or create on. */
 	skippedNoContact: number;
 	/**
@@ -137,6 +156,7 @@ function emptyReport(): AttendeeSyncReport {
 		participations: 0,
 		rsvpsCreated: 0,
 		rsvpsUpdated: 0,
+		rsvpsWaitlisted: 0,
 		attendancesRecorded: 0,
 		profilesCreated: 0,
 		profilesCreatedWithoutPhone: 0,
@@ -145,6 +165,7 @@ function emptyReport(): AttendeeSyncReport {
 		lookupsPerformed: 0,
 		lookupsAmbiguous: 0,
 		unchanged: 0,
+		overCapacity: [],
 		skippedNoContact: 0,
 		skippedInvalidPhone: 0,
 		skippedUnknownStatus: 0,
@@ -154,9 +175,35 @@ function emptyReport(): AttendeeSyncReport {
 	};
 }
 
+/**
+ * Sort key for "who signed up first".
+ *
+ * A missing created_date sorts LAST rather than first: it has never been
+ * observed, and a row with no signup time should not outrank one that has a
+ * known early one. The attendance id breaks ties — it rises with creation on
+ * every event checked, including across events.
+ */
+function signupOrder(participation: MobilizeParticipation): number {
+	return participation.createdDate > 0 ? participation.createdDate : Number.MAX_SAFE_INTEGER;
+}
+
 /** Stable, non-identifying handle for logs and error messages. */
 function refFor(participation: MobilizeParticipation): string {
 	return `participation ${participation.id}`;
+}
+
+/**
+ * Does the RSVP Solidarity already holds satisfy what Mobilize now says?
+ *
+ * Exact equality is wrong in one direction: a `waitlisted` row IS this sync's
+ * answer to a Mobilize `yes` on a full shift, so comparing naively would promote
+ * every waitlisted person back to `yes` on the next pass, then waitlist the next
+ * arrival instead — the queue would churn nightly and the cap would never hold.
+ * Anything else still updates, so a cancellation always lands.
+ */
+function satisfies(current: string, wanted: AttendingValue): boolean {
+	if (current === wanted) return true;
+	return wanted === 'yes' && current === 'waitlisted';
 }
 
 /**
@@ -237,8 +284,30 @@ export async function runAttendeeSync(
 	}
 	report.participations = pending.length;
 
+	// Signup order, oldest first — this is what decides who takes the last seat on
+	// a capped shift and who is waitlisted.
+	//
+	// Mobilize does return an event's attendances in created_date order (verified
+	// across 393 signups on three events, none missing the field), but that is
+	// undocumented, and the loop above reads one event at a time: without this,
+	// every signup on the first Mobilize event outranked every signup on the
+	// second, and twelve Solidarity sessions are mirrored by timeslots on TWO
+	// Mobilize events. So the ordering is made ours rather than inherited.
+	pending.sort(
+		(a, b) =>
+			signupOrder(a.participation) - signupOrder(b.participation) ||
+			a.participation.id - b.participation.id,
+	);
+
 	// RSVPs already in Solidarity, so ones entered there directly aren't doubled.
 	const existingBySession = new Map<number, Map<number, { id: number; is_attending: string }>>();
+	// Seats spent per session, counted from the same read and then kept up to date
+	// as this run files RSVPs. Unlike the cap pushed to Mobilize (see seats.ts),
+	// this counts EVERY attending RSVP whatever its origin: in Solidarity a seat
+	// is a seat, and the question here is only whether the room is full.
+	const seatsBySession = new Map<number, number>();
+	const capacityBySession = new Map<number, number | null>();
+	for (const link of links) capacityBySession.set(link.solidaritySessionId, link.sessionCapacity);
 	for (const sessionId of new Set(pending.map((p) => p.link.solidaritySessionId))) {
 		try {
 			const rows = await listSessionRsvps(config.solidarityToken, sessionId);
@@ -246,6 +315,12 @@ export async function runAttendeeSync(
 				sessionId,
 				new Map(rows.map((r) => [r.user_id, { id: r.id, is_attending: r.is_attending }])),
 			);
+			const attending = rows.filter((r) => r.is_attending === 'yes').length;
+			seatsBySession.set(sessionId, attending);
+			const capacity = capacityBySession.get(sessionId) ?? null;
+			if (capacity !== null && attending > capacity) {
+				report.overCapacity.push({ solidaritySessionId: sessionId, capacity, attending });
+			}
 		} catch (err) {
 			report.failed++;
 			report.errors.push(`rsvp list ${sessionId}: ${err instanceof Error ? err.message : err}`);
@@ -397,19 +472,46 @@ export async function runAttendeeSync(
 					? { id: priorRecord.solidarityRsvpId, is_attending: priorRecord.status }
 					: null);
 
+			// Only a fresh `yes` can be pushed past the line. A cancellation is never
+			// waitlisted, and someone already holding a seat is never demoted into a
+			// waitlist by a later run — that would take a place away from a person who
+			// has it, on nothing more than the order the sync happened to read them in.
+			const seats = seatsBySession.get(link.solidaritySessionId) ?? 0;
+			const capacity = link.sessionCapacity;
+			const full = capacity !== null && seats >= capacity;
+			const desired: AttendingValue =
+				attending === 'yes' && full && !existing ? 'waitlisted' : attending;
+
 			if (!config.apply) {
 				if (existing) report.rsvpsUpdated++;
-				else report.rsvpsCreated++;
+				else {
+					report.rsvpsCreated++;
+					if (desired === 'waitlisted') report.rsvpsWaitlisted++;
+					else seatsBySession.set(link.solidaritySessionId, seats + 1);
+				}
 				continue;
 			}
 
 			let rsvpId = existing?.id ?? null;
 			if (rsvpId === null) {
-				rsvpId = await createRsvp(config.solidarityToken, target, attending);
+				rsvpId = await createRsvp(config.solidarityToken, target, desired);
 				report.rsvpsCreated++;
-			} else if (existing && existing.is_attending !== attending) {
+				if (desired === 'waitlisted') {
+					report.rsvpsWaitlisted++;
+					log(
+						`waitlisted user ${userId} — session ${link.solidaritySessionId} is at its cap of ${capacity}`,
+					);
+				} else {
+					seatsBySession.set(link.solidaritySessionId, seats + 1);
+				}
+			} else if (existing && !satisfies(existing.is_attending, attending)) {
 				await updateRsvp(config.solidarityToken, rsvpId, attending);
 				report.rsvpsUpdated++;
+				// A cancellation hands the seat back, so the next person in this run
+				// can have it rather than being waitlisted against a stale count.
+				if (existing.is_attending === 'yes' && attending === 'no') {
+					seatsBySession.set(link.solidaritySessionId, Math.max(0, seats - 1));
+				}
 			}
 
 			if (participation.attended && !priorRecord?.attended) {

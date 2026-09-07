@@ -7,6 +7,7 @@ import {
 	runSync,
 	type Ledger,
 	type LedgerRecord,
+	type PushedCap,
 } from './sync.js';
 import type { EventContact } from './payload.js';
 import type { PlannedEvent } from './transform.js';
@@ -197,6 +198,78 @@ describe('reconcileTimeslots', () => {
 	});
 });
 
+describe('reconcileTimeslots capacity', () => {
+	const capped = (cap: number | null) =>
+		plan({
+			timeslots: [
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: cap,
+				},
+			],
+		});
+
+	it('flags a cap that differs from the one last pushed', () => {
+		const result = reconcileTimeslots(
+			capped(12),
+			live([{ id: 5001, start: START }]),
+			NOW,
+			new Map([[5001, 20]]),
+		);
+		expect(result.capacityChanged).toBe(true);
+		expect(result.timeslots[0]!.maxAttendees).toBe(12);
+	});
+
+	it('leaves a cap alone when it matches what was last pushed', () => {
+		const result = reconcileTimeslots(
+			capped(12),
+			live([{ id: 5001, start: START }]),
+			NOW,
+			new Map([[5001, 12]]),
+		);
+		expect(result.capacityChanged).toBe(false);
+	});
+
+	it('treats zero as a real cap, not as "no record"', () => {
+		// A full shift is pushed as 0. Confusing it with null would re-open it.
+		const result = reconcileTimeslots(
+			capped(0),
+			live([{ id: 5001, start: START }]),
+			NOW,
+			new Map([[5001, 0]]),
+		);
+		expect(result.capacityChanged).toBe(false);
+	});
+
+	it('establishes a cap on a shift that has no record of one', () => {
+		const result = reconcileTimeslots(capped(12), live([{ id: 5001, start: START }]), NOW);
+		expect(result.capacityChanged).toBe(true);
+	});
+
+	it('stays quiet when there is no record and no cap is wanted', () => {
+		const result = reconcileTimeslots(capped(null), live([{ id: 5001, start: START }]), NOW);
+		expect(result.capacityChanged).toBe(false);
+	});
+
+	it('re-sends an orphan with the cap it was last given, not null', () => {
+		// Every PUT carries every upcoming slot, so sending null here silently
+		// un-capped orphaned shifts on every unrelated edit.
+		const result = reconcileTimeslots(
+			plan(),
+			live([
+				{ id: 5001, start: START },
+				{ id: 5002, start: START + 3 * HOUR },
+			]),
+			NOW,
+			new Map([[5002, 8]]),
+		);
+		const orphan = result.timeslots.find((slot) => slot.id === 5002);
+		expect(result.orphanCount).toBe(1);
+		expect(orphan!.maxAttendees).toBe(8);
+	});
+});
+
 describe('describeChanges', () => {
 	it('reports nothing when everything matches', () => {
 		expect(describeChanges(plan(), live([{ id: 1, start: START }]), false, false)).toEqual([]);
@@ -248,6 +321,13 @@ describe('describeChanges', () => {
 	it('does not ask for an update when we have no zip to offer either', () => {
 		const noZip = live([{ id: 1, start: START }], { location: { locality: 'Detroit' } });
 		expect(describeChanges(plan({ zipcode: '' }), noZip, false, false)).toEqual([]);
+	});
+});
+
+describe('describeChanges capacity', () => {
+	it('names capacity apart from timeslots', () => {
+		const changes = describeChanges(plan(), live([{ id: 5001, start: START }]), false, false, true);
+		expect(changes).toEqual(['capacity']);
 	});
 });
 
@@ -724,5 +804,150 @@ describe('runSync write budget', () => {
 		expect(report.updated).toBeLessThan(3);
 		expect(report.updated + report.pending).toBe(3);
 		expect(report.unchanged).toBe(0);
+	});
+});
+
+describe('runSync capacity push', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 1 };
+	const CONTACT: EventContact = {
+		name: 'Field Team',
+		emailAddress: 'field@example.org',
+		phoneNumber: '',
+	};
+
+	/** A capped shift already mirrored to Mobilize, with a cap recorded as pushed. */
+	function setup(options: { pushedCap: number | null; seatsTaken: number }) {
+		const planned = plan({
+			timeslots: [
+				{
+					startDate: Math.floor(START / 1000),
+					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					maxAttendees: 20,
+				},
+			],
+		});
+		const body = JSON.stringify({
+			data: [
+				{
+					id: 900,
+					title: planned.title,
+					event_type: 'COMMUNITY_CANVASS',
+					description: planned.description,
+					timeslots: [
+						{
+							id: 5001,
+							start_date: Math.floor(START / 1000),
+							end_date: Math.floor((START + 2 * HOUR) / 1000),
+						},
+					],
+					location: { locality: 'Detroit', postal_code: '48202' },
+				},
+			],
+			next: null,
+		});
+		const puts: Record<string, unknown>[] = [];
+		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+			if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
+			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
+		});
+
+		const recordedCaps: PushedCap[] = [];
+		const ledger: Ledger = {
+			async all() {
+				return [{ key: planned.key, mobilizeEventId: 900, title: planned.title }];
+			},
+			async record() {},
+			async imageFor() {
+				return null;
+			},
+			async recordImage() {},
+			async zipFor() {
+				return null;
+			},
+			async recordZip() {},
+			async recordTimeslots() {},
+			async pushedCaps() {
+				return new Map([[5001, options.pushedCap]]);
+			},
+			async recordPushedCaps(entries) {
+				recordedCaps.push(...entries);
+			},
+		};
+
+		const asked: number[][] = [];
+		const seatsTaken = async (ids: number[]) => {
+			asked.push(ids);
+			return new Map(ids.map((id) => [id, options.seatsTaken]));
+		};
+
+		return { planned, ledger, puts, recordedCaps, asked, seatsTaken };
+	}
+
+	const run = (fixture: ReturnType<typeof setup>) =>
+		runSync(
+			[fixture.planned],
+			{
+				api: API,
+				contact: CONTACT,
+				maxCreatesPerRun: 10,
+				apply: true,
+				pauseMs: 0,
+				seatsTaken: fixture.seatsTaken,
+			},
+			fixture.ledger,
+			() => null,
+		);
+
+	it('hands Mobilize the cap minus the seats Solidarity already spent', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: 7 });
+
+		const report = await run(fixture);
+
+		expect(report.updated).toBe(1);
+		expect(report.updatedTitles[0]).toContain('capacity');
+		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 13 }] });
+	});
+
+	it('records the cap only once the PUT has landed', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: 7 });
+
+		await run(fixture);
+
+		expect(fixture.recordedCaps).toEqual([{ mobilizeTimeslotId: 5001, maxAttendees: 13 }]);
+	});
+
+	it('leaves the event alone when the cap has not moved', async () => {
+		// Nothing else differs, so without this the seat count would trigger a PUT
+		// on every capped event on every pass.
+		const fixture = setup({ pushedCap: 13, seatsTaken: 7 });
+
+		const report = await run(fixture);
+
+		expect(report.unchanged).toBe(1);
+		expect(fixture.puts).toEqual([]);
+	});
+
+	it('asks only about sessions whose shift carries a cap', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: 7 });
+
+		await run(fixture);
+
+		expect(fixture.asked).toEqual([[10]]);
+	});
+
+	it('pushes the cap unadjusted when the seat count fails', async () => {
+		const fixture = setup({ pushedCap: null, seatsTaken: 0 });
+		fixture.seatsTaken = async () => {
+			throw new Error('Solidarity rsvp list returned 500');
+		};
+
+		const report = await run(fixture);
+
+		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 20 }] });
+		expect(report.errors[0]).toContain('seat count');
 	});
 });

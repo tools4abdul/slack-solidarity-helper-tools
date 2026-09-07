@@ -34,6 +34,14 @@ export interface MobilizeParticipation {
 	zipcode: string | null;
 	/** Unix seconds; lets a re-run skip rows that haven't changed. */
 	modifiedDate: number;
+	/**
+	 * When the person signed up, in unix seconds. 0 when Mobilize did not send
+	 * one — never observed, but the ordering must stay defined if it happens.
+	 *
+	 * This decides who gets the last seat on a capped shift, so it is not
+	 * cosmetic: see the sort in attendee-sync.ts.
+	 */
+	createdDate: number;
 }
 
 function str(value: unknown): string | null {
@@ -70,6 +78,7 @@ export function normalizeAttendance(row: MobilizeAttendance): MobilizeParticipat
 		phone: str(primary(person.phone_numbers)?.number),
 		zipcode: str(primary(person.postal_addresses)?.postal_code),
 		modifiedDate: typeof row.modified_date === 'number' ? row.modified_date : 0,
+		createdDate: typeof row.created_date === 'number' ? row.created_date : 0,
 	};
 }
 

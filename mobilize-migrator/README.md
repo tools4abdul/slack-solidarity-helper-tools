@@ -241,6 +241,47 @@ defaults for the rest. Deliberately accepted, not worked around:
 Events created before this migration keep whatever the dashboard API set on
 them; the update pass does not clear these fields, it just stops setting them.
 
+### Capacity: one cap, two systems
+
+A Solidarity session's `max_capacity` becomes the Mobilize timeslot's
+`max_attendees`, so Mobilize enforces the limit itself — it flips `is_full` and
+stops taking signups. But people sign up on **both** sides, so the number pushed
+is the cap **minus the seats Solidarity has already spent**, recomputed on every
+pass. Solidarity's 0 still means "no cap"; after subtraction a genuine 0 means
+"full", which is why `capacity()` in transform.ts is careful never to conflate
+the two.
+
+**The double-charge trap.** The attendee sync mirrors every Mobilize signup back
+into Solidarity as an RSVP. Subtracting _all_ Solidarity RSVPs would therefore
+charge each Mobilize signup twice — once against Mobilize's own tally, once by
+shrinking the cap we hand it — and a shift would close at half capacity. Only
+RSVPs whose `source_system` is not `mobilize` are counted; see
+`countSolidaritySeats` in lib/seats.ts. This is the reason that filter exists,
+and it is not an optimization.
+
+**`max_attendees` cannot be read back.** Mobilize's event read returns
+`start_date, end_date, instructions, id, is_full` — the cap is write-only, so
+there is nothing live to diff against. What we last sent is stored in
+`mobilize_synced_timeslots.pushed_max_attendees` and that is what decides whether
+a PUT is needed; without it every capped event would either be re-pushed forever
+or never updated. `is_full` is the only live signal and it says "at the limit",
+not what the limit is.
+
+Two consequences worth knowing:
+
+- **Orphan timeslots keep their recorded cap.** A PUT re-sends every upcoming
+  shift, so the old hardcoded `maxAttendees: null` for orphans silently un-capped
+  them on every unrelated edit. They now go back with `pushed_max_attendees`.
+- **Seats are counted lazily, per event.** One Solidarity read per capped
+  session, taken only for events the chunk actually reaches — a run that exhausts
+  its write budget is re-invoked from the top, so counting everything up front
+  meant re-counting it on all twelve chunks.
+
+**Unverified:** that Mobilize reads `max_attendees: 0` as "closed" rather than
+rejecting it. The behaviour is asserted by a long-standing comment in
+transform.ts but has not been exercised against the live API — worth confirming
+on a scratch event before the first shift actually fills.
+
 ## Not creating duplicates
 
 Two independent mechanisms:
@@ -394,6 +435,10 @@ event session, so organizers only check one place.
 # Inspect the match rate on a real shift before trusting it with the CRM
 npx tsx mobilize-migrator/attendee-sync.ts \
   --mobilize-event 812345 --timeslot 6157028 --session 80929 --event 27463
+
+# ...with the session's cap, to see what would be waitlisted
+npx tsx mobilize-migrator/attendee-sync.ts \
+  --mobilize-event 812345 --timeslot 6157028 --session 80929 --event 27463 --capacity 40
 ```
 
 Scheduled as the second step of `.github/workflows/mobilize-sync.yml` →
@@ -424,11 +469,53 @@ inferred from the presence of a check-in timestamp, so "did not attend" and "not
 recorded yet" are finally distinguishable. Anything unrecognized is still skipped
 and alerted rather than guessed.
 
-| Mobilize                   | Solidarity                                  |
-| -------------------------- | ------------------------------------------- |
-| `REGISTERED` / `CONFIRMED` | RSVP `is_attending: "yes"`                  |
-| `CANCELLED`                | existing RSVP set to `"no"` — never deleted |
-| `attended: true`           | plus an `event_attendances` record          |
+| Mobilize                   | Solidarity                                    |
+| -------------------------- | --------------------------------------------- |
+| `REGISTERED` / `CONFIRMED` | RSVP `is_attending: "yes"`                    |
+| ...on a session at its cap | RSVP `is_attending: "waitlisted"` — see below |
+| `CANCELLED`                | existing RSVP set to `"no"` — never deleted   |
+| `attended: true`           | plus an `event_attendances` record            |
+
+### Waitlisting past the cap
+
+A signup for a session already holding `max_capacity` attending RSVPs is filed as
+`waitlisted` rather than `yes`. Mobilize accepted the person, so they are not
+turned away — Solidarity simply records that they are past the line.
+
+Three rules keep that from churning:
+
+- **Nobody who holds a seat is demoted.** Only a _new_ RSVP can be waitlisted. An
+  existing `yes` stays `yes`, whatever the count now says: taking a place from
+  someone who has it, because a later run read them in a different order, is not
+  the sync's call.
+- **A waitlisted row satisfies a Mobilize `yes`.** Comparing status naively would
+  promote every waitlisted person back to `yes` on the next pass and waitlist the
+  next arrival instead — the queue would reshuffle nightly and the cap would never
+  hold. See `satisfies` in lib/attendee-sync.ts.
+- **Cancellations still land.** A waitlisted person who cancels in Mobilize is
+  updated to `no`, and the seat they were queued for is freed within the run.
+
+**Who gets the last seat.** Signups are sorted by Mobilize's `created_date`,
+oldest first, before any RSVP is written — first-come-first-served by signup
+time. Mobilize does return an event's attendances in that order already (checked
+across 393 signups on three events, none missing the field), but it is
+undocumented, and signups are fetched one event at a time: without an explicit
+sort, every signup on the first Mobilize event outranked every signup on the
+second, and twelve Solidarity sessions are mirrored by timeslots on **two**
+Mobilize events. A missing `created_date` sorts last rather than first, and the
+attendance id breaks ties.
+
+Note this only orders people the sync has not filed yet. Anyone already holding
+an RSVP keeps their seat, so the rule is first-come-first-served as long as the
+sync keeps up; after a long outage, the people who happen to be new in that run
+compete only with each other.
+
+Sessions found holding **more** attending RSVPs than their cap are reported in
+`overCapacity` and called out in Slack, listed worst-overage first. That is a
+standing condition for a human to resolve — raise the cap, or move people — and
+the sync cannot fix it: the RSVPs are already there. Twelve such sessions existed
+when this was written, so expect the first alerts to be about history rather than
+anything the run just did.
 
 ### Event API traps, verified against the live API
 

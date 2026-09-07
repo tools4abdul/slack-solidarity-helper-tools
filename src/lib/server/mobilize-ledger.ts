@@ -9,7 +9,12 @@
 import { eq } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 
-import type { Ledger, LedgerRecord, TimeslotPairing } from '../../../mobilize-migrator/lib/sync.js';
+import type {
+	Ledger,
+	LedgerRecord,
+	PushedCap,
+	TimeslotPairing,
+} from '../../../mobilize-migrator/lib/sync.js';
 import {
 	mobilizeGeocodedZips,
 	mobilizeSyncedEvents,
@@ -80,6 +85,35 @@ export class TursoLedger implements Ledger {
 			.insert(mobilizeGeocodedZips)
 			.values({ point, postalCode, lookedUpAt: new Date().toISOString() })
 			.onConflictDoNothing();
+	}
+
+	/**
+	 * What we last sent as each shift's `max_attendees`.
+	 *
+	 * Rows written before capacity tracking carry NULL, which reads as "uncapped".
+	 * That is the safe way round: a capped shift then looks like a change and gets
+	 * its cap established on the next pass, where the opposite would leave a real
+	 * cap unpushed forever.
+	 */
+	async pushedCaps(): Promise<Map<number, number | null>> {
+		const rows = await this.db
+			.select({
+				id: mobilizeSyncedTimeslots.mobilizeTimeslotId,
+				cap: mobilizeSyncedTimeslots.pushedMaxAttendees,
+			})
+			.from(mobilizeSyncedTimeslots);
+		return new Map(rows.map((row) => [row.id, row.cap ?? null]));
+	}
+
+	/** Written only after the create or update that carried these actually landed. */
+	async recordPushedCaps(entries: PushedCap[]): Promise<void> {
+		if (entries.length === 0) return;
+		for (const entry of entries) {
+			await this.db
+				.update(mobilizeSyncedTimeslots)
+				.set({ pushedMaxAttendees: entry.maxAttendees })
+				.where(eq(mobilizeSyncedTimeslots.mobilizeTimeslotId, entry.mobilizeTimeslotId));
+		}
 	}
 
 	/** Consumed by the attendee sync to file a signup against the right session. */

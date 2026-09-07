@@ -101,7 +101,8 @@ export const POST: RequestHandler = async ({ url }) => {
 				`lookback=${result.lookbackHours}h events ${result.events}, gone ${result.eventsGone}, ` +
 				`timeslots ${result.timeslots}, ` +
 				`signups ${result.participations}: ` +
-				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated}, profiles +${result.profilesCreated}, ` +
+				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated} (${result.rsvpsWaitlisted} waitlisted), ` +
+				`over-cap shifts ${result.overCapacity.length}, profiles +${result.profilesCreated}, ` +
 				`matched ${result.matchedByEmail}e/${result.matchedByPhone}p, unchanged ${result.unchanged}, ` +
 				`no-contact ${result.skippedNoContact}, bad-phone ${result.skippedInvalidPhone}, ` +
 				`phone-dropped ${result.profilesCreatedWithoutPhone}, ` +
@@ -137,9 +138,40 @@ export const POST: RequestHandler = async ({ url }) => {
 				`:busts_in_silhouette: Attendee sync: ${result.rsvpsCreated} new RSVP(s), ` +
 					`${result.rsvpsUpdated} updated, ${result.profilesCreated} new Solidarity profile(s) ` +
 					`across ${result.timeslots} shift(s).` +
+					(result.rsvpsWaitlisted > 0
+						? ` :ticket: ${result.rsvpsWaitlisted} of the new RSVP(s) were filed as *waitlisted* — ` +
+							'their shift was already at capacity.'
+						: '') +
 					(health.matchRate === null
 						? ''
 						: ` ${Math.round(health.matchRate * 100)}% of signups matched an existing profile.`),
+			);
+		}
+
+		// Shifts carrying more attending RSVPs than seats. Reported however the run
+		// went, dry included: it is a standing condition someone has to resolve — by
+		// raising the cap or moving people — and the sync cannot fix it on its own.
+		// New signups past the cap are waitlisted from here on, so this list should
+		// shrink rather than grow; one that keeps growing means seats are being
+		// filled somewhere other than this sync.
+		if (result.overCapacity.length > 0) {
+			const worst = [...result.overCapacity]
+				.sort((a, b) => b.attending - b.capacity - (a.attending - a.capacity))
+				.slice(0, 8);
+			await alert(
+				`:warning: *Attendee sync — ${result.overCapacity.length} shift(s) are over capacity.*\n` +
+					worst
+						.map(
+							(row) =>
+								`• session ${row.solidaritySessionId}: ${row.attending} attending / ${row.capacity} seats ` +
+								`(+${row.attending - row.capacity})`,
+						)
+						.join('\n') +
+					(result.overCapacity.length > worst.length
+						? `\n• …and ${result.overCapacity.length - worst.length} more`
+						: '') +
+					'\nNew Mobilize signups for these are being waitlisted rather than seated. Raise the cap ' +
+					'in Solidarity if the extra people are welcome.',
 			);
 		}
 

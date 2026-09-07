@@ -35,7 +35,13 @@ describe('normalizeAttendance', () => {
 			phone: '6169539282',
 			zipcode: '49504',
 			modifiedDate: 1785000100,
+			createdDate: 1785000000,
 		});
+	});
+
+	it('defaults a missing created_date to 0 rather than dropping the field', () => {
+		// The waitlist ordering sorts on this, so it has to be a number always.
+		expect(normalizeAttendance({ ...row, created_date: undefined })?.createdDate).toBe(0);
 	});
 
 	it('carries the documented statuses through', () => {

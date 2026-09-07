@@ -207,11 +207,20 @@ export async function runSolidarityAttendeeSync(
 	// Session start times come from Solidarity, which is also where the owning
 	// chapter lives (the fallback when a zip can't be mapped).
 	const events = await fetchAllEvents(SOLIDARITY_API_TOKEN);
-	const sessionMeta = new Map<number, { startsAt: number; chapterId: number | null }>();
+	const sessionMeta = new Map<
+		number,
+		{ startsAt: number; chapterId: number | null; capacity: number | null }
+	>();
 	for (const event of events) {
 		const chapterId = event.scope_type === 'Chapter' ? event.scope_id : null;
 		for (const session of event.event_sessions) {
-			sessionMeta.set(session.id, { startsAt: Date.parse(session.start_time), chapterId });
+			sessionMeta.set(session.id, {
+				startsAt: Date.parse(session.start_time),
+				chapterId,
+				// Solidarity uses 0 for "no cap", the same convention transform.ts
+				// handles on the way out. Anything at or below zero is uncapped.
+				capacity: (session.max_capacity ?? 0) > 0 ? session.max_capacity : null,
+			});
 		}
 	}
 
@@ -228,6 +237,7 @@ export async function runSolidarityAttendeeSync(
 			solidaritySessionId: pairing.solidaritySessionId,
 			eventChapterId: meta.chapterId,
 			startsAt: meta.startsAt,
+			sessionCapacity: meta.capacity,
 		});
 	}
 

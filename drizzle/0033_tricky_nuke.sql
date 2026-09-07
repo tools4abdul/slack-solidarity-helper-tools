@@ -1,0 +1,1 @@
+ALTER TABLE `mobilize_synced_timeslots` ADD `pushed_max_attendees` integer;
