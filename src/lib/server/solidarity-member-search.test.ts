@@ -7,7 +7,7 @@ const member = (
 	name: string,
 	email = '',
 	otherEmails: string[] = [],
-): SolidarityMemberEntry => ({ id, name, email, otherEmails });
+): SolidarityMemberEntry => ({ id, name, email, otherEmails, chapterIds: [] });
 
 const ROSTER: SolidarityMemberEntry[] = [
 	member(1, 'Jordan Rivera', 'jordan.rivera@example.org'),

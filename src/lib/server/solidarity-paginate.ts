@@ -77,6 +77,22 @@ export async function fetchWithRetry(
  * such a walk never gets a 429 in the first place, leaving the budget for
  * genuine contention.
  */
+/**
+ * Called as each page lands, with the rows read so far and how many exist.
+ *
+ * `total` is `null` whenever upstream won't say. Solidarity's `meta.total_count`
+ * is only a real collection total on some resources — on /v1/user_actions it
+ * just echoes back the page limit — so it is trusted only when it exceeds the
+ * page just returned, and reported as unknown otherwise. A wrong denominator is
+ * worse than none: it draws a progress bar that lies.
+ */
+export type PageProgress = (fetched: number, total: number | null) => void;
+
+interface PaginatedBody<T> {
+	data?: T[];
+	meta?: { total_count?: unknown };
+}
+
 export async function fetchPaginated<T>(
 	apiToken: string,
 	path: string,
@@ -84,6 +100,7 @@ export async function fetchPaginated<T>(
 	extraQuery = '',
 	logTag = 'solidarity',
 	paceMs = 0,
+	onProgress?: PageProgress,
 ): Promise<T[]> {
 	const all: T[] = [];
 	const budget: RetryBudget = { retriesUsed: 0 };
@@ -103,9 +120,17 @@ export async function fetchPaginated<T>(
 		if (!res.ok) {
 			throw new Error(`Solidarity ${resourceLabel} returned ${res.status}: ${await res.text()}`);
 		}
-		const body = (await res.json()) as { data?: T[] };
+		const body = (await res.json()) as PaginatedBody<T>;
 		const items = body.data ?? [];
 		all.push(...items);
+		if (onProgress) {
+			const claimed = body.meta?.total_count;
+			const total =
+				typeof claimed === 'number' && Number.isFinite(claimed) && claimed > items.length
+					? claimed
+					: null;
+			onProgress(all.length, total);
+		}
 		if (items.length < PAGE_LIMIT) break;
 	}
 	return all;

@@ -13,7 +13,7 @@
  *  ?.isAdmin` guards in the corresponding `+page.server.ts` / `+layout.server
  *  .ts` loads — this list only decides where login *sends* people; the routes
  *  still enforce their own access. */
-const ADMIN_ONLY_PREFIXES = ['/pending', '/members', '/settings'];
+const ADMIN_ONLY_PREFIXES = ['/pending', '/members', '/channel-chapter-diff', '/settings'];
 
 /** Generous cap: real destinations are short, and a cookie has to hold this. */
 const MAX_TARGET_LENGTH = 512;

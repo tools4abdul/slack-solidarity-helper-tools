@@ -1,0 +1,200 @@
+/* Channel vs. chapter diff page. Every selector is anchored to .ccd-page
+   because this import is global and survives client-side navigation. */
+
+.ccd-page {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-4);
+	max-width: 780px;
+	margin: 0 auto;
+	padding: var(--space-3);
+}
+
+.ccd-intro {
+	margin: 0;
+	color: var(--color-text-muted);
+}
+
+/* Side by side on a wide screen, stacked when there isn't room — the pickers
+   are read as a pair, so they wrap together rather than one going narrow. */
+.ccd-pickers {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-3);
+}
+
+.ccd-picker {
+	flex: 1 1 260px;
+	min-width: 0;
+}
+
+.ccd-label {
+	display: block;
+	margin-bottom: var(--space-1);
+	font-weight: 600;
+}
+
+.ccd-notice {
+	margin: var(--space-2) 0 0;
+	padding: var(--space-2);
+	border-radius: var(--radius-md);
+	background: var(--color-bg-hover);
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+}
+
+.ccd-empty {
+	margin: 0;
+	color: var(--color-text-muted);
+	font-style: italic;
+}
+
+.ccd-error {
+	margin: 0;
+	padding: var(--space-2) var(--space-3);
+	border-radius: var(--radius-md);
+	border: 1px solid var(--color-error);
+	color: var(--color-error);
+}
+
+.ccd-summary {
+	margin: 0;
+	color: var(--color-text-muted);
+}
+
+.ccd-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+	border-top: 1px solid var(--color-border);
+	padding-top: var(--space-3);
+}
+
+.ccd-list-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: var(--space-2);
+}
+
+.ccd-list-head h2 {
+	margin: 0;
+	font-size: var(--font-size-md);
+}
+
+.ccd-count {
+	border-radius: var(--radius-sm);
+	background: var(--color-bg-hover);
+	padding: 0 var(--space-2);
+	color: var(--color-text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Pushed to the far end so it never sits between the heading and its count. */
+.ccd-copy {
+	margin-left: auto;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	padding: var(--space-1) var(--space-3);
+	color: var(--color-text);
+	cursor: pointer;
+	font-size: var(--font-size-sm);
+}
+
+.ccd-copy:hover {
+	background: var(--color-bg-hover);
+}
+
+/* A textarea rather than a <p>: the whole point is to select and paste this,
+   and a long list needs to scroll in place instead of pushing the second list
+   off the screen. */
+.ccd-emails {
+	width: 100%;
+	box-sizing: border-box;
+	resize: vertical;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	padding: var(--space-2);
+	color: var(--color-text);
+	font-family: var(--font-mono);
+	font-size: var(--font-size-sm);
+	line-height: 1.5;
+}
+
+.ccd-caveats {
+	margin: 0;
+	padding-left: var(--space-4);
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+}
+
+/* Activity window control. Reads as one sentence, so the parts sit on a
+   baseline row and only wrap when there is genuinely no room. */
+.ccd-activity {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: var(--space-2);
+	border-top: 1px solid var(--color-border-subtle);
+	padding-top: var(--space-3);
+}
+
+.ccd-check {
+	display: flex;
+	align-items: baseline;
+	gap: var(--space-2);
+}
+
+.ccd-days {
+	width: 5em;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	padding: var(--space-1) var(--space-2);
+	color: var(--color-text);
+	font: inherit;
+}
+
+.ccd-days:disabled {
+	color: var(--color-text-faint);
+}
+
+.ccd-days-unit {
+	color: var(--color-text-muted);
+}
+
+.ccd-hint {
+	flex-basis: 100%;
+	margin: 0;
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+}
+
+.ccd-steps {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.ccd-step-head {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: var(--space-2);
+	margin-bottom: var(--space-1);
+}
+
+.ccd-step-count {
+	color: var(--color-text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.ccd-bar {
+	width: 100%;
+	height: var(--space-2);
+}

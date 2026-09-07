@@ -50,6 +50,7 @@ describe('isAdminOnlyPath', () => {
 		expect(isAdminOnlyPath('/settings')).toBe(true);
 		expect(isAdminOnlyPath('/members')).toBe(true);
 		expect(isAdminOnlyPath('/members?user=U123')).toBe(true);
+		expect(isAdminOnlyPath('/channel-chapter-diff')).toBe(true);
 		expect(isAdminOnlyPath('/settings/deep/link')).toBe(true);
 	});
 
