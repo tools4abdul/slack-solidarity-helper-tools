@@ -255,9 +255,25 @@ the two.
 into Solidarity as an RSVP. Subtracting _all_ Solidarity RSVPs would therefore
 charge each Mobilize signup twice — once against Mobilize's own tally, once by
 shrinking the cap we hand it — and a shift would close at half capacity. Only
-RSVPs whose `source_system` is not `mobilize` are counted; see
-`countSolidaritySeats` in lib/seats.ts. This is the reason that filter exists,
-and it is not an optimization.
+RSVPs whose `source_system` is not `mobilize` are counted; see `countSeats` in
+lib/seats.ts. This is the reason that filter exists, and it is not an
+optimization.
+
+**The floor under every cap.** Mobilize refuses to cap a timeslot below the
+signups it is already holding — `Timeslot capacity cannot be less than 6
+(current attendees)`, a 400 that takes the whole event's update down with it,
+title edit and all. Both sides take signups at once, so this is reachable
+without anyone doing anything wrong: 15 seats spent in Solidarity against a cap
+of 20 leaves 5, and Mobilize may already have 6. So the cap pushed is never less
+than what Mobilize holds, counted from those same mirrored RSVPs (`yes` **and**
+`waitlisted` — we waitlist an over-cap signup in Solidarity, but Mobilize goes
+on counting that person as an attendee). The shift closes to further signups,
+which is as close to the cap as anyone can get without throwing people out.
+
+That count is a run behind by nature, since it only knows the signups the
+attendee sync has mirrored. For the few that arrive in between, the rejection
+itself names the number, index-aligned with the timeslots we sent, and the
+update is retried once with those caps raised — `raiseCapsToFloors` in lib/sync.ts.
 
 **`max_attendees` cannot be read back.** Mobilize's event read returns
 `start_date, end_date, instructions, id, is_full` — the cap is write-only, so

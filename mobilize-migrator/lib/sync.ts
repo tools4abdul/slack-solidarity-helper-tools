@@ -12,6 +12,7 @@ import {
 	getOrgEvent,
 	listUpcomingOrgEvents,
 	MobilizeError,
+	parseTimeslotCapacityFloors,
 	updateEvent,
 	type MobilizeApiConfig,
 	type MobilizeEvent,
@@ -22,7 +23,7 @@ import {
 	type EventContact,
 	type Timeslot,
 } from './payload.js';
-import { applySeatsTaken, cappedSessionIds } from './seats.js';
+import { applySeatsTaken, cappedSessionIds, type SeatCount } from './seats.js';
 import type { PlannedEvent } from './transform.js';
 
 /** Timeslots are matched between systems by start time, within this slack. */
@@ -102,16 +103,17 @@ export interface SyncConfig {
 	/** Milliseconds between writes, to stay clear of Cloudflare rate limiting. */
 	pauseMs?: number;
 	/**
-	 * Seats already spent, per Solidarity session, on signups that did NOT come
-	 * from Mobilize — so Mobilize can be handed only what is left and enforce the
-	 * cap itself. Injected rather than called directly: this module has no
-	 * Solidarity token, by the same rule that keeps it free of $env.
+	 * Seats already spent, per Solidarity session, split by the system each signup
+	 * came from — so Mobilize can be handed only what is left and enforce the cap
+	 * itself, and never a cap under the signups it is already holding. Injected
+	 * rather than called directly: this module has no Solidarity token, by the
+	 * same rule that keeps it free of $env.
 	 *
 	 * Omit it and caps go to Mobilize at their full Solidarity value, which is the
 	 * behaviour before any of this existed. A session the counter leaves out is
 	 * treated the same way — a read that failed must not close a shift.
 	 */
-	seatsTaken?: (sessionIds: number[]) => Promise<Map<number, number>>;
+	seatsTaken?: (sessionIds: number[]) => Promise<Map<number, SeatCount>>;
 	log?: (message: string) => void;
 }
 
@@ -266,6 +268,39 @@ export function reconcileTimeslots(
 	return { timeslots, orphanCount: orphans.length, changed, capacityChanged, pairings };
 }
 
+/**
+ * The same timeslots with every cap Mobilize called too low raised to the count
+ * it is holding — or null when the rejection was about something else, so the
+ * caller rethrows and reports it as the failure it is.
+ *
+ * Mobilize will not cap a shift below its current attendees, and refuses the
+ * whole event rather than that one shift: a title edit fails because a different
+ * shift is two signups over. Handing it its own number closes that shift to
+ * further signups, which is the intent of a cap that has already been passed.
+ *
+ * seats.ts computes the same floor a run ahead of time and for free, so this is
+ * the narrow case that arithmetic cannot cover: signups Mobilize took after the
+ * seat count was read, or ones the attendee sync has not mirrored yet.
+ */
+export function raiseCapsToFloors(slots: PutTimeslot[], err: unknown): PutTimeslot[] | null {
+	const floors = parseTimeslotCapacityFloors(err);
+	if (floors.size === 0) return null;
+	let raised = false;
+	const next = slots.map((slot, index) => {
+		const floor = floors.get(index);
+		// An uncapped slot is left alone: Mobilize cannot have rejected it for a
+		// cap it was not given, and turning "no limit" into one would be worse than
+		// the failure.
+		if (floor === undefined || slot.maxAttendees === null || slot.maxAttendees >= floor) {
+			return slot;
+		}
+		raised = true;
+		return { ...slot, maxAttendees: floor };
+	});
+	// Nothing to raise means the retry would send exactly what was just refused.
+	return raised ? next : null;
+}
+
 /** Fields worth a PUT. Location is compared loosely — Mobilize normalizes it. */
 export function describeChanges(
 	plan: PlannedEvent,
@@ -404,7 +439,7 @@ export async function runSync(
 	 * meant re-counting all of them on every chunk — up to twelve times a pass —
 	 * to serve the handful each chunk actually writes.
 	 */
-	const seatCache = new Map<number, number>();
+	const seatCache = new Map<number, SeatCount>();
 	const seated = async (plan: PlannedEvent): Promise<PlannedEvent> => {
 		if (!config.seatsTaken) return plan;
 		const wanted = cappedSessionIds(plan).filter((id) => !seatCache.has(id));
@@ -588,12 +623,31 @@ export async function runSync(
 			const imageUrl = live.featured_image_url ? undefined : await resolveImage(zipped);
 			// reconcileTimeslots owns timeslot identity, so its list — ids and all —
 			// replaces the one payloadForPlan derived from the plan alone.
-			const payload = payloadForPlan(zipped, config.contact, imageUrl, slotPlan.timeslots);
-
-			await updateEvent(config.api, record.mobilizeEventId, payload);
+			let sentSlots = slotPlan.timeslots;
+			try {
+				await updateEvent(
+					config.api,
+					record.mobilizeEventId,
+					payloadForPlan(zipped, config.contact, imageUrl, sentSlots),
+				);
+			} catch (err) {
+				const raised = raiseCapsToFloors(sentSlots, err);
+				if (!raised) throw err;
+				sentSlots = raised;
+				log(
+					`capacity: "${plan.title}" has shifts Mobilize has already filled past their ` +
+						'cap — re-sending those at what Mobilize holds',
+				);
+				await updateEvent(
+					config.api,
+					record.mobilizeEventId,
+					payloadForPlan(zipped, config.contact, imageUrl, sentSlots),
+				);
+			}
 			// Only after the PUT lands: recording a cap we did not manage to send
-			// would make the next run believe Mobilize already has it.
-			await ledger.recordPushedCaps?.(capsFrom(slotPlan.timeslots));
+			// would make the next run believe Mobilize already has it. The raised
+			// caps, not the refused ones — the ledger records what Mobilize has.
+			await ledger.recordPushedCaps?.(capsFrom(sentSlots));
 			report.updated++;
 			report.updatedTitles.push(`${plan.title} (${changes.join(', ')})`);
 			log(`updated #${record.mobilizeEventId} "${plan.title}" — ${changes.join(', ')}`);
