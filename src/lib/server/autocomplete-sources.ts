@@ -10,6 +10,8 @@
 
 import type { WebClient } from '@slack/web-api';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { startWalk, finishWalk } from './walk-progress.js';
+import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
 
 // ---------------------------------------------------------------------------
 // Exported value types
@@ -61,6 +63,19 @@ export interface SolidarityMemberEntry {
 	/** `other_emails`, lowercased. Members are routinely findable only by one
 	 *  of these, which is often exactly why the automatic email match failed. */
 	otherEmails: string[];
+	/** Every chapter this member belongs to. Carried so one roster walk can
+	 *  answer "who is in chapter N?" for any N — see
+	 *  `getSolidarityChapterMembers`. */
+	chapterIds: number[];
+}
+
+/** One member of a single Solidarity chapter, for the channel-vs-chapter diff.
+ *  Only what an email match needs — the page reports emails and counts, never
+ *  names, so nothing else is worth carrying (or worth shipping to a browser). */
+export interface SolidarityChapterMemberEntry {
+	id: number;
+	/** Primary email, lowercased and trimmed; '' when the record has none. */
+	email: string;
 }
 
 export interface AutocompleteResult<T> {
@@ -425,6 +440,8 @@ const ROSTER_TTL_MS = 60 * 60 * 1000;
 // 429s and aborts partway through (see fetchPaginated's `paceMs`).
 const ROSTER_PACE_MS = 600;
 
+const ROSTER_WALK_KEY = 'solidarity-roster';
+
 interface RawSolidarityUser {
 	id: number;
 	email?: string | null;
@@ -432,6 +449,17 @@ interface RawSolidarityUser {
 	last_name?: string | null;
 	alternate_name?: string | null;
 	other_emails?: string[] | null;
+	chapter_id?: number | null;
+	chapter_ids?: number[] | null;
+}
+
+/** Same `chapter_ids ?? [chapter_id]` fallback the team_join handler,
+ *  chapter-reconcile and the nightly snapshot each apply — `chapter_ids` is the
+ *  modern field and `chapter_id` the legacy single-chapter one. */
+function rawChapterIds(raw: RawSolidarityUser): number[] {
+	if (raw.chapter_ids?.length) return raw.chapter_ids;
+	if (raw.chapter_id != null) return [raw.chapter_id];
+	return [];
 }
 
 function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
@@ -451,6 +479,7 @@ function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 			.filter((e): e is string => typeof e === 'string')
 			.map((e) => e.trim().toLowerCase())
 			.filter(Boolean),
+		chapterIds: rawChapterIds(raw),
 	};
 }
 
@@ -471,22 +500,60 @@ export function getSolidarityMembers(
 		membersEntry,
 		'solidarity-members',
 		token,
-		async () => {
-			const raw = await fetchPaginated<RawSolidarityUser>(
-				token,
-				'/v1/users',
-				'/v1/users roster',
-				'',
-				'autocomplete',
-				ROSTER_PACE_MS,
-			);
-			const items = raw.filter((u) => typeof u.id === 'number').map(toMemberEntry);
-			items.sort(byName);
-			return items;
-		},
+		() =>
+			// Queued against every other Solidarity walk: this one is paced right up
+			// to the rate limit, so it must not overlap an activity walk started by
+			// a different request.
+			withSolidarityWalkLock(async () => {
+				// The one walk in the app long enough that an admin needs to see it
+				// moving — minutes, on a cold cache.
+				const report = startWalk(ROSTER_WALK_KEY, 'Reading the Solidarity roster');
+				try {
+					const raw = await fetchPaginated<RawSolidarityUser>(
+						token,
+						'/v1/users',
+						'/v1/users roster',
+						'',
+						'autocomplete',
+						ROSTER_PACE_MS,
+						report,
+					);
+					const items = raw.filter((u) => typeof u.id === 'number').map(toMemberEntry);
+					items.sort(byName);
+					return items;
+				} finally {
+					finishWalk(ROSTER_WALK_KEY);
+				}
+			}),
 		opts,
 		ROSTER_TTL_MS,
 	);
+}
+
+/**
+ * Every member of one Solidarity chapter, by email — the channel-vs-chapter
+ * page's Solidarity side.
+ *
+ * Derived from the single cached roster rather than its own request, because
+ * `/v1/users` does **not** honour a `chapter_ids` filter: a filtered walk was
+ * measured against the live API on 2026-09-06 and came back with the entire
+ * roster, at the full ~3-minute cost. Since a chapter walk is a roster walk
+ * whatever we ask for, asking once and bucketing locally means the first pick
+ * pays for all of them — and shares that cost with the member-lookup picker,
+ * which walks the same roster.
+ */
+export async function getSolidarityChapterMembers(
+	token: string,
+	chapterId: number,
+	opts: AutocompleteOptions = {},
+): Promise<AutocompleteResult<SolidarityChapterMemberEntry>> {
+	const roster = await getSolidarityMembers(token, opts);
+	return {
+		...roster,
+		items: roster.items
+			.filter((m) => m.chapterIds.includes(chapterId))
+			.map((m) => ({ id: m.id, email: m.email })),
+	};
 }
 
 // Lookup tables for the member activity feeds. Neither /v1/user_actions nor

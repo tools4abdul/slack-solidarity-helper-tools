@@ -7,8 +7,10 @@ import {
 	getSolidarityCustomProperties,
 	getSolidarityUserLists,
 	getSolidarityMembers,
+	getSolidarityChapterMembers,
 	_resetAutocompleteCachesForTests,
 } from './autocomplete-sources.js';
+import { _resetWalkLockForTests } from './solidarity-walk-lock.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -50,6 +52,7 @@ function chaptersPage(items: unknown[]) {
 
 beforeEach(() => {
 	_resetAutocompleteCachesForTests();
+	_resetWalkLockForTests();
 	vi.clearAllMocks();
 });
 
@@ -532,8 +535,8 @@ describe('getSolidarityMembers', () => {
 		const { items } = await getSolidarityMembers('tok');
 
 		expect(items).toEqual([
-			{ id: 1, name: 'Ada Alpha', email: 'u1@example.org', otherEmails: [] },
-			{ id: 2, name: 'Zoe Zulu', email: 'u2@example.org', otherEmails: [] },
+			{ id: 1, name: 'Ada Alpha', email: 'u1@example.org', otherEmails: [], chapterIds: [] },
+			{ id: 2, name: 'Zoe Zulu', email: 'u2@example.org', otherEmails: [], chapterIds: [] },
 		]);
 	});
 
@@ -760,5 +763,90 @@ describe('getSolidarityMembers with staleWhileRevalidate', () => {
 
 		expect(result.refreshing).toBe(false);
 		expect(result.items).toHaveLength(1);
+	});
+});
+
+// ===========================================================================
+// Channel-vs-chapter diff — per-chapter membership
+// ===========================================================================
+
+describe('getSolidarityChapterMembers', () => {
+	it('buckets the roster by chapter and returns lean id/email entries', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					rosterPage([
+						rawUser(1, { chapter_ids: [7] }),
+						rawUser(2, { chapter_ids: [8, 9] }),
+						rawUser(3, { chapter_ids: [] }),
+						rawUser(4, {}),
+						rawUser(5, { chapter_ids: [9, 7] }),
+					]),
+				),
+		);
+
+		const { items } = await getSolidarityChapterMembers('tok', 7);
+
+		expect(items).toEqual([
+			{ id: 1, email: 'u1@example.org' },
+			{ id: 5, email: 'u5@example.org' },
+		]);
+	});
+
+	it('honours the legacy singular chapter_id when chapter_ids is absent', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					rosterPage([rawUser(1, { chapter_id: 7 }), rawUser(2, { chapter_id: 8 })]),
+				),
+		);
+
+		const { items } = await getSolidarityChapterMembers('tok', 7);
+
+		expect(items).toEqual([{ id: 1, email: 'u1@example.org' }]);
+	});
+
+	it('lowercases emails and keeps members with none as an empty string', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					rosterPage([
+						rawUser(1, { chapter_ids: [7], email: '  MiXeD@Example.ORG ' }),
+						rawUser(2, { chapter_ids: [7], email: null }),
+					]),
+				),
+		);
+
+		const { items } = await getSolidarityChapterMembers('tok', 7);
+
+		expect(items).toEqual([
+			{ id: 1, email: 'mixed@example.org' },
+			{ id: 2, email: '' },
+		]);
+	});
+
+	// The reason this is derived from the roster rather than asking upstream per
+	// chapter: /v1/users ignores a chapter filter, so a second chapter would
+	// otherwise mean a second full-roster walk.
+	it('answers a second chapter from the same single roster walk', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				rosterPage([rawUser(1, { chapter_ids: [7] }), rawUser(2, { chapter_ids: [8] })]),
+			);
+		vi.stubGlobal('fetch', fetchMock);
+
+		const first = await getSolidarityChapterMembers('tok', 7);
+		const second = await getSolidarityChapterMembers('tok', 8);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(first.items).toEqual([{ id: 1, email: 'u1@example.org' }]);
+		expect(second.items).toEqual([{ id: 2, email: 'u2@example.org' }]);
 	});
 });

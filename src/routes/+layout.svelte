@@ -25,6 +25,7 @@
 			? [
 					{ href: '/pending', label: 'Pending applicants' },
 					{ href: '/members', label: 'Member lookup' },
+					{ href: '/channel-chapter-diff', label: 'Channel vs. chapter' },
 					{ href: '/turfs', label: 'Turf checkout' },
 					{ href: '/turfs/organizer', label: 'Turf right now' },
 					{ href: '/turfs/activity', label: 'Turf activity' },
