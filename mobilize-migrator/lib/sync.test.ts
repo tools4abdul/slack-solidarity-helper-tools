@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MobilizeApiConfig, MobilizeEvent } from './mobilize.js';
 import {
 	describeChanges,
+	raiseCapsToFloors,
 	reconcileTimeslots,
 	runSync,
 	type Ledger,
 	type LedgerRecord,
 	type PushedCap,
 } from './sync.js';
+import { MobilizeError } from './mobilize.js';
+import type { SeatCount } from './seats.js';
 import type { EventContact } from './payload.js';
 import type { PlannedEvent } from './transform.js';
 
@@ -820,7 +823,12 @@ describe('runSync capacity push', () => {
 	};
 
 	/** A capped shift already mirrored to Mobilize, with a cap recorded as pushed. */
-	function setup(options: { pushedCap: number | null; seatsTaken: number }) {
+	function setup(options: {
+		pushedCap: number | null;
+		seatsTaken: SeatCount;
+		/** Reject the first PUT the way Mobilize rejects a cap under its own count. */
+		rejectFirstPutBelow?: number;
+	}) {
 		const planned = plan({
 			timeslots: [
 				{
@@ -851,7 +859,35 @@ describe('runSync capacity push', () => {
 		});
 		const puts: Record<string, unknown>[] = [];
 		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
-			if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
+			if (init?.method === 'PUT') {
+				const sent = JSON.parse(String(init.body)) as {
+					timeslots: { max_attendees: number | null }[];
+				};
+				puts.push(sent);
+				const floor = options.rejectFirstPutBelow;
+				if (floor !== undefined && (sent.timeslots[0]!.max_attendees ?? Infinity) < floor) {
+					// Verbatim shape of a live rejection, padding entry and all.
+					return {
+						ok: false,
+						status: 400,
+						text: async () =>
+							JSON.stringify({
+								data: null,
+								error: {
+									timeslots: [
+										{
+											non_field_errors: [
+												`Timeslot capacity cannot be less than ${floor} (current attendees)`,
+											],
+										},
+										{},
+									],
+								},
+							}),
+						headers: new Headers(),
+					};
+				}
+			}
 			return { ok: true, status: 200, text: async () => body, headers: new Headers() };
 		});
 
@@ -884,7 +920,7 @@ describe('runSync capacity push', () => {
 			return new Map(ids.map((id) => [id, options.seatsTaken]));
 		};
 
-		return { planned, ledger, puts, recordedCaps, asked, seatsTaken };
+		return { planned, ledger, puts, recordedCaps, asked, seatsTaken, body };
 	}
 
 	const run = (fixture: ReturnType<typeof setup>) =>
@@ -903,7 +939,7 @@ describe('runSync capacity push', () => {
 		);
 
 	it('hands Mobilize the cap minus the seats Solidarity already spent', async () => {
-		const fixture = setup({ pushedCap: 20, seatsTaken: 7 });
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
 
 		const report = await run(fixture);
 
@@ -913,7 +949,7 @@ describe('runSync capacity push', () => {
 	});
 
 	it('records the cap only once the PUT has landed', async () => {
-		const fixture = setup({ pushedCap: 20, seatsTaken: 7 });
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
 
 		await run(fixture);
 
@@ -923,7 +959,7 @@ describe('runSync capacity push', () => {
 	it('leaves the event alone when the cap has not moved', async () => {
 		// Nothing else differs, so without this the seat count would trigger a PUT
 		// on every capped event on every pass.
-		const fixture = setup({ pushedCap: 13, seatsTaken: 7 });
+		const fixture = setup({ pushedCap: 13, seatsTaken: { solidarity: 7, mobilize: 0 } });
 
 		const report = await run(fixture);
 
@@ -932,7 +968,7 @@ describe('runSync capacity push', () => {
 	});
 
 	it('asks only about sessions whose shift carries a cap', async () => {
-		const fixture = setup({ pushedCap: 20, seatsTaken: 7 });
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
 
 		await run(fixture);
 
@@ -940,7 +976,7 @@ describe('runSync capacity push', () => {
 	});
 
 	it('pushes the cap unadjusted when the seat count fails', async () => {
-		const fixture = setup({ pushedCap: null, seatsTaken: 0 });
+		const fixture = setup({ pushedCap: null, seatsTaken: { solidarity: 0, mobilize: 0 } });
 		fixture.seatsTaken = async () => {
 			throw new Error('Solidarity rsvp list returned 500');
 		};
@@ -949,5 +985,118 @@ describe('runSync capacity push', () => {
 
 		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 20 }] });
 		expect(report.errors[0]).toContain('seat count');
+	});
+
+	it('never caps a shift below the signups Mobilize already holds', async () => {
+		// 15 spent in Solidarity leaves 5 of the cap of 20, but Mobilize has taken 6
+		// of its own. Sending 5 is the 400 this arithmetic exists to avoid.
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 15, mobilize: 6 } });
+
+		const report = await run(fixture);
+
+		expect(report.failed).toBe(0);
+		expect(fixture.puts).toHaveLength(1);
+		expect(fixture.puts[0]).toMatchObject({ timeslots: [{ id: 5001, max_attendees: 6 }] });
+	});
+
+	it('retries at the count Mobilize names when its signups outran the seat count', async () => {
+		// The mirrored count is a run behind by nature: someone can sign up in
+		// Mobilize between the seat read and the PUT. Mobilize names its own count
+		// in the rejection, so the event lands rather than failing over two people.
+		const fixture = setup({
+			pushedCap: 20,
+			seatsTaken: { solidarity: 15, mobilize: 6 },
+			rejectFirstPutBelow: 8,
+		});
+
+		const report = await run(fixture);
+
+		expect(report.failed).toBe(0);
+		expect(report.updated).toBe(1);
+		expect(
+			fixture.puts.map(
+				(put) => (put as { timeslots: { max_attendees: number }[] }).timeslots[0]!.max_attendees,
+			),
+		).toEqual([6, 8]);
+	});
+
+	it('records the raised cap, not the one Mobilize refused', async () => {
+		// Record the refused 6 and the next run sees no change to push, leaving
+		// Mobilize capped at a number it never accepted.
+		const fixture = setup({
+			pushedCap: 20,
+			seatsTaken: { solidarity: 15, mobilize: 6 },
+			rejectFirstPutBelow: 8,
+		});
+
+		await run(fixture);
+
+		expect(fixture.recordedCaps).toEqual([{ mobilizeTimeslotId: 5001, maxAttendees: 8 }]);
+	});
+
+	it('reports a 400 that is not about capacity instead of retrying it', async () => {
+		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
+		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+			if (init?.method === 'PUT') {
+				return {
+					ok: false,
+					status: 400,
+					text: async () =>
+						JSON.stringify({ error: { description: ['This field may not be blank.'] } }),
+					headers: new Headers(),
+				};
+			}
+			return { ok: true, status: 200, text: async () => fixture.body, headers: new Headers() };
+		});
+
+		const report = await run(fixture);
+
+		expect(report.failed).toBe(1);
+		expect(report.errors[0]).toContain('This field may not be blank');
+	});
+});
+
+describe('raiseCapsToFloors', () => {
+	const slots = [
+		{ id: 1, startDate: 0, endDate: 1, maxAttendees: 5 },
+		{ id: 2, startDate: 2, endDate: 3, maxAttendees: 4 },
+	];
+
+	function rejection(timeslots: unknown[]): MobilizeError {
+		const body = JSON.stringify({ data: null, error: { timeslots } });
+		return new MobilizeError('returned 400', 400, body);
+	}
+
+	it('raises only the shift Mobilize named, by its position in what we sent', () => {
+		const raised = raiseCapsToFloors(
+			slots,
+			rejection([
+				{},
+				{ non_field_errors: ['Timeslot capacity cannot be less than 10 (current attendees)'] },
+			]),
+		);
+
+		expect(raised?.map((slot) => slot.maxAttendees)).toEqual([5, 10]);
+	});
+
+	it('leaves an uncapped shift uncapped even if it is named', () => {
+		// Mobilize cannot have rejected a cap it was not given, and inventing one
+		// here would be worse than the failure.
+		const raised = raiseCapsToFloors(
+			[{ id: 1, startDate: 0, endDate: 1, maxAttendees: null }],
+			rejection([
+				{ non_field_errors: ['Timeslot capacity cannot be less than 3 (current attendees)'] },
+			]),
+		);
+
+		expect(raised).toBeNull();
+	});
+
+	it('declines any other rejection so the caller reports it', () => {
+		expect(
+			raiseCapsToFloors(slots, rejection([{ start_date: ['Cannot modify past timeslot'] }])),
+		).toBeNull();
+		expect(raiseCapsToFloors(slots, new MobilizeError('nope', 403, ''))).toBeNull();
+		expect(raiseCapsToFloors(slots, new Error('network'))).toBeNull();
 	});
 });

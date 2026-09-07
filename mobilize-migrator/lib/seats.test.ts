@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-	applySeatsTaken,
-	cappedSessionIds,
-	countSolidaritySeats,
-	remainingSeats,
-} from './seats.js';
+import { applySeatsTaken, cappedSessionIds, countSeats, remainingSeats } from './seats.js';
 import type { ExistingRsvp } from './rsvp.js';
 import type { PlannedEvent } from './transform.js';
 
@@ -56,46 +51,73 @@ function plan(
 	};
 }
 
-describe('countSolidaritySeats', () => {
-	it('ignores RSVPs this sync wrote from Mobilize', () => {
+describe('countSeats', () => {
+	it('keeps the RSVPs this sync wrote from Mobilize out of the Solidarity count', () => {
 		// The whole point: these people already occupy a Mobilize seat, so counting
-		// them here would charge them twice and close the shift at half capacity.
+		// them against the cap would charge them twice and close the shift at half
+		// capacity.
 		const rows = [
 			rsvp({ id: 1, source_system: 'web' }),
 			rsvp({ id: 2, source_system: 'mobilize' }),
 			rsvp({ id: 3, source_system: 'mobilize' }),
 		];
-		expect(countSolidaritySeats(rows)).toBe(1);
+		expect(countSeats(rows)).toEqual({ solidarity: 1, mobilize: 2 });
 	});
 
-	it('counts only yes — a cancellation or a waitlist holds no seat', () => {
+	it('counts only yes towards Solidarity — a cancellation or a waitlist holds no seat', () => {
 		const rows = [
 			rsvp({ id: 1, is_attending: 'yes' }),
 			rsvp({ id: 2, is_attending: 'no' }),
 			rsvp({ id: 3, is_attending: 'maybe' }),
 			rsvp({ id: 4, is_attending: 'waitlisted' }),
 		];
-		expect(countSolidaritySeats(rows)).toBe(1);
+		expect(countSeats(rows).solidarity).toBe(1);
+	});
+
+	it('counts a waitlisted Mobilize signup as one Mobilize is still holding', () => {
+		// We waitlist an over-cap signup in Solidarity; Mobilize knows nothing of
+		// that and goes on counting them as an attendee. Miss this and the cap we
+		// push lands under Mobilize's own count, which it rejects outright.
+		const rows = [
+			rsvp({ id: 1, source_system: 'mobilize', is_attending: 'yes' }),
+			rsvp({ id: 2, source_system: 'mobilize', is_attending: 'waitlisted' }),
+			rsvp({ id: 3, source_system: 'mobilize', is_attending: 'no' }),
+		];
+		expect(countSeats(rows).mobilize).toBe(2);
 	});
 
 	it('counts rows with no source at all, which predate source tracking', () => {
-		expect(countSolidaritySeats([rsvp({ source_system: null }), rsvp({ id: 2 })])).toBe(2);
+		expect(countSeats([rsvp({ source_system: null }), rsvp({ id: 2 })])).toEqual({
+			solidarity: 2,
+			mobilize: 0,
+		});
 	});
 });
 
 describe('remainingSeats', () => {
 	it('leaves an uncapped shift uncapped', () => {
-		expect(remainingSeats(null, 12)).toBeNull();
+		expect(remainingSeats(null, { solidarity: 12, mobilize: 3 })).toBeNull();
 	});
 
 	it('subtracts the seats Solidarity has spent', () => {
-		expect(remainingSeats(20, 8)).toBe(12);
+		expect(remainingSeats(20, { solidarity: 8, mobilize: 0 })).toBe(12);
 	});
 
 	it('floors at zero rather than going negative', () => {
 		// Mobilize reads 0 as "nobody may sign up", which is what an over-full
 		// shift wants; a negative would be nonsense to send.
-		expect(remainingSeats(10, 25)).toBe(0);
+		expect(remainingSeats(10, { solidarity: 25, mobilize: 0 })).toBe(0);
+	});
+
+	it('never goes below what Mobilize is already holding', () => {
+		// 15 spent in Solidarity leaves 5 of a cap of 20, but Mobilize has already
+		// taken 6. It refuses a cap under its own attendee count and fails the
+		// whole event with it, so the shift goes out closed at 6 instead.
+		expect(remainingSeats(20, { solidarity: 15, mobilize: 6 })).toBe(6);
+	});
+
+	it('still hands over the seats left when Mobilize holds fewer', () => {
+		expect(remainingSeats(20, { solidarity: 5, mobilize: 3 })).toBe(15);
 	});
 });
 
@@ -104,8 +126,8 @@ describe('applySeatsTaken', () => {
 		const result = applySeatsTaken(
 			plan([10, 11], [20, 5]),
 			new Map([
-				[10, 8],
-				[11, 1],
+				[10, { solidarity: 8, mobilize: 0 }],
+				[11, { solidarity: 1, mobilize: 0 }],
 			]),
 		);
 		expect(result.timeslots.map((s) => s.maxAttendees)).toEqual([12, 4]);
@@ -113,18 +135,26 @@ describe('applySeatsTaken', () => {
 
 	it('leaves a session it has no count for at its full cap', () => {
 		// A failed read must not read as "the shift is full".
-		const result = applySeatsTaken(plan([10, 11], [20, 5]), new Map([[10, 8]]));
+		const result = applySeatsTaken(
+			plan([10, 11], [20, 5]),
+			new Map([[10, { solidarity: 8, mobilize: 0 }]]),
+		);
 		expect(result.timeslots.map((s) => s.maxAttendees)).toEqual([12, 5]);
 	});
 
 	it('never turns an uncapped shift into a capped one', () => {
-		const result = applySeatsTaken(plan([10], [null]), new Map([[10, 9]]));
+		const result = applySeatsTaken(
+			plan([10], [null]),
+			new Map([[10, { solidarity: 9, mobilize: 4 }]]),
+		);
 		expect(result.timeslots[0]!.maxAttendees).toBeNull();
 	});
 
 	it('returns the plan untouched when nothing is capped', () => {
 		const original = plan([10, 11], [null, null]);
-		expect(applySeatsTaken(original, new Map([[10, 3]]))).toBe(original);
+		expect(applySeatsTaken(original, new Map([[10, { solidarity: 3, mobilize: 0 }]]))).toBe(
+			original,
+		);
 	});
 });
 

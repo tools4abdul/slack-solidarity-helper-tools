@@ -17,7 +17,7 @@ import { loadMobilizeApi } from './mobilize-api.js';
 import { TursoLedger } from './mobilize-ledger.js';
 import { fetchAllEvents } from '../../../mobilize-migrator/lib/solidarity.js';
 import { listSessionRsvps } from '../../../mobilize-migrator/lib/rsvp.js';
-import { countSolidaritySeats } from '../../../mobilize-migrator/lib/seats.js';
+import { countSeats, type SeatCount } from '../../../mobilize-migrator/lib/seats.js';
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
 import { planMigration } from '../../../mobilize-migrator/lib/transform.js';
 import { loadSettings } from './settings.js';
@@ -45,27 +45,25 @@ const DEFAULT_BUDGET_MS = 120_000;
 const SEAT_COUNT_PAUSE_MS = 550;
 
 /**
- * Seats each capped session has already spent on signups that did NOT come from
- * Mobilize, so the event sync can hand Mobilize only what is left and let it
+ * Seats each capped session has already spent, split by which system the signup
+ * came from, so the event sync can hand Mobilize only what is left and let it
  * enforce the cap itself.
  *
- * The Mobilize-origin exclusion is the whole trick — see lib/seats.ts. Counting
- * every RSVP would charge each Mobilize signup twice, once against Mobilize's
- * own tally and once by shrinking the cap we give it, and the shift would close
- * at half capacity.
+ * The Mobilize-origin split is the whole trick — see lib/seats.ts. Counting
+ * every RSVP against the cap would charge each Mobilize signup twice, once
+ * against Mobilize's own tally and once by shrinking the cap we give it, and the
+ * shift would close at half capacity. Those same mirrored rows are what says how
+ * many signups Mobilize is holding, which is the floor under any cap we push.
  *
  * A session whose read fails is simply left out of the map, which the sync reads
  * as "no adjustment" rather than as a full or empty shift.
  */
-async function countSeatsTaken(sessionIds: number[]): Promise<Map<number, number>> {
-	const seats = new Map<number, number>();
+async function countSeatsTaken(sessionIds: number[]): Promise<Map<number, SeatCount>> {
+	const seats = new Map<number, SeatCount>();
 	for (const [index, sessionId] of sessionIds.entries()) {
 		if (index > 0) await new Promise((r) => setTimeout(r, SEAT_COUNT_PAUSE_MS));
 		try {
-			seats.set(
-				sessionId,
-				countSolidaritySeats(await listSessionRsvps(SOLIDARITY_API_TOKEN, sessionId)),
-			);
+			seats.set(sessionId, countSeats(await listSessionRsvps(SOLIDARITY_API_TOKEN, sessionId)));
 		} catch (err) {
 			console.warn(`[mobilize-sync] seat count failed for session ${sessionId}:`, err);
 		}
