@@ -87,6 +87,14 @@ export interface MobilizeSyncResult extends SyncReport {
 	/** Of those, the ones already published to Mobilize by an earlier run. The
 	 *  tag stops further updates; it does not delete what is already live. */
 	excludedStillLive: number;
+	/**
+	 * Sessions left out because another session at the same venue covers the same
+	 * start and end. Mobilize refuses a payload carrying both, so this is the
+	 * difference between an event syncing and failing outright — but it is also a
+	 * duplicate somebody probably entered by accident, so it is counted and named
+	 * rather than dropped in silence.
+	 */
+	duplicateSessions: { title: string; sessionId: number; keptSessionId: number }[];
 	dryRun: boolean;
 }
 
@@ -114,7 +122,18 @@ export async function runMobilizeSync(
 		fetchPageDescriptions(SOLIDARITY_API_TOKEN),
 		loadSettings(db),
 	]);
-	const { planned, skipped, excludedByTag } = planMigration(events, Date.now(), pageDescriptions);
+	const { planned, skipped, excludedByTag, duplicateSessions } = planMigration(
+		events,
+		Date.now(),
+		pageDescriptions,
+	);
+	for (const duplicate of duplicateSessions) {
+		console.warn(
+			`[mobilize-sync] "${duplicate.title}": session ${duplicate.sessionId} repeats the exact ` +
+				`start and end of session ${duplicate.keptSessionId} — left out, since Mobilize rejects ` +
+				'an event carrying both',
+		);
+	}
 
 	// The v1 API rejects a create or update with no contact, so stop here with a
 	// message naming the fix rather than letting every event fail one by one.
@@ -162,6 +181,11 @@ export async function runMobilizeSync(
 		skippedNoAddress: skipped.length,
 		excludedByTag: excludedByTag.length,
 		excludedStillLive,
+		duplicateSessions: duplicateSessions.map(({ title, sessionId, keptSessionId }) => ({
+			title,
+			sessionId,
+			keptSessionId,
+		})),
 		dryRun: !apply,
 	};
 }

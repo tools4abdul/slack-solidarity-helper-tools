@@ -102,7 +102,9 @@ export const POST: RequestHandler = async ({ url }) => {
 				`lookback=${result.lookbackHours}h events ${result.events}, gone ${result.eventsGone}, ` +
 				`timeslots ${result.timeslots}, ` +
 				`signups ${result.participations}: ` +
-				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated} (${result.rsvpsWaitlisted} waitlisted), ` +
+				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated} (${result.rsvpsWaitlisted} waitlisted` +
+				(result.rsvpsAdopted > 0 ? `, ${result.rsvpsAdopted} already there` : '') +
+				'), ' +
 				`over-cap shifts ${result.overCapacity.length}, profiles +${result.profilesCreated}, ` +
 				`matched ${result.matchedByEmail}e/${result.matchedByPhone}p, unchanged ${result.unchanged}, ` +
 				`no-contact ${result.skippedNoContact}, bad-phone ${result.skippedInvalidPhone}, ` +

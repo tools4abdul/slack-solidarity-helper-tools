@@ -299,6 +299,58 @@ export interface PlanResult {
 	/** Held back by the `mobilize-exclude` tag — a deliberate choice, not a
 	 *  failure, so it is counted apart from `skipped`. */
 	excludedByTag: SkippedEvent[];
+	/** Sessions left out of a plan because another session at the same location
+	 *  already covers that exact start and end. See `dedupeSessions`. */
+	duplicateSessions: DuplicateSession[];
+}
+
+export interface DuplicateSession {
+	solidarityEventId: number;
+	/** The Mobilize event title this session would have been a shift on. */
+	title: string;
+	sessionId: number;
+	/** The session that keeps the slot — signups mirror back to this one. */
+	keptSessionId: number;
+}
+
+/**
+ * Sessions in one location group, minus any that repeat a start and end already
+ * taken by an earlier one.
+ *
+ * Mobilize rejects the whole payload — `400 Timeslot with start and end time
+ * already exists` — if two timeslots share both times, so a Solidarity event
+ * with a session entered twice at one venue could never be created at all. The
+ * timeslot is a *time*, and the same time cannot be two shifts.
+ *
+ * Which one stays matters, because `solidaritySessionIds` is index-aligned with
+ * the timeslots and decides where Mobilize signups are mirrored back to: the
+ * earliest-sorted session keeps the slot, everyone who signs up lands on it, and
+ * its own cap is the one that governs the shift. The dropped session stays
+ * untouched in Solidarity — it simply receives no Mobilize signups.
+ *
+ * Comparison is on the unix seconds actually sent, not the raw strings, since
+ * that is the granularity Mobilize compares at.
+ */
+export function dedupeSessions(sessions: SolidaritySession[]): {
+	kept: SolidaritySession[];
+	dropped: { session: SolidaritySession; keptSessionId: number }[];
+} {
+	const bySlot = new Map<string, SolidaritySession>();
+	const kept: SolidaritySession[] = [];
+	const dropped: { session: SolidaritySession; keptSessionId: number }[] = [];
+	for (const session of sessions) {
+		const slot = `${Math.floor(Date.parse(session.start_time) / 1000)}-${Math.floor(
+			Date.parse(session.end_time) / 1000,
+		)}`;
+		const holder = bySlot.get(slot);
+		if (holder) {
+			dropped.push({ session, keptSessionId: holder.id });
+			continue;
+		}
+		bySlot.set(slot, session);
+		kept.push(session);
+	}
+	return { kept, dropped };
 }
 
 /**
@@ -328,6 +380,7 @@ export function planMigration(
 	const planned: PlannedEvent[] = [];
 	const skipped: SkippedEvent[] = [];
 	const excludedByTag: SkippedEvent[] = [];
+	const duplicateSessions: DuplicateSession[] = [];
 
 	for (const event of events) {
 		if (event.event_type !== 'in_person') {
@@ -441,9 +494,18 @@ export function planMigration(
 			const description =
 				sourceDescription.trim() || fallbackDescription(title, event.event_page_url);
 			const eventType = classifyEventType(`${title} ${event.title}`, description);
-			const ordered = [...sessions].sort(
+			const sorted = [...sessions].sort(
 				(a, b) => Date.parse(a.start_time) - Date.parse(b.start_time),
 			);
+			const { kept: ordered, dropped } = dedupeSessions(sorted);
+			for (const { session, keptSessionId } of dropped) {
+				duplicateSessions.push({
+					solidarityEventId: event.id,
+					title: title.trim(),
+					sessionId: session.id,
+					keptSessionId,
+				});
+			}
 
 			planned.push({
 				key: `solidarity:${event.id}:${key}`,
@@ -473,5 +535,5 @@ export function planMigration(
 		}
 	}
 
-	return { planned, skipped, excludedByTag };
+	return { planned, skipped, excludedByTag, duplicateSessions };
 }
