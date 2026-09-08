@@ -209,7 +209,13 @@ export async function runSolidarityAttendeeSync(
 	const events = await fetchAllEvents(SOLIDARITY_API_TOKEN);
 	const sessionMeta = new Map<
 		number,
-		{ startsAt: number; chapterId: number | null; capacity: number | null }
+		{
+			startsAt: number;
+			chapterId: number | null;
+			capacity: number | null;
+			eventTitle: string;
+			eventUrl: string | null;
+		}
 	>();
 	for (const event of events) {
 		const chapterId = event.scope_type === 'Chapter' ? event.scope_id : null;
@@ -220,6 +226,11 @@ export async function runSolidarityAttendeeSync(
 				// Solidarity uses 0 for "no cap", the same convention transform.ts
 				// handles on the way out. Anything at or below zero is uncapped.
 				capacity: (session.max_capacity ?? 0) > 0 ? session.max_capacity : null,
+				eventTitle: event.title,
+				// The public signup page. Not where the cap is edited, but it is the
+				// one URL Solidarity gives us, and it identifies the event at a glance
+				// — which a bare session id in a Slack alert does not.
+				eventUrl: event.event_page_url,
 			});
 		}
 	}
@@ -238,6 +249,8 @@ export async function runSolidarityAttendeeSync(
 			eventChapterId: meta.chapterId,
 			startsAt: meta.startsAt,
 			sessionCapacity: meta.capacity,
+			eventTitle: meta.eventTitle,
+			eventUrl: meta.eventUrl,
 		});
 	}
 

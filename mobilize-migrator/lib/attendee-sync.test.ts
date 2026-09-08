@@ -18,6 +18,8 @@ const LINK: TimeslotLink = {
 	eventChapterId: 1330,
 	startsAt: Date.now() + 3600_000,
 	sessionCapacity: null,
+	eventTitle: 'GR Labor Day Picnic',
+	eventUrl: 'https://go.example.org/gr-labor-day-picnic',
 };
 
 function attendance(overrides: Partial<MobilizeAttendance> = {}): MobilizeAttendance {
@@ -641,8 +643,25 @@ describe('runAttendeeSync capacity', () => {
 		const report = await run(ledgerWith(), true, [capped(2)]);
 
 		expect(report.overCapacity).toEqual([
-			{ solidaritySessionId: LINK.solidaritySessionId, capacity: 2, attending: 5 },
+			{
+				solidaritySessionId: LINK.solidaritySessionId,
+				capacity: 2,
+				attending: 5,
+				// Carried through from the link so the alert can name the event
+				// rather than making someone look a session id up.
+				eventTitle: 'GR Labor Day Picnic',
+				eventUrl: 'https://go.example.org/gr-labor-day-picnic',
+			},
 		]);
+	});
+
+	it('reports nulls for an event the caller did not name', async () => {
+		mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: seats(5) });
+		const link = { ...capped(2), eventTitle: undefined, eventUrl: undefined };
+
+		const report = await run(ledgerWith(), true, [link]);
+
+		expect(report.overCapacity[0]).toMatchObject({ eventTitle: null, eventUrl: null });
 	});
 
 	it('says nothing about a shift sitting inside its cap', async () => {

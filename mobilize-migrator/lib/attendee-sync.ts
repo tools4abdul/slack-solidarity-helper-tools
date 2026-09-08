@@ -43,6 +43,13 @@ export interface TimeslotLink {
 	 * Signups past it are filed as `waitlisted` rather than `yes`.
 	 */
 	sessionCapacity: number | null;
+	/**
+	 * How to name the event to a human, for the over-capacity report — a bare
+	 * session id is not something anyone can act on without going and looking it
+	 * up. Optional because nothing in the sync itself depends on them.
+	 */
+	eventTitle?: string | null;
+	eventUrl?: string | null;
 }
 
 export interface RsvpRecord {
@@ -131,7 +138,15 @@ export interface AttendeeSyncReport {
 	 * human, not something this run caused. A session the run then waitlists into
 	 * still appears here only if it was already over.
 	 */
-	overCapacity: { solidaritySessionId: number; capacity: number; attending: number }[];
+	overCapacity: {
+		solidaritySessionId: number;
+		capacity: number;
+		attending: number;
+		/** From the link, so the alert can name and link the event. Null when the
+		 *  caller supplied neither. */
+		eventTitle: string | null;
+		eventUrl: string | null;
+	}[];
 	/** No email and no phone — nothing to match or create on. */
 	skippedNoContact: number;
 	/**
@@ -307,7 +322,16 @@ export async function runAttendeeSync(
 	// is a seat, and the question here is only whether the room is full.
 	const seatsBySession = new Map<number, number>();
 	const capacityBySession = new Map<number, number | null>();
-	for (const link of links) capacityBySession.set(link.solidaritySessionId, link.sessionCapacity);
+	// Carried alongside the capacity purely so the over-capacity report can name
+	// the event a human has to go and fix.
+	const eventBySession = new Map<number, { title: string | null; url: string | null }>();
+	for (const link of links) {
+		capacityBySession.set(link.solidaritySessionId, link.sessionCapacity);
+		eventBySession.set(link.solidaritySessionId, {
+			title: link.eventTitle ?? null,
+			url: link.eventUrl ?? null,
+		});
+	}
 	for (const sessionId of new Set(pending.map((p) => p.link.solidaritySessionId))) {
 		try {
 			const rows = await listSessionRsvps(config.solidarityToken, sessionId);
@@ -319,7 +343,14 @@ export async function runAttendeeSync(
 			seatsBySession.set(sessionId, attending);
 			const capacity = capacityBySession.get(sessionId) ?? null;
 			if (capacity !== null && attending > capacity) {
-				report.overCapacity.push({ solidaritySessionId: sessionId, capacity, attending });
+				const event = eventBySession.get(sessionId);
+				report.overCapacity.push({
+					solidaritySessionId: sessionId,
+					capacity,
+					attending,
+					eventTitle: event?.title ?? null,
+					eventUrl: event?.url ?? null,
+				});
 			}
 		} catch (err) {
 			report.failed++;
