@@ -694,3 +694,71 @@ describe('duplicate detection', () => {
 		expect(titleSimilarity('Detroit Canvass', 'Bay City Concert')).toBe(0);
 	});
 });
+
+describe('duplicate sessions', () => {
+	// Mobilize answers `400 Timeslot with start and end time already exists` and
+	// refuses the whole event, so a Solidarity event with a session entered twice
+	// at one venue could not be created at all.
+	const twin = () => [
+		session({ id: 1 }),
+		session({ id: 2 }),
+		session({
+			id: 3,
+			start_time: '2026-07-31T20:00:00.000-04:00',
+			end_time: '2026-07-31T22:00:00.000-04:00',
+		}),
+	];
+
+	it('sends one timeslot per distinct start and end', () => {
+		const { planned } = planMigration([event({ event_sessions: twin() })], NOW);
+
+		expect(planned).toHaveLength(1);
+		expect(planned[0]!.timeslots).toHaveLength(2);
+	});
+
+	it('keeps the ids index-aligned with the timeslots that survived', () => {
+		// solidaritySessionIds is what decides where a Mobilize signup is mirrored
+		// back to. Dropping a timeslot without its id would file signups against
+		// the wrong session.
+		const { planned } = planMigration([event({ event_sessions: twin() })], NOW);
+
+		expect(planned[0]!.solidaritySessionIds).toEqual([1, 3]);
+		expect(planned[0]!.startInstants).toHaveLength(2);
+		expect(planned[0]!.endInstants).toHaveLength(2);
+	});
+
+	it('reports which session it left out, and which one holds the slot', () => {
+		const { duplicateSessions } = planMigration([event({ event_sessions: twin() })], NOW);
+
+		expect(duplicateSessions).toEqual([
+			{ solidarityEventId: 100, title: 'Ann Arbor Canvass', sessionId: 2, keptSessionId: 1 },
+		]);
+	});
+
+	it('governs the shift by the cap of the session that kept the slot', () => {
+		// Everyone who signs up in Mobilize is mirrored back to the surviving
+		// session, so its cap is the one that has to hold.
+		const sessions = [session({ id: 1, max_capacity: 10 }), session({ id: 2, max_capacity: 5 })];
+
+		const { planned } = planMigration([event({ event_sessions: sessions })], NOW);
+
+		expect(planned[0]!.timeslots[0]!.maxAttendees).toBe(10);
+	});
+
+	it('leaves sessions that merely start together alone', () => {
+		// Same start, different end: two distinct timeslots as far as Mobilize is
+		// concerned, and it takes both.
+		const sessions = [
+			session({ id: 1 }),
+			session({ id: 2, end_time: '2026-07-30T23:00:00.000-04:00' }),
+		];
+
+		const { planned, duplicateSessions } = planMigration(
+			[event({ event_sessions: sessions })],
+			NOW,
+		);
+
+		expect(planned[0]!.timeslots).toHaveLength(2);
+		expect(duplicateSessions).toEqual([]);
+	});
+});

@@ -134,6 +134,15 @@ export const POST: RequestHandler = async ({ url }) => {
 			if (result.createdTitles.length > 10) {
 				lines.push(`• …and ${result.createdTitles.length - 10} more`);
 			}
+			// Named here rather than in an alert of its own: it repeats every run
+			// until someone deletes the duplicate in Solidarity, and this message
+			// only goes out on a run that did something.
+			for (const duplicate of result.duplicateSessions.slice(0, 5)) {
+				lines.push(
+					`• :heavy_minus_sign: "${duplicate.title}": session ${duplicate.sessionId} repeats ` +
+						`session ${duplicate.keptSessionId}'s exact time — left out, Mobilize takes only one`,
+				);
+			}
 			await alert(lines.join('\n'));
 		}
 

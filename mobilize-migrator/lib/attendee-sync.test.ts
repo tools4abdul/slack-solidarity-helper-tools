@@ -66,6 +66,11 @@ function mockApis(options: {
 	/** RSVPs Solidarity already holds for the session, for the capacity tests. */
 	sessionRsvps?: { id: number; user_id: number; is_attending: string }[];
 }) {
+	// Distinct people must get distinct Solidarity ids. Handing every create the
+	// same one made two signups look like one person signing up twice, which is
+	// now a real case the sync handles by adopting the first RSVP instead of
+	// writing a second.
+	let nextUserId = 900;
 	const spy = vi.fn(async (url: string | URL, init?: RequestInit) => {
 		const href = String(url);
 		const writing = init?.method === 'POST' || init?.method === 'PUT';
@@ -86,7 +91,7 @@ function mockApis(options: {
 			body = { data: options.attendances, next: null };
 		} else if (writing) {
 			// Solidarity returns the created row; the sync reads its id.
-			body = { data: { id: 999 } };
+			body = href.includes('/v1/users') ? { data: { id: ++nextUserId } } : { data: { id: 999 } };
 		} else if (href.includes('/v1/event_rsvps')) {
 			body = { data: options.sessionRsvps ?? [] };
 		} else if (href.includes('/v1/users')) {
@@ -702,6 +707,93 @@ describe('runAttendeeSync seat order', () => {
 				([, init]) =>
 					(JSON.parse(String(init?.body ?? '{}')) as { is_attending?: string }).is_attending,
 			);
+
+	it('files one RSVP when the same person reaches a session twice in one run', async () => {
+		// Two Mobilize events can carry timeslots paired to a single Solidarity
+		// session, and a cancel-then-rejoin leaves two attendance rows. The second
+		// create used to be answered 422 "User has already been taken" and reported
+		// as a failure, once per duplicate, on every run.
+		const spy = mockApis({
+			attendances: [
+				signup({ id: 1, created: 1_787_000_100, email: 'same@example.com' }),
+				signup({ id: 2, created: 1_787_000_500, email: 'same@example.com' }),
+			],
+			userFound: true,
+			sessionRsvps: [],
+		});
+
+		const report = await run(ledgerWith(), true, [capped(5)]);
+
+		expect(report.failed).toBe(0);
+		expect(report.rsvpsCreated).toBe(1);
+		expect(seatedThenWaitlisted(spy)).toEqual(['yes']);
+	});
+
+	it('adopts the RSVP Solidarity turns out to already hold', async () => {
+		// The row was written outside this run — someone RSVPed in Solidarity while
+		// it was going, so the pre-read missed it. The create is refused, and the
+		// end state is the one we were asking for.
+		let created = false;
+		const spy = mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: [] });
+		const inner = spy.getMockImplementation()!;
+		spy.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+			const href = String(url);
+			if (href.includes('/v1/event_rsvps') && init?.method === 'POST' && !created) {
+				created = true;
+				const body = { errors: ['User has already been taken'] };
+				return {
+					ok: false,
+					status: 422,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}
+			// The re-read after the conflict finds the row the pre-read missed.
+			if (href.includes('/v1/event_rsvps') && init?.method !== 'POST' && created) {
+				const body = { data: [{ id: 777, user_id: 999, is_attending: 'yes' }] };
+				return {
+					ok: true,
+					status: 200,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}
+			return inner(url, init);
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.failed).toBe(0);
+		expect(report.errors).toEqual([]);
+		expect(report.rsvpsAdopted).toBe(1);
+		expect(report.rsvpsCreated).toBe(0);
+	});
+
+	it('still fails a 422 whose row cannot be found', async () => {
+		// Inventing an id would be worse than the failure — something else is wrong.
+		const spy = mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: [] });
+		const inner = spy.getMockImplementation()!;
+		spy.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+			if (String(url).includes('/v1/event_rsvps') && init?.method === 'POST') {
+				const body = { errors: ['User has already been taken'] };
+				return {
+					ok: false,
+					status: 422,
+					json: async () => body,
+					text: async () => JSON.stringify(body),
+					headers: new Headers(),
+				} as unknown as Response;
+			}
+			return inner(url, init);
+		});
+
+		const report = await run(ledgerWith(), true);
+
+		expect(report.failed).toBe(1);
+		expect(report.errors[0]).toContain('already been taken');
+	});
 
 	it('gives the last seat to the earliest signup, whatever order Mobilize lists them in', async () => {
 		// Returned newest-first, the reverse of what the live API does today. The

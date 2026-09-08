@@ -578,6 +578,16 @@ anything the run just did.
   ones by start time and re-attaches their ids. Fail-safe rather than
   fail-destructive, but it means the id matching is load-bearing on every update,
   not an optimization.
+- **The same error also means two shifts sharing a time in ONE payload.** A
+  create has no ids to lose, so `400 ["Timeslot with start and end time already
+exists"]` on a POST is the payload arguing with itself: a Solidarity event with
+  the same session entered twice at one venue becomes two identical timeslots and
+  is refused outright, every night, until someone notices. `dedupeSessions` in
+  lib/transform.ts drops the repeat before it is sent, keeping the
+  earliest-sorted session — which matters because `solidaritySessionIds` is
+  index-aligned with the timeslots and decides where signups are mirrored back
+  to. The dropped session is reported in `duplicateSessions` rather than
+  swallowed: it is usually a mistake in Solidarity worth fixing at the source.
 - **Validation failures come back as HTTP 200** with `{"data":null,"error":{…}}`,
   not as a 4xx — so `res.ok` alone is not success. The client checks `body.error`
   too. Example: `Cannot create timeslots more than 5 years in the future`.
@@ -595,6 +605,15 @@ anything the run just did.
   query string; don't "simplify" it.
 - **Paths use underscores**: `/v1/event_rsvps`, `/v1/event_attendances`. The
   hyphenated forms in the docs URLs 404.
+- **A session holds at most one RSVP per person**, enforced with
+  `422 {"errors":["User has already been taken"]}`. One person reaches the same
+  session twice more easily than it sounds: two Mobilize events can carry
+  timeslots paired to a single Solidarity session, and a cancel-then-rejoin
+  leaves two attendance rows. The pre-read map is therefore kept up to date as
+  the run writes (`rememberRsvp`), not just loaded once — and a 422 that gets
+  through anyway is answered by re-reading the session and adopting the row,
+  counted as `rsvpsAdopted`. The row is the end state the create was asking for,
+  so failing on it alerted about work that was already done.
 - **`event_id` here means a _Solidarity_ event.** Solidarity calls its own event
   entity a "mobilize_event" — its sessions carry `mobilize_event_id` pointing at
   a Solidarity event. Nothing to do with mobilize.us.
