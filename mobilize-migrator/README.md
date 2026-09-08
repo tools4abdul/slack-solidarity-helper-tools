@@ -558,7 +558,12 @@ and linked by the event it belongs to (`eventTitle` / `eventUrl` on the
 `TimeslotLink`, filled from Solidarity's `title` and `event_page_url`) — a bare
 session id is not something anyone can act on. That is a standing condition for
 a human to resolve — raise the cap, or move people — and the sync cannot fix it:
-the RSVPs are already there. Twelve such sessions existed
+the RSVPs are already there.
+
+Only shifts that have not started yet are reported. The lookback keeps a session
+in the run for up to 48h after it begins so check-ins keep syncing, and without
+that filter a picnic that happened yesterday alerted every 30 minutes, asking
+for a cap change nobody could usefully make. Twelve such sessions existed
 when this was written, so expect the first alerts to be about history rather than
 anything the run just did.
 

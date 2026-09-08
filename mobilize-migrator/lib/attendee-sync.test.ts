@@ -660,6 +660,19 @@ describe('runAttendeeSync capacity', () => {
 		]);
 	});
 
+	it('says nothing about a shift that has already started', async () => {
+		// The lookback keeps a session in the run for up to 48h after it starts so
+		// check-ins still sync. Reporting those meant a picnic that happened
+		// yesterday alerting every 30 minutes, asking for a cap change nobody can
+		// usefully make.
+		mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: seats(5) });
+		const started = { ...capped(2), startsAt: Date.now() - 26 * 3600_000 };
+
+		const report = await run(ledgerWith(), true, [started]);
+
+		expect(report.overCapacity).toEqual([]);
+	});
+
 	it('reports nulls for an event the caller did not name', async () => {
 		mockApis({ attendances: [attendance()], userFound: true, sessionRsvps: seats(5) });
 		const link = { ...capped(2), eventTitle: undefined, eventUrl: undefined };

@@ -146,6 +146,10 @@ export interface AttendeeSyncReport {
 	 * the START of the run — so this reports a standing condition to be fixed by a
 	 * human, not something this run caused. A session the run then waitlists into
 	 * still appears here only if it was already over.
+	 *
+	 * Upcoming sessions only. A shift that has already started is beyond fixing:
+	 * the lookback keeps it in the run so check-ins still sync, but its cap is
+	 * nobody's problem any more.
 	 */
 	overCapacity: {
 		solidaritySessionId: number;
@@ -290,6 +294,9 @@ export async function runAttendeeSync(
 	defaultChapterId: number | null,
 ): Promise<AttendeeSyncReport> {
 	const log = config.log ?? (() => {});
+	// Pinned once: a long run must not report a shift as upcoming at the top and
+	// past by the time it reaches the capacity check.
+	const runStartedAt = Date.now();
 	// Solidarity allows 60 requests / 30s. Each unmatched person costs two
 	// lookups plus a write, so anything faster than ~600ms spends the run
 	// sitting in 30-second rate-limit backoffs. Rows already in the ledger skip
@@ -387,14 +394,18 @@ export async function runAttendeeSync(
 	// is a seat, and the question here is only whether the room is full.
 	const seatsBySession = new Map<number, number>();
 	const capacityBySession = new Map<number, number | null>();
-	// Carried alongside the capacity purely so the over-capacity report can name
-	// the event a human has to go and fix.
-	const eventBySession = new Map<number, { title: string | null; url: string | null }>();
+	// Carried alongside the capacity so the over-capacity report can name the
+	// event a human has to go and fix, and tell whether it is still ahead of them.
+	const eventBySession = new Map<
+		number,
+		{ title: string | null; url: string | null; startsAt: number }
+	>();
 	for (const link of links) {
 		capacityBySession.set(link.solidaritySessionId, link.sessionCapacity);
 		eventBySession.set(link.solidaritySessionId, {
 			title: link.eventTitle ?? null,
 			url: link.eventUrl ?? null,
+			startsAt: link.startsAt,
 		});
 	}
 	for (const sessionId of new Set(pending.map((p) => p.link.solidaritySessionId))) {
@@ -407,8 +418,14 @@ export async function runAttendeeSync(
 			const attending = rows.filter((r) => r.is_attending === 'yes').length;
 			seatsBySession.set(sessionId, attending);
 			const capacity = capacityBySession.get(sessionId) ?? null;
-			if (capacity !== null && attending > capacity) {
-				const event = eventBySession.get(sessionId);
+			const event = eventBySession.get(sessionId);
+			// Only shifts still ahead of us. The lookback deliberately pulls sessions
+			// that have already started back into the run so check-ins keep syncing,
+			// and reporting those meant alerting about a picnic that happened
+			// yesterday — where nobody is signing up any more, and the fix the message
+			// asks for (raise the cap, move people) is not a thing anyone can do.
+			const upcoming = event === undefined || event.startsAt > runStartedAt;
+			if (capacity !== null && attending > capacity && upcoming) {
 				report.overCapacity.push({
 					solidaritySessionId: sessionId,
 					capacity,
