@@ -275,6 +275,32 @@ attendee sync has mirrored. For the few that arrive in between, the rejection
 itself names the number, index-aligned with the timeslots we sent, and the
 update is retried once with those caps raised — `raiseCapsToFloors` in lib/sync.ts.
 
+**Checking the cap actually closed the shift.** Two things can leave a shift
+open after we cap it, and neither is visible in a write response:
+
+1. A **waitlist enabled on that timeslot** in Mobilize. Reaching capacity then
+   shows a "Join Waitlist" button instead of turning anyone away, and with
+   auto-advance on Mobilize promotes those people itself. It is per-timeslot,
+   set in their UI, and the v1 API has no field for it — we cannot read it or
+   turn it off.
+2. **`max_attendees: 0` not meaning "closed".** The docs define only `null` for
+   "no maximum" and say nothing about zero, so a full shift going out as `0` is
+   this sync's assumption, not documented behaviour.
+
+`is_full` is what settles both. It is the one capacity fact the read does give
+back (`max_attendees` is documented as part of the timeslot shape but is _not_
+returned — checked against the live feed, which is why the ledger exists at
+all). Zero seats admits nobody whatever the shift holds, so a shift we last
+pushed `0` for that Mobilize still reports as `is_full: false` is a
+contradiction, and `findOpenZeroCaps` collects those into `zeroCapStillOpen` for
+a Slack alert naming the two causes above. Only upcoming shifts, and only where
+`is_full` came back explicitly `false` — an absent field means Mobilize did not
+say, which must never read as "still open".
+
+The check runs before the change comparison, because a shift stuck open
+normally needs no edit at all: its cap is already recorded as pushed, so
+anything downstream of that `continue` would never see it.
+
 **`max_attendees` cannot be read back.** Mobilize's event read returns
 `start_date, end_date, instructions, id, is_full` — the cap is write-only, so
 there is nothing live to diff against. What we last sent is stored in
@@ -527,9 +553,12 @@ sync keeps up; after a long outage, the people who happen to be new in that run
 compete only with each other.
 
 Sessions found holding **more** attending RSVPs than their cap are reported in
-`overCapacity` and called out in Slack, listed worst-overage first. That is a
-standing condition for a human to resolve — raise the cap, or move people — and
-the sync cannot fix it: the RSVPs are already there. Twelve such sessions existed
+`overCapacity` and called out in Slack, listed worst-overage first, each named
+and linked by the event it belongs to (`eventTitle` / `eventUrl` on the
+`TimeslotLink`, filled from Solidarity's `title` and `event_page_url`) — a bare
+session id is not something anyone can act on. That is a standing condition for
+a human to resolve — raise the cap, or move people — and the sync cannot fix it:
+the RSVPs are already there. Twelve such sessions existed
 when this was written, so expect the first alerts to be about history rather than
 anything the run just did.
 

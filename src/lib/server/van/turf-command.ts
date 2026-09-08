@@ -20,6 +20,7 @@
 //      and the caller re-checks the chapter against settings anyway.
 
 import { formatDistance, haversineMeters, type LatLng } from '../../van/geometry.js';
+import { escapeMrkdwn } from '../slack-mrkdwn.js';
 import { statusLabel } from '../../van/turf-status.js';
 import type { TurfView } from '../../van/turf-view.js';
 import { normalizeZip } from './zip-centroid.js';
@@ -172,12 +173,6 @@ export interface SlackMessage {
 
 const mrkdwn = (text: string): Mrkdwn => ({ type: 'mrkdwn', text });
 const context = (text: string): Block => ({ type: 'context', elements: [mrkdwn(text)] });
-
-/** Slack mrkdwn reserves three characters. Turf and region names come from VAN,
- *  which nobody here controls. */
-export function escapeMrkdwn(raw: string): string {
-	return raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 export interface ChapterRef {
 	chapterId: number;

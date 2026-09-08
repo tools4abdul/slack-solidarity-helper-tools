@@ -5,6 +5,21 @@ import { runMobilizeSync } from '$lib/server/mobilize-sync.js';
 import { alertForMobilizeSync } from '$lib/server/slack.js';
 import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
+import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
+import { CAMPAIGN_TIMEZONE } from '../../../../../mobilize-migrator/lib/payload.js';
+
+/** A shift's start, in the campaign's timezone — "Sat, Sep 12, 6:00 PM". Enough
+ *  to tell two shifts on one event apart at a glance. */
+function shiftDay(startDate: number): string {
+	return new Intl.DateTimeFormat('en-US', {
+		timeZone: CAMPAIGN_TIMEZONE,
+		weekday: 'short',
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit',
+	}).format(new Date(startDate * 1000));
+}
 
 // Internal endpoint called by GitHub Actions to mirror upcoming Solidarity
 // events into Mobilize. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -89,6 +104,9 @@ export const POST: RequestHandler = async ({ url }) => {
 				`existing ${result.skippedExisting}, no-address ${result.skippedNoAddress}, ` +
 				`tag-excluded ${result.excludedByTag} (${result.excludedStillLive} already live), ` +
 				`failed ${result.failed}` +
+				(result.zeroCapStillOpen.length > 0
+					? `, stuck-open ${result.zeroCapStillOpen.length}`
+					: '') +
 				(result.incomplete ? `, INCOMPLETE — ${result.pending} not reached` : ''),
 		);
 
@@ -117,6 +135,30 @@ export const POST: RequestHandler = async ({ url }) => {
 				lines.push(`• …and ${result.createdTitles.length - 10} more`);
 			}
 			await alert(lines.join('\n'));
+		}
+
+		// Reported however the run went, dry included: it is a live contradiction
+		// someone has to go and look at in Mobilize, not something a re-run fixes.
+		if (result.zeroCapStillOpen.length > 0) {
+			const worst = result.zeroCapStillOpen.slice(0, 8);
+			await alert(
+				`:mag: *Mobilize sync — ${result.zeroCapStillOpen.length} full shift(s) are still ` +
+					'taking signups.*\n' +
+					worst
+						.map(
+							(slot) =>
+								`• ${mrkdwnLink(slot.browserUrl, slot.title)} — shift ` +
+								`${slot.mobilizeTimeslotId}, ${shiftDay(slot.startDate)}`,
+						)
+						.join('\n') +
+					(result.zeroCapStillOpen.length > worst.length
+						? `\n• …and ${result.zeroCapStillOpen.length - worst.length} more`
+						: '') +
+					'\nWe last capped these at 0 seats, but Mobilize reports them as not full. Either a ' +
+					'waitlist is switched on for the shift in Mobilize — which takes signups instead of ' +
+					'turning people away, and has no API field for us to read — or Mobilize is not ' +
+					'treating a 0 cap as closed. Opening one in Mobilize says which.',
+			);
 		}
 
 		if (result.failed > 0) {

@@ -5,7 +5,6 @@ import {
 	buildTurfListBlocks,
 	decodeTurfAction,
 	encodeTurfAction,
-	escapeMrkdwn,
 	MAX_LOCATION_LENGTH,
 	MAX_SLACK_OFFSET,
 	parseTurfArgument,
@@ -145,12 +144,6 @@ describe('turf action values', () => {
 	it('drops out-of-range coordinates rather than trusting them', () => {
 		expect(decodeTurfAction('{"c":71,"o":0,"lat":999,"lng":-83.7}')!.location).toBeUndefined();
 		expect(decodeTurfAction('{"c":71,"o":0,"lat":"x","lng":"y"}')!.location).toBeUndefined();
-	});
-});
-
-describe('escapeMrkdwn', () => {
-	it('escapes the three reserved characters', () => {
-		expect(escapeMrkdwn('A & B <script> C')).toBe('A &amp; B &lt;script&gt; C');
 	});
 });
 

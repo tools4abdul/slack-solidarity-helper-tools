@@ -219,7 +219,14 @@ export interface MobilizeEvent {
 		email_address?: string | null;
 		phone_number?: string | null;
 	} | null;
-	timeslots: { id: number; start_date: number; end_date: number }[];
+	/**
+	 * `max_attendees` is documented as part of this shape but is NOT returned —
+	 * verified against the live feed — which is why the ledger records what we
+	 * pushed. `is_full` IS returned, and is the only live word on whether a shift
+	 * is still taking signups. Optional so an absent field reads as "Mobilize did
+	 * not say", never as "open".
+	 */
+	timeslots: { id: number; start_date: number; end_date: number; is_full?: boolean }[];
 	location: {
 		venue?: string | null;
 		locality?: string | null;

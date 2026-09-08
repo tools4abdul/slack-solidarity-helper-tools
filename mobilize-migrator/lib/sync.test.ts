@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MobilizeApiConfig, MobilizeEvent } from './mobilize.js';
 import {
 	describeChanges,
+	findOpenZeroCaps,
 	raiseCapsToFloors,
 	reconcileTimeslots,
 	runSync,
@@ -828,12 +829,20 @@ describe('runSync capacity push', () => {
 		seatsTaken: SeatCount;
 		/** Reject the first PUT the way Mobilize rejects a cap under its own count. */
 		rejectFirstPutBelow?: number;
+		/** What the live read says about the shift. Omit for a read that is silent. */
+		isFull?: boolean;
+		/** Shift start, ms. Defaults to a fixed past date; the stuck-open check only
+		 *  looks at upcoming shifts, so those tests pass a future one. */
+		startsAt?: number;
 	}) {
+		const start = options.startsAt ?? START;
 		const planned = plan({
+			startInstants: [start],
+			endInstants: [start + 2 * HOUR],
 			timeslots: [
 				{
-					startDate: Math.floor(START / 1000),
-					endDate: Math.floor((START + 2 * HOUR) / 1000),
+					startDate: Math.floor(start / 1000),
+					endDate: Math.floor((start + 2 * HOUR) / 1000),
 					maxAttendees: 20,
 				},
 			],
@@ -848,8 +857,9 @@ describe('runSync capacity push', () => {
 					timeslots: [
 						{
 							id: 5001,
-							start_date: Math.floor(START / 1000),
-							end_date: Math.floor((START + 2 * HOUR) / 1000),
+							start_date: Math.floor(start / 1000),
+							end_date: Math.floor((start + 2 * HOUR) / 1000),
+							...(options.isFull === undefined ? {} : { is_full: options.isFull }),
 						},
 					],
 					location: { locality: 'Detroit', postal_code: '48202' },
@@ -1034,6 +1044,45 @@ describe('runSync capacity push', () => {
 		expect(fixture.recordedCaps).toEqual([{ mobilizeTimeslotId: 5001, maxAttendees: 8 }]);
 	});
 
+	it('reports an upcoming shift capped at 0 that Mobilize still calls open', async () => {
+		// The cap is already recorded as pushed and nothing else differs, so this
+		// event needs no PUT at all — which is exactly the path the check has to
+		// survive, since a stuck shift is usually one nobody is editing.
+		const fixture = setup({
+			pushedCap: 0,
+			seatsTaken: { solidarity: 20, mobilize: 0 },
+			isFull: false,
+			startsAt: Date.now() + 14 * 24 * HOUR,
+		});
+
+		const report = await run(fixture);
+
+		expect(report.unchanged).toBe(1);
+		expect(fixture.puts).toEqual([]);
+		expect(report.zeroCapStillOpen).toEqual([
+			{
+				title: 'Detroit Canvass',
+				mobilizeEventId: 900,
+				mobilizeTimeslotId: 5001,
+				startDate: Math.floor((Date.now() + 14 * 24 * HOUR) / 1000),
+				browserUrl: null,
+			},
+		]);
+	});
+
+	it('stays quiet when Mobilize agrees the 0-capped shift is full', async () => {
+		const fixture = setup({
+			pushedCap: 0,
+			seatsTaken: { solidarity: 20, mobilize: 0 },
+			isFull: true,
+			startsAt: Date.now() + 14 * 24 * HOUR,
+		});
+
+		const report = await run(fixture);
+
+		expect(report.zeroCapStillOpen).toEqual([]);
+	});
+
 	it('reports a 400 that is not about capacity instead of retrying it', async () => {
 		const fixture = setup({ pushedCap: 20, seatsTaken: { solidarity: 7, mobilize: 0 } });
 		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
@@ -1053,6 +1102,108 @@ describe('runSync capacity push', () => {
 
 		expect(report.failed).toBe(1);
 		expect(report.errors[0]).toContain('This field may not be blank');
+	});
+});
+
+describe('findOpenZeroCaps', () => {
+	const FUTURE = Math.floor((NOW + 7 * 24 * HOUR) / 1000);
+	const PAST = Math.floor((NOW - 7 * 24 * HOUR) / 1000);
+
+	function live(timeslots: MobilizeEvent['timeslots']): MobilizeEvent {
+		return {
+			id: 900,
+			title: 'Detroit Canvass',
+			event_type: 'COMMUNITY_CANVASS',
+			browser_url: 'https://www.mobilize.us/org/event/900/',
+			timeslots,
+			location: null,
+		};
+	}
+
+	it('reports a shift capped at zero that Mobilize still calls open', async () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([
+			{
+				title: 'Detroit Canvass',
+				mobilizeEventId: 900,
+				mobilizeTimeslotId: 5001,
+				startDate: FUTURE,
+				browserUrl: 'https://www.mobilize.us/org/event/900/',
+			},
+		]);
+	});
+
+	it('says nothing when Mobilize agrees the shift is full', () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: true }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('treats a missing is_full as "Mobilize did not say", not as open', () => {
+		// An absent field is the read telling us nothing. Reporting it as a stuck
+		// shift would cry wolf on every event the day Mobilize drops the field.
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600 }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('ignores a shift capped at anything but zero', () => {
+		// Any positive cap can honestly be not-full; only zero is a contradiction.
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map([[5001, 4]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('ignores a shift we have never capped', () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map(),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('leaves past shifts out — their signups are settled', () => {
+		const found = findOpenZeroCaps(
+			live([{ id: 5001, start_date: PAST, end_date: PAST + 3600, is_full: false }]),
+			'Detroit Canvass',
+			new Map([[5001, 0]]),
+			NOW,
+		);
+
+		expect(found).toEqual([]);
+	});
+
+	it('carries a null link when the read gave no browser_url', () => {
+		const event = live([{ id: 5001, start_date: FUTURE, end_date: FUTURE + 3600, is_full: false }]);
+		delete event.browser_url;
+
+		const found = findOpenZeroCaps(event, 'Detroit Canvass', new Map([[5001, 0]]), NOW);
+
+		expect(found[0]!.browserUrl).toBeNull();
 	});
 });
 

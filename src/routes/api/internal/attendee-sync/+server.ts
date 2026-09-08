@@ -13,6 +13,7 @@ import {
 	SOLIDARITY_API_TOKEN,
 } from '$lib/server/env.js';
 import { assessMatchHealth } from '$lib/server/attendee-sync-health.js';
+import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
 
 const SYNC_LOCK_NAME = 'attendee-sync';
@@ -161,11 +162,16 @@ export const POST: RequestHandler = async ({ url }) => {
 			await alert(
 				`:warning: *Attendee sync — ${result.overCapacity.length} shift(s) are over capacity.*\n` +
 					worst
-						.map(
-							(row) =>
-								`• session ${row.solidaritySessionId}: ${row.attending} attending / ${row.capacity} seats ` +
-								`(+${row.attending - row.capacity})`,
-						)
+						.map((row) => {
+							// The event goes first because it is the part anyone reading this
+							// has to go and open; the session id stays because an event with
+							// several sessions needs saying which one.
+							const named = row.eventTitle ? `${mrkdwnLink(row.eventUrl, row.eventTitle)} — ` : '';
+							return (
+								`• ${named}session ${row.solidaritySessionId}: ${row.attending} attending / ` +
+								`${row.capacity} seats (+${row.attending - row.capacity})`
+							);
+						})
 						.join('\n') +
 					(result.overCapacity.length > worst.length
 						? `\n• …and ${result.overCapacity.length - worst.length} more`

@@ -138,6 +138,12 @@ export interface SyncReport {
 	authFailed: boolean;
 	createdTitles: string[];
 	updatedTitles: string[];
+	/**
+	 * Upcoming shifts we last capped at zero that Mobilize still reports as not
+	 * full — see `findOpenZeroCaps`. A standing contradiction for a human to look
+	 * at, not something a re-run fixes.
+	 */
+	zeroCapStillOpen: OpenZeroCap[];
 	/** Per-event reasons for the skips, so a dry run can be reviewed by eye. */
 	skippedDetails: { title: string; reason: string }[];
 	errors: string[];
@@ -268,6 +274,59 @@ export function reconcileTimeslots(
 	return { timeslots, orphanCount: orphans.length, changed, capacityChanged, pairings };
 }
 
+export interface OpenZeroCap {
+	title: string;
+	mobilizeEventId: number;
+	mobilizeTimeslotId: number;
+	/** Unix seconds, so a caller can say which shift without another read. */
+	startDate: number;
+	/** Mobilize's own link to the event, as it came back on the read. Null when
+	 *  the response carried none — never a URL assembled from the id, which needs
+	 *  the org's feed slug and would 404 without it. */
+	browserUrl: string | null;
+}
+
+/**
+ * Shifts we last capped at zero that Mobilize still says are open.
+ *
+ * Zero seats admits nobody, whatever the shift already holds, so `is_full:
+ * false` on one is a contradiction — and the only cheap way to catch the two
+ * ways a cap silently fails to close a shift:
+ *
+ *   - a waitlist enabled on that timeslot, which Mobilize offers INSTEAD of
+ *     turning people away once capacity is reached, and which has no API field
+ *     for us to read or set;
+ *   - `max_attendees: 0` not meaning what this sync assumes. The API documents
+ *     only `null` for "no maximum" and says nothing about zero, so the reading
+ *     that closes a shift is an assumption, and this is the assertion that
+ *     tests it against production.
+ *
+ * `is_full` is compared to `false` explicitly: absent means Mobilize did not
+ * say, which must never be read as "still open".
+ *
+ * Past shifts are left out. Their signups are settled, we do not modify them,
+ * and including them would report the same history every night forever.
+ */
+export function findOpenZeroCaps(
+	live: MobilizeEvent,
+	title: string,
+	pushedCaps: Map<number, number | null>,
+	now = Date.now(),
+): OpenZeroCap[] {
+	return live.timeslots
+		.filter(
+			(slot) =>
+				slot.start_date * 1000 > now && pushedCaps.get(slot.id) === 0 && slot.is_full === false,
+		)
+		.map((slot) => ({
+			title,
+			mobilizeEventId: live.id,
+			mobilizeTimeslotId: slot.id,
+			startDate: slot.start_date,
+			browserUrl: live.browser_url ?? null,
+		}));
+}
+
 /**
  * The same timeslots with every cap Mobilize called too low raised to the count
  * it is holding — or null when the rejection was about something else, so the
@@ -380,6 +439,7 @@ export async function runSync(
 		authFailed: false,
 		createdTitles: [],
 		updatedTitles: [],
+		zeroCapStillOpen: [],
 		skippedDetails: [],
 		errors: [],
 	};
@@ -584,6 +644,11 @@ export async function runSync(
 				report.unchanged++;
 				continue;
 			}
+
+			// Before the change check on purpose: a shift stuck open normally needs no
+			// edit at all — the cap is already recorded as pushed — so anything after
+			// that `continue` would never see it. Read-only, so dry runs report it too.
+			report.zeroCapStillOpen.push(...findOpenZeroCaps(live, plan.title, pushedCaps));
 
 			const slotPlan = reconcileTimeslots(plan, live, Date.now(), pushedCaps);
 			// Recorded before the change check, so the pairing stays fresh even when
