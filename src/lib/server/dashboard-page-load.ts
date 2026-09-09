@@ -1,11 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 import { parseDaysParam, type DashboardDaysPreset } from '$lib/components/dashboard/days.js';
-import {
-	type DaySignups,
-	loadSolidaritySignups,
-	loadSlackSignups,
-	loadDoorKnockSignups,
-} from './dashboard-signups.js';
+import { type DaySignups, loadSolidaritySignups, loadSlackSignups } from './dashboard-signups.js';
 import { db } from './db.js';
 import { loadSettings } from './settings.js';
 import { loginRedirectPath } from './post-login-redirect.js';
@@ -18,7 +13,6 @@ export interface DashboardPageData {
 	isAdmin: boolean;
 	solidarity: SourceResult;
 	slack: SourceResult;
-	doorKnock: SourceResult;
 }
 
 interface DashboardLoadEvent {
@@ -54,10 +48,12 @@ export async function loadDashboardPageData(event: DashboardLoadEvent): Promise<
 	// /settings apply to the charts the same as to the weekly growth report.
 	const { reportExcludedChapterIds } = await loadSettings(db);
 
-	const [solidaritySettled, slackSettled, doorKnockSettled] = await Promise.allSettled([
+	// The doors-knocked series is not loaded while the door-knock cards are off
+	// the dashboard; `loadDoorKnockSignups` stays in dashboard-signups.js for
+	// when the VAN door stats are wired up.
+	const [solidaritySettled, slackSettled] = await Promise.allSettled([
 		loadSolidaritySignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
 		loadSlackSignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
-		loadDoorKnockSignups(db, { days }),
 	]);
 
 	return {
@@ -66,6 +62,5 @@ export async function loadDashboardPageData(event: DashboardLoadEvent): Promise<
 		isAdmin: session.isAdmin,
 		solidarity: settledResult('solidarity', solidaritySettled),
 		slack: settledResult('slack', slackSettled),
-		doorKnock: settledResult('door-knock', doorKnockSettled),
 	};
 }

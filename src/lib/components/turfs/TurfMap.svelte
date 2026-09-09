@@ -841,13 +841,25 @@
 		transition: fill-opacity 120ms ease;
 	}
 
+	/* Label treatment is fixed rather than themed, because the thing it sits on
+	   is fixed: the basemap is Positron in both modes, and the polygon under a
+	   label runs from a 0.28 tint to a 0.7 fill. Paper glyphs on an opaque ink
+	   halo are the only pairing that clears all of that in one rule.
+	   It used to be --color-surface over --color-scrim, which is white on a 45%
+	   black in light mode -- a halo that thin over a pale basemap barely
+	   separates the glyphs -- and in dark mode --color-surface IS Medium Blue,
+	   so the label became dark navy behind a dark scrim on light tiles. Neither
+	   token can be used here: both change meaning with the theme, and the map
+	   underneath does not. */
 	.turf text {
 		font-size: 13px;
 		font-weight: 700;
-		fill: var(--color-surface);
+		fill: var(--color-header-text);
 		paint-order: stroke;
-		stroke: var(--color-scrim);
-		stroke-width: 3px;
+		stroke: var(--color-near-black);
+		stroke-width: 3.5px;
+		/* Round joins, or the halo grows spikes off the corners of a K or an M. */
+		stroke-linejoin: round;
 		pointer-events: none;
 		user-select: none;
 	}

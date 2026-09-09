@@ -11,20 +11,6 @@ import {
 	type LeaderboardPair,
 } from '$lib/server/weekly-growth-report.js';
 import { loadSettings } from '$lib/server/settings.js';
-import {
-	loadDoorKnockDayTotals,
-	projectDoorsAtDeadline,
-} from '$lib/server/door-knock-projection.js';
-import {
-	computeDoorsLeaderboardPair,
-	type DoorsLeaderboardPair,
-} from '$lib/server/door-knock-leaderboard.js';
-import {
-	needsDoorKnockRefresh,
-	readDoorKnockRefreshStatus,
-} from '$lib/server/door-knock-refresh.js';
-import { isDoorKnockConfigured } from '$lib/server/door-knock-env.js';
-import { loadDoorKnockTicker, type DoorKnockTicker } from '$lib/server/door-knock-ticker.js';
 
 async function safeLoad(
 	label: string,
@@ -64,83 +50,22 @@ export const load: PageServerLoad = async (event) => {
 
 	const leaderboard: LeaderboardPair = { saved, live };
 
-	// Doors-knocked leaderboard — same α, week windows from door_knock_daily.
-	// A failure degrades both tabs rather than the whole page.
-	let doorsLeaderboard: DoorsLeaderboardPair;
-	try {
-		doorsLeaderboard = await computeDoorsLeaderboardPair(db, {
-			rankingAlpha: settings.slackGrowthReportRankingAlpha,
-		});
-	} catch (err) {
-		console.error(
-			'[dashboard] doors leaderboard load failed:',
-			err instanceof Error ? err.message : err,
-		);
-		const failed = { ok: false as const, error: 'Failed to load leaderboard. Please try again.' };
-		doorsLeaderboard = { lastWeek: failed, thisWeek: failed };
-	}
-
 	// Dashboard countdown banner, from the same settings read as the
-	// leaderboard opts. Absent end datetime = no banner. When door-knock
-	// snapshots exist, the banner also shows the projected doors knocked by
-	// the deadline (recent pace extrapolated over the time remaining) —
-	// best-effort, so a failure just hides the projection line.
-	let countdown: { label: string; endAt: string; projectedDoors: number | null } | null = null;
+	// leaderboard opts. Absent end datetime = no banner.
+	//
+	// The banner's projected-doors line is off with the rest of the door-knock
+	// reporting until the VAN door stats land: `projectDoorsAtDeadline` and the
+	// `projectedDoors` prop are both still there to feed it from the new
+	// source.
+	let countdown: { label: string; endAt: string } | null = null;
 	if (settings.countdownEndAt !== '') {
-		let projectedDoors: number | null = null;
-		try {
-			const dayTotals = await loadDoorKnockDayTotals(db);
-			projectedDoors = projectDoorsAtDeadline(
-				dayTotals,
-				Date.parse(settings.countdownEndAt),
-				Date.now(),
-			);
-		} catch (err) {
-			console.error(
-				'[dashboard] door-knock projection failed:',
-				err instanceof Error ? err.message : err,
-			);
-		}
-		countdown = { label: settings.countdownLabel, endAt: settings.countdownEndAt, projectedDoors };
-	}
-
-	// Close to election day the nightly snapshot is too stale to be useful, so
-	// the page tells the client when nobody has refreshed the door-knock
-	// numbers recently; the client then kicks off a background refresh and
-	// reloads the chart (see the on-demand refresh endpoint). Best-effort — if
-	// the bookkeeping read fails we just serve what we have.
-	let doorKnockRefreshDue = false;
-	if (isDoorKnockConfigured()) {
-		try {
-			doorKnockRefreshDue = needsDoorKnockRefresh(await readDoorKnockRefreshStatus(db), Date.now());
-		} catch (err) {
-			console.error(
-				'[dashboard] door-knock refresh status read failed:',
-				err instanceof Error ? err.message : err,
-			);
-		}
-	}
-
-	// Daily personal leaderboard for the LED ticker under the countdown.
-	// Best-effort like the projection: an empty ticker just hides the board.
-	let doorKnockTicker: DoorKnockTicker = { date: null, entries: [] };
-	try {
-		doorKnockTicker = await loadDoorKnockTicker(db);
-	} catch (err) {
-		console.error(
-			'[dashboard] door-knock ticker load failed:',
-			err instanceof Error ? err.message : err,
-		);
+		countdown = { label: settings.countdownLabel, endAt: settings.countdownEndAt };
 	}
 
 	return {
 		...base,
 		leaderboard,
-		doorsLeaderboard,
 		countdown,
-		doorKnockRefreshDue,
-		doorKnockTicker,
-		tickerColumnsPerSecond: settings.doorTickerColumnsPerSecond,
 		pageTitle: 'Dashboard',
 	};
 };
