@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
+import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 import {
 	hasAnyTurf,
 	loadActivityCounts,
@@ -16,6 +17,7 @@ import {
 	type ActivityEvent,
 } from '$lib/van/turf-activity.js';
 import { campaignDayKey, campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
+import { relativeSince } from '$lib/components/settings/format-relative.js';
 
 // Turf checkout history, for organizers.
 //
@@ -46,6 +48,10 @@ export interface ActivityEventView extends ActivityEvent {
 	dayKey: string;
 	/** Campaign-local time of day, e.g. "9:41 AM". */
 	timeLabel: string;
+	/** "20m ago", against this load's `now`. Formatted here for the same reason
+	 *  `timeLabel` is — the component computed it from `Date.now()` at render
+	 *  time, so SSR and hydration disagreed on every row. */
+	agoLabel: string;
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -56,9 +62,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!locals.session?.isAdmin) redirect(302, '/');
 
 	const settings = await loadSettings(db);
-	const chapters = settings.chapterChannelMap
-		.map((entry) => ({ chapterId: entry.chapterId, name: entry.name }))
-		.sort((a, b) => a.name.localeCompare(b.name));
+	// Deduplicated, not just sorted — the channel map lists a chapter once per
+	// channel. Mapping the rows directly put a duplicate key in the picker's
+	// `{#each}` and took the whole page's hydration down with it. See
+	// chaptersFromChannelMap.
+	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
 
 	// Validated against the chapter list rather than trusted from the query
 	// string, the same way /turfs does it: an unknown id falls back to "every
@@ -68,8 +76,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const period = parsePeriod(url.searchParams.get('days'));
 
 	// One `now` for both queries, so the counts and the list describe the same
-	// window even if a claim lands between them.
-	const range = rangeFor(period, new Date());
+	// window even if a claim lands between them. Named rather than inlined into
+	// rangeFor because the per-event "ago" labels below measure against it too,
+	// and a second `new Date()` would let the window and the labels disagree.
+	const now = new Date();
+	const range = rangeFor(period, now);
 	const query = { chapterId: chapter?.chapterId ?? null, range };
 
 	const [counts, rows, anyTurf] = await Promise.all([
@@ -87,6 +98,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			...event,
 			dayKey: campaignDayKey(event.at),
 			timeLabel: campaignTimeLabel(event.at),
+			agoLabel: relativeSince(event.at, now),
 		}));
 
 	// Day headings come from the events themselves, so a day with no activity

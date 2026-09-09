@@ -71,7 +71,7 @@ async function runGeometry(
 	if (!configured.ok) return null;
 
 	try {
-		const { slackTrackingChannelId } = await loadSettings(db);
+		const { slackTurfChannelId } = await loadSettings(db);
 		return await runGeometryQueue(db, configured.client, {
 			exportJobTypeId,
 			// VAN requires this and posts the finished job to it, so it must be
@@ -81,7 +81,7 @@ async function runGeometry(
 			// internal endpoints. See webhook-token.ts.
 			webhookUrlFor: (mapRouteId) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, mapRouteId),
 			timeBudgetMs,
-			alert: alertFor('[van]', slackTrackingChannelId),
+			alert: alertFor('[van]', slackTurfChannelId),
 			// `geocode` deliberately omitted: the worker defaults to the Census
 			// batch geocoder, which fires only for rows VAN left without
 			// coordinates.
@@ -174,9 +174,9 @@ export const POST: RequestHandler = async ({ url }) => {
 		const notices = [...result.degraded, ...result.warnings, ...(geometry?.warnings ?? [])];
 		if (notices.length > 0) {
 			try {
-				const { slackTrackingChannelId } = await loadSettings(db);
+				const { slackTurfChannelId } = await loadSettings(db);
 				await slack.chat.postMessage({
-					channel: slackTrackingChannelId,
+					channel: slackTurfChannelId,
 					text: `[van] catalog sync notices:\n${notices.map((n) => `• ${n}`).join('\n')}`,
 				});
 			} catch (err) {

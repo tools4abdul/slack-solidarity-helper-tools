@@ -325,6 +325,10 @@ describe('runGeometryQueue', () => {
 		});
 		// Turf 100 has a bad export type; turf 101 succeeds with a hull spanning
 		// most of Florida, which is advisory rather than fatal.
+		//
+		// Three points is BELOW MIN_POINTS_FOR_SPAN_VERDICT, so the span warning
+		// must hedge rather than blame the saved list — see the dense case below
+		// for the wording that does blame it.
 		const wide = [
 			HEADER,
 			'1,A,B,"x",28.5,-81.4,',
@@ -358,9 +362,38 @@ describe('runGeometryQueue', () => {
 
 		const text = alert.mock.calls[0]![0];
 		expect(text).toMatch(/VAddressLatitude/);
-		expect(text).not.toMatch(/far past a walkable turf/);
-		expect(result.warnings.join('\n')).toMatch(/far past a walkable turf/);
-		expect(result.warnings.join('\n')).not.toMatch(/gave up after/);
+		expect(text).not.toMatch(/span/);
+		const warnings = result.warnings.join('\n');
+		expect(warnings).toMatch(/too few to tell/);
+		expect(warnings).toMatch(/3 coordinate\(s\)/);
+		// The claim the old wording made on this very fixture, and could not
+		// support: three scattered points say nothing about the saved list.
+		expect(warnings).not.toMatch(/probably not a cut map region/);
+		expect(warnings).not.toMatch(/gave up after/);
+	});
+
+	it('blames the saved list for a wide span only when there are enough points', async () => {
+		// 30 points (≥ MIN_POINTS_FOR_SPAN_VERDICT) spread across Florida. Here the
+		// span really is evidence: this many doors cannot be one walkable turf, so
+		// the warning is allowed to name the likely cause.
+		const rows = Array.from({ length: 30 }, (_, i) => {
+			const lat = (28 + i * 0.1).toFixed(3);
+			const lng = (-84 + i * 0.1).toFixed(3);
+			return `${i + 1},A,B,"${i} Main St , Orlando, FL",${lat},${lng},1968-08-09`;
+		});
+		const dense = [HEADER, ...rows, ''].join('\r\n');
+		const { db } = makeDb([pendingRow()], [{ mapRouteId: 100, routeSize: 30 }]);
+		const result = await runGeometryQueue(db, makeClient(), {
+			...OPTIONS,
+			fetchFn: async () => new Response(dense, { status: 200 }),
+		});
+
+		expect(result.hullsTooLarge).toBe(1);
+		expect(result.hullsStored).toBe(1);
+		const warnings = result.warnings.join('\n');
+		expect(warnings).toMatch(/far past a walkable turf/);
+		expect(warnings).toMatch(/probably not a cut map region/);
+		expect(warnings).not.toMatch(/too few to tell/);
 	});
 
 	it('dead-letters a 403 immediately rather than retrying a permission error', async () => {

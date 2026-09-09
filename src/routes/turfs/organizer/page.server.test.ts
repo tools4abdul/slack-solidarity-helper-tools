@@ -21,9 +21,14 @@ vi.mock('$lib/server/van/holdings-store.js', () => ({
 	loadRecentCompletions: mockCompletions,
 }));
 
+// Two rows per chapter, because chapter_channel_map is keyed by CHANNEL and in
+// production every chapter has two. The single-row-per-chapter fixture this
+// replaces is why the suite never caught the duplicate-key crash.
 const CHAPTERS = [
 	{ chapterId: 72, channelId: 'C2', name: 'Wayne County' },
 	{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' },
+	{ chapterId: 72, channelId: 'C4', name: 'Wayne County' },
+	{ chapterId: 71, channelId: 'C3', name: 'Washtenaw County' },
 ];
 
 const ADMIN = { slackUserId: 'U_ADMIN', slackUserName: 'Admin', isAdmin: true };
@@ -140,6 +145,35 @@ describe('/turfs/organizer filters', () => {
 			'Washtenaw County',
 			'Wayne County',
 		]);
+	});
+
+	it('formats the relative labels server-side against the load\u2019s own now', async () => {
+		// These used to be computed in the component from Date.now() at render
+		// time, so SSR stamped the server's clock and hydration the browser's.
+		// Asserting the exact strings here is what pins them to the load function:
+		// the fixtures are 10h and 3h before NOW, and nothing in the component can
+		// reach a clock any more.
+		// confirmedDoorDelta: 0 is what makes a completion suspect; the default
+		// fixture leaves it null, meaning "not checked yet".
+		mockCompletions.mockResolvedValue([completionRow({ confirmedDoorDelta: 0 })]);
+		const data = await run(event(ADMIN));
+
+		expect(data.holdings[0].claimedAgoLabel).toBe('10h ago');
+		expect(data.suspects[0].completedAgoLabel).toBe('3h ago');
+	});
+
+	it('lists each chapter once, whatever the channel map does', async () => {
+		// A chapter with two Slack channels has two rows. Passing both through
+		// gave the picker's keyed {#each} a duplicate chapterId, which throws
+		// each_key_duplicate — an uncaught error during hydration that took the
+		// whole page's client-side app down with it: the top bar lost its theme
+		// toggle, menu, username and log-out button, and clicking the menu item
+		// did nothing until a manual reload.
+		const data = await run(event(ADMIN));
+		const ids = data.chapters.map((c: { chapterId: number }) => c.chapterId);
+
+		expect(ids).toEqual([71, 72]);
+		expect(new Set(ids).size).toBe(ids.length);
 	});
 });
 

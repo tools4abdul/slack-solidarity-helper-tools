@@ -37,6 +37,10 @@ export interface CatalogSyncResult {
 	turfsUnretired: number;
 	geometryQueued: number;
 	claimsReleased: number;
+	/** Queue rows deleted because their turf was retired. Reported rather than
+	 *  silent: it is the only signal that geometry work was abandoned, as
+	 *  distinct from having failed. */
+	geometryQueueDropped: number;
 	/** True when /minivanExports or /printedLists were unavailable — the sync
 	 *  still ran, with less cross-checking. */
 	degraded: string[];
@@ -94,6 +98,9 @@ export async function runCatalogSync(
 			turfsUnretired: 0,
 			geometryQueued: 0,
 			claimsReleased: 0,
+			// Nothing is mapped, so nothing was read and nothing can be retired —
+			// this branch never reaches the queue sweep.
+			geometryQueueDropped: 0,
 			degraded,
 			warnings: [
 				'No chapters are mapped to VAN folders — add them under Settings → Chapter → VAN folders.',
@@ -184,6 +191,9 @@ export async function runCatalogSync(
 			turfsUnretired: plan.unretirements.length,
 			geometryQueued: plan.geometryQueue.length,
 			claimsReleased: 0,
+			// A dry run cannot know how many queue rows exist without reading them,
+			// and the retirement count already shows the blast radius.
+			geometryQueueDropped: 0,
 			degraded,
 			warnings: [...warnings, ...plan.warnings],
 			plan,
@@ -223,6 +233,46 @@ export async function runCatalogSync(
 			)
 			.returning({ id: vanTurfCheckouts.id });
 		claimsReleased += released.length;
+	}
+
+	// Retirement also abandons any geometry work still queued for that turf.
+	//
+	// VAN deletes a route's saved list along with the route, so an export queued
+	// against it can no longer succeed — observed live as `'savedListId' must be
+	// a valid saved list ID in this context`. Left in place, each such row burns
+	// all MAX_ATTEMPTS retries and then dead-letters, and every dead letter is
+	// posted to the tracking channel. That is a Slack alert per retired turf,
+	// describing turf nobody can see, for a failure with no action behind it.
+	//
+	// Deleted rather than marked `failed` so the queue keeps meaning "work that
+	// could still succeed".
+	//
+	// Scoped to every turf that is retired once this run has finished, NOT just
+	// the ones retired ON this run. Draining only `plan.retirements` would leave
+	// rows already stranded by earlier syncs to go on failing forever — three of
+	// them were sitting in production when this was written — and would make the
+	// cleanup depend on catching each retirement in the one run that performed
+	// it. As a sweep it is idempotent and self-healing: the second run finds
+	// nothing left to delete and reports zero.
+	//
+	// Unretirements are excluded: the upsert above cleared their `retiredAt`, and
+	// the geometry insert below is about to re-queue them on this same run.
+	const unretired = new Set(plan.unretirements);
+	const retiredRouteIds = [
+		...new Set([
+			...plan.retirements,
+			...existing
+				.filter((row) => row.retiredAt !== null && !unretired.has(row.mapRouteId))
+				.map((row) => row.mapRouteId),
+		]),
+	];
+	let geometryQueueDropped = 0;
+	for (const batch of chunked(retiredRouteIds)) {
+		const dropped = await db
+			.delete(vanGeometryQueue)
+			.where(inArray(vanGeometryQueue.mapRouteId, batch))
+			.returning({ mapRouteId: vanGeometryQueue.mapRouteId });
+		geometryQueueDropped += dropped.length;
 	}
 
 	// plan.unretirements needs no write of its own — the upsert above already
@@ -302,6 +352,7 @@ export async function runCatalogSync(
 		turfsUnretired: plan.unretirements.length,
 		geometryQueued: plan.geometryQueue.length,
 		claimsReleased,
+		geometryQueueDropped,
 		degraded,
 		warnings: [...warnings, ...plan.warnings],
 		plan,

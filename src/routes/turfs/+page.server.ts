@@ -10,6 +10,7 @@ import {
 } from '$lib/server/env.js';
 import { vanTurfCheckouts, vanTurfs } from '$lib/server/schema.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
+import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 import { lookupZipCentroid } from '$lib/server/van/zip-centroid.js';
 import { turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
@@ -143,21 +144,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// the chapters that have turf. Listing only the latter would be a
 	// cross-chapter aggregate: one request revealing where the field operation
 	// is running, which is exactly what the compartment exists to prevent.
-	// Deduplicated by chapterId, because chapter_channel_map is keyed by
-	// CHANNEL, not by chapter — a chapter with two Slack channels has two rows
-	// and was rendering as two identical buttons. Observed live: 64 rows, 32
-	// chapters, every one of them listed twice.
-	//
-	// First row wins on the name. They agree in practice, and picking
-	// arbitrarily between two spellings of the same chapter would make the
-	// picker's order jitter between requests for no gain.
-	const byChapterId = new Map<number, { chapterId: number; name: string }>();
-	for (const entry of settings.chapterChannelMap) {
-		if (!byChapterId.has(entry.chapterId)) {
-			byChapterId.set(entry.chapterId, { chapterId: entry.chapterId, name: entry.name });
-		}
-	}
-	const chapters = [...byChapterId.values()].sort((a, b) => a.name.localeCompare(b.name));
+	// Deduplicated by chapterId — see chaptersFromChannelMap, which this page's
+	// inline version became. Leaving it inline is what let /turfs/organizer and
+	// /turfs/activity reintroduce the bug in a form that broke hydration.
+	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
 
 	const requested = Number(url.searchParams.get('chapter'));
 	const chapter = chapters.find((c) => c.chapterId === requested) ?? null;

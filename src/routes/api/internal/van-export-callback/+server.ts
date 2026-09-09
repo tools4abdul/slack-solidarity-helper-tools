@@ -78,12 +78,12 @@ export const POST: RequestHandler = async ({ url, request }) => {
 	}
 
 	try {
-		const { slackTrackingChannelId } = await loadSettings(db);
+		const { slackTurfChannelId } = await loadSettings(db);
 		const result = await runGeometryQueue(db, configured.client, {
 			exportJobTypeId,
 			webhookUrlFor: (id) => exportCallbackUrl(APP_URL, INTERNAL_CRON_SECRET, id),
 			timeBudgetMs: BUDGET_MS,
-			alert: alertFor('[van]', slackTrackingChannelId),
+			alert: alertFor('[van]', slackTurfChannelId),
 		});
 		console.log(`[van] export callback (job ${String(exportJobId)}):`, {
 			hullsStored: result.hullsStored,

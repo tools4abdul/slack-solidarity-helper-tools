@@ -2,14 +2,27 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runCatalogSync } from './sync.js';
 import { VanError, type VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
+import { vanGeometryQueue } from '../schema.js';
 
 // A recording stub of the drizzle chains sync.ts actually uses. Enough to
 // assert what was written without standing up SQLite; the storage-level
 // guarantees (the partial unique index) are covered by their own tests.
-function makeDb(existing: unknown[] = []) {
+function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ mapRouteId: 100 }]) {
 	const inserted: unknown[] = [];
 	const updates: unknown[] = [];
+	/** Tables `.delete()` was called against, so a test can assert that
+	 *  retirement clears the geometry queue and not something else. */
+	const deletedFrom: unknown[] = [];
 	const db = {
+		delete: (table: unknown) => {
+			deletedFrom.push(table);
+			return {
+				where: () =>
+					Object.assign(Promise.resolve(undefined), {
+						returning: async () => deletedRows,
+					}),
+			};
+		},
 		select: () => ({ from: async () => existing }),
 		insert: () => ({
 			values: (row: unknown) => {
@@ -34,7 +47,7 @@ function makeDb(existing: unknown[] = []) {
 			},
 		}),
 	};
-	return { db: db as never, inserted, updates };
+	return { db: db as never, inserted, updates, deletedFrom };
 }
 
 function makeClient(over: Partial<VanClient> = {}): VanClient {
@@ -181,6 +194,86 @@ describe('runCatalogSync', () => {
 		expect(result.turfsRetired).toBe(1);
 		expect(result.claimsReleased).toBe(1);
 		expect(updates).toContainEqual(expect.objectContaining({ releaseReason: 'retired' }));
+	});
+
+	it('drops queued geometry for turf that retired', async () => {
+		// VAN deletes a retired route's saved list with it, so a queue row left
+		// behind can only fail — four times, then dead-letter into Slack. The row
+		// goes with the turf.
+		const existing = [
+			{
+				mapRouteId: 500,
+				folderId: 1152,
+				retiredAt: null,
+				hullJson: null,
+				hullSourceRouteSize: null,
+				routeSize: 0,
+			},
+		];
+		const { db, deletedFrom } = makeDb(existing, [{ mapRouteId: 500 }]);
+		const result = await runCatalogSync(db, makeClient(), MAPPING);
+
+		expect(result.turfsRetired).toBe(1);
+		expect(result.geometryQueueDropped).toBe(1);
+		// The queue, and nothing else: deleting from van_turfs here would destroy
+		// the retirement history the drift report reads.
+		expect(deletedFrom).toEqual([vanGeometryQueue]);
+	});
+
+	it('drops no geometry rows when nothing is retired', async () => {
+		const { db, deletedFrom } = makeDb();
+		const result = await runCatalogSync(db, makeClient(), MAPPING);
+
+		expect(result.turfsRetired).toBe(0);
+		expect(result.geometryQueueDropped).toBe(0);
+		expect(deletedFrom).toEqual([]);
+	});
+
+	it('sweeps geometry rows stranded by an EARLIER run, not just this one', async () => {
+		// The production case this was written for: turf retired on a previous sync,
+		// its queue row still failing against a saved list VAN has deleted. Nothing
+		// retires on this run, so a fix scoped to `plan.retirements` would never
+		// reach it.
+		const existing = [
+			{
+				// Already retired, and route 100 is the one the client still returns —
+				// so this run retires nothing.
+				mapRouteId: 900,
+				folderId: 1152,
+				retiredAt: '2026-09-04T07:07:12.832Z',
+				hullJson: null,
+				hullSourceRouteSize: null,
+				routeSize: 0,
+			},
+		];
+		const { db, deletedFrom } = makeDb(existing, [{ mapRouteId: 900 }]);
+		const result = await runCatalogSync(db, makeClient(), MAPPING);
+
+		expect(result.turfsRetired).toBe(0);
+		expect(result.geometryQueueDropped).toBe(1);
+		expect(deletedFrom).toEqual([vanGeometryQueue]);
+	});
+
+	it('keeps the geometry row for a turf coming back from retirement', async () => {
+		// Route 100 is retired in our table and present in VAN's response, so this
+		// run unretires it and re-queues its geometry. Deleting the row here would
+		// race the insert that follows.
+		const existing = [
+			{
+				mapRouteId: 100,
+				folderId: 1152,
+				retiredAt: '2026-09-04T07:07:12.832Z',
+				hullJson: null,
+				hullSourceRouteSize: null,
+				routeSize: 0,
+			},
+		];
+		const { db, deletedFrom } = makeDb(existing);
+		const result = await runCatalogSync(db, makeClient(), MAPPING);
+
+		expect(result.turfsUnretired).toBe(1);
+		expect(result.geometryQueueDropped).toBe(0);
+		expect(deletedFrom).toEqual([]);
 	});
 
 	it('stops fetching folders once the time budget lapses', async () => {

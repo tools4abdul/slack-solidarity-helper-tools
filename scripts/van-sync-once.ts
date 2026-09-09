@@ -95,6 +95,7 @@ async function main(): Promise<void> {
 	console.log(`  turfs retired       ${result.turfsRetired}`);
 	console.log(`  turfs unretired     ${result.turfsUnretired}`);
 	console.log(`  queued for geometry ${result.geometryQueued}`);
+	console.log(`  geometry dropped    ${result.geometryQueueDropped}`);
 	console.log(`  claims released     ${result.claimsReleased}`);
 
 	if (result.degraded.length > 0) {
