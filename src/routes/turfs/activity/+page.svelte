@@ -1,7 +1,6 @@
 <script lang="ts">
 	import './activity.css';
 	import { resolve } from '$app/paths';
-	import { formatRelative } from '$lib/components/settings/format-relative.js';
 	import {
 		ACTIVITY_KINDS,
 		activityLabel,
@@ -27,12 +26,11 @@
 		PERIOD_OPTIONS.find((o) => o.value === data.period)?.label ?? 'this period',
 	);
 
-	/** `formatRelative` already ends in "ago" — appending another is the mistake
-	 *  its callers keep making, so it is spelled out here too. */
-	function ago(iso: string): string {
-		const ms = Date.parse(iso);
-		return Number.isNaN(ms) ? '' : formatRelative(Date.now() - ms);
-	}
+	// No `ago()` here, and no clock of any kind: each event arrives with its own
+	// `agoLabel` from the load function. This file used to compute it from
+	// `Date.now()` during render, which stamped the server's clock into SSR and
+	// the browser's into hydration — a mismatch on every row, and the very thing
+	// the note at the top of +page.server.ts says this page avoids.
 </script>
 
 <main>
@@ -117,7 +115,7 @@
 								<tr>
 									<td class="col-time">
 										<span class="time">{event.timeLabel}</span>
-										<span class="time-ago">{ago(event.at)}</span>
+										<span class="time-ago">{event.agoLabel}</span>
 									</td>
 									<td class="col-what">
 										<span class="badge badge-{event.kind}">{activityLabel(event.kind)}</span>

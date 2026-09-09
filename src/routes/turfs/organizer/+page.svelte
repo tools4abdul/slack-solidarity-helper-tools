@@ -1,17 +1,16 @@
 <script lang="ts">
 	import './organizer.css';
 	import { resolve } from '$app/paths';
-	import { formatRelative } from '$lib/components/settings/format-relative.js';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
 
 	const { data } = $props();
 
-	/** `formatRelative` already ends in "ago" — appending another is the mistake
-	 *  its callers keep making. */
-	function ago(iso: string): string {
-		const ms = Date.parse(iso);
-		return Number.isNaN(ms) ? '' : formatRelative(Date.now() - ms);
-	}
+	// No `ago()` here, and no clock of any kind: the "ago" labels arrive from the
+	// load function as `claimedAgoLabel` / `completedAgoLabel`. This file used to
+	// compute them from `Date.now()` during render, which stamped the server's
+	// clock into SSR and the browser's into hydration — a mismatch on every row.
+	// Anything time-relative on this page belongs in +page.server.ts, measured
+	// against the single `now` it already uses for the queries.
 
 	function hoursLabel(hours: number): string {
 		if (hours <= 0) return 'due now';
@@ -108,7 +107,7 @@
 								<td>{held.slackUserName}</td>
 								<td class="col-num">
 									{held.hoursHeld}h
-									<span class="turf-sub">{ago(held.claimedAt)}</span>
+									<span class="turf-sub">{held.claimedAgoLabel}</span>
 								</td>
 								<td class="col-num">
 									<span class="expires-in">{hoursLabel(held.hoursLeft)}</span>
@@ -178,7 +177,7 @@
 								<td>{suspect.slackUserName}</td>
 								<td class="col-num">
 									{suspect.completedLabel}
-									<span class="turf-sub">{ago(suspect.completedAt)}</span>
+									<span class="turf-sub">{suspect.completedAgoLabel}</span>
 								</td>
 							</tr>
 						{/each}

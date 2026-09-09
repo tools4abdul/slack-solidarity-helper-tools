@@ -197,10 +197,29 @@ async function checkMode(mode: VanDatabaseMode, verbose: boolean): Promise<ModeS
 		for (const type of jobTypes) {
 			console.log(`         ${String(type.exportJobTypeId).padStart(7)}  ${type.name ?? ''}`);
 		}
-		console.log(
-			'         → set VAN_EXPORT_JOB_TYPE_ID to the id of the type that can\n' +
-				'           export VAddressLatitude / VAddressLongitude.',
-		);
+		// Name the type rather than describing it. The old wording said only
+		// "the type that can export VAddressLatitude / VAddressLongitude" and
+		// left the reader to guess between two plausible names — and
+		// SavedListExport is by far the likelier guess, which is exactly the
+		// misconfiguration that makes every turf dead-letter as a pin. Verified
+		// live: VoterCircle is the only type carrying coordinates, and
+		// SavedListExport carries none at all (hull-extract.ts header).
+		const voterCircle = jobTypes.find((t) => (t.name ?? '').toLowerCase() === 'votercircle');
+		if (voterCircle) {
+			console.log(
+				`         → set VAN_EXPORT_JOB_TYPE_ID=${voterCircle.exportJobTypeId}  (VoterCircle)\n` +
+					'           It is the only type whose export carries VAddressLatitude /\n' +
+					'           VAddressLongitude. Do NOT use SavedListExport — it has no\n' +
+					'           coordinate columns, so every turf dead-letters and renders as a pin.',
+			);
+		} else {
+			console.log(
+				'         → set VAN_EXPORT_JOB_TYPE_ID to the id of the type that can\n' +
+					'           export VAddressLatitude / VAddressLongitude. On this key that has\n' +
+					'           always been VoterCircle, which is NOT in the list above — so check\n' +
+					'           with EveryAction which of these types carries coordinates.',
+			);
+		}
 	}
 
 	console.log('\nTurf catalog');

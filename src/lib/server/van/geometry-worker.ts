@@ -29,7 +29,13 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanGeometryQueue, vanTurfs } from '../schema.js';
 import { VanError, type VanClient } from './client.js';
-import { extractHull, responseChunks, HullExtractError, type GeocodeFn } from './hull-extract.js';
+import {
+	extractHull,
+	responseChunks,
+	HullExtractError,
+	MIN_POINTS_FOR_SPAN_VERDICT,
+	type GeocodeFn,
+} from './hull-extract.js';
 import { geocodeAddresses } from './geocode-batch.js';
 import type { VanExportJob } from './types.js';
 
@@ -366,10 +372,22 @@ export async function runGeometryQueue(
 				);
 			} else if (extract.hullTooLarge) {
 				result.hullsTooLarge++;
+				const km = Math.round((extract.hullExtentMeters ?? 0) / 1000);
+				// Two readings of the same wide span, and the point count is what
+				// tells them apart — see MIN_POINTS_FOR_SPAN_VERDICT. Saying "the
+				// saved list is probably not a cut map region" on six points was
+				// stating a conclusion the evidence could not support, and pointed
+				// at re-cutting turf that was already correct.
 				warnings.push(
-					`Turf ${item.mapRouteId}: addresses span ~${Math.round((extract.hullExtentMeters ?? 0) / 1000)} km, ` +
-						`far past a walkable turf. The shape is stored but is almost certainly not a ` +
-						`turf boundary — the saved list is probably not a cut map region.`,
+					extract.pointCount < MIN_POINTS_FOR_SPAN_VERDICT
+						? `Turf ${item.mapRouteId}: addresses span ~${km} km across only ` +
+								`${extract.pointCount} coordinate(s) — too few to tell a mis-scoped saved list ` +
+								`from a map region that is simply sparsely populated. The shape is stored; ` +
+								`treat it as approximate rather than as a turf boundary.`
+						: `Turf ${item.mapRouteId}: addresses span ~${km} km across ` +
+								`${extract.pointCount} coordinates, far past a walkable turf. The shape is ` +
+								`stored but is almost certainly not a turf boundary — the saved list is ` +
+								`probably not a cut map region.`,
 				);
 			}
 		} catch (err) {

@@ -226,6 +226,7 @@ export const APP_CONFIG_FIELDS: {
 	slackTrackingChannelId: slackChannelField('slackTrackingChannelId'),
 	slackGrowthReportChannelId: slackChannelField('slackGrowthReportChannelId'),
 	slackMobilizeSyncChannelId: slackChannelField('slackMobilizeSyncChannelId'),
+	slackTurfChannelId: slackChannelField('slackTurfChannelId'),
 	slackMemberNoteChannelId: slackChannelField('slackMemberNoteChannelId'),
 
 	// Contact fields use '' as the explicit "not configured" value, so clearing

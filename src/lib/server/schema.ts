@@ -240,6 +240,11 @@ export const appConfig = sqliteTable(
 		// "wherever the growth report goes" — the fallback these alerts had
 		// before this column existed. No env var of its own.
 		slackMobilizeSyncChannelId: text('slack_mobilize_sync_channel_id'),
+		// Where the VAN turf catalog sync and the geometry worker post their
+		// alerts. NULL means "wherever the volunteer-help tracking channel
+		// points" — the fallback these alerts had before this column existed. No
+		// env var of its own.
+		slackTurfChannelId: text('slack_turf_channel_id'),
 		// Admin channel that gets a line every time a member note or warning is
 		// logged, so moderation stays visible to the whole admin group rather
 		// than only to whoever filed it. NULL means "don't post" — the feature

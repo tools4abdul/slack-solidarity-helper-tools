@@ -29,7 +29,7 @@ export const SETTINGS_NAV_BREAKPOINT_PX = 960;
 
 export const APP_CONFIG_SECTION_ID = 'app-config';
 
-/** Ids for the ten AppConfigEditor rows, so that file references symbols rather
+/** Ids for the AppConfigEditor rows, so that file references symbols rather
  *  than repeating string literals. `sections.test.ts` asserts these stay in
  *  lockstep with the `app-config` children below. */
 export const APP_CONFIG_ROW_IDS = {
@@ -37,6 +37,7 @@ export const APP_CONFIG_ROW_IDS = {
 	trackingChannel: 'cfg-tracking-channel',
 	growthReportChannel: 'cfg-growth-report-channel',
 	mobilizeSyncChannel: 'cfg-mobilize-sync-channel',
+	turfChannel: 'cfg-turf-channel',
 	mobilizeContact: 'cfg-mobilize-contact',
 	countdown: 'cfg-countdown',
 	welcomeDm: 'cfg-welcome-dm',
@@ -73,6 +74,7 @@ export const SETTINGS_SECTIONS: readonly SettingsNavItem[] = [
 			{ id: APP_CONFIG_ROW_IDS.trackingChannel, label: 'Volunteer-help tracking channel' },
 			{ id: APP_CONFIG_ROW_IDS.growthReportChannel, label: 'Weekly growth report channel' },
 			{ id: APP_CONFIG_ROW_IDS.mobilizeSyncChannel, label: 'Mobilize sync channel' },
+			{ id: APP_CONFIG_ROW_IDS.turfChannel, label: 'Turf sync channel' },
 			{ id: APP_CONFIG_ROW_IDS.mobilizeContact, label: 'Mobilize event contact' },
 			{ id: APP_CONFIG_ROW_IDS.countdown, label: 'Header countdown' },
 			{ id: APP_CONFIG_ROW_IDS.welcomeDm, label: 'New-member welcome DM' },

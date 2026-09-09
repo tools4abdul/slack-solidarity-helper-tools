@@ -109,6 +109,29 @@ const HULL_PRECISION = 5;
  */
 export const MAX_HULL_EXTENT_M = 10_000;
 
+/**
+ * Below this many surviving coordinates, a wide span is not evidence about the
+ * saved list at all.
+ *
+ * The span check answers "is this really a cut map region?" by asking whether
+ * the addresses could be walked. That inference needs enough points to be worth
+ * anything, and it silently didn't have them. Measured against the VAN demo
+ * database: a freshly cut 6-person map region geocoded to 6 points spread
+ * evenly over ~10 km — no outlier to reject, `outliersDropped: 0` — and the
+ * check reported the saved list was "probably not a cut map region". It was
+ * exactly the cut map region; the region is simply sparsely populated, so the
+ * hull of everyone in it is far wider than the boundary an organizer drew.
+ *
+ * A real precinct turf carries 200-400 doors packed along a few streets, where
+ * a 10 km span genuinely does mean the list is mis-scoped. So the threshold
+ * separates the two readings rather than trying to make one message cover both:
+ * above it the verdict stands, below it we say we cannot tell. Deliberately
+ * generous — the cost of hedging on a turf that really is mis-scoped is a
+ * vaguer warning, while the cost of the old wording was sending someone to
+ * re-cut turf that was already correct.
+ */
+export const MIN_POINTS_FOR_SPAN_VERDICT = 25;
+
 function round5(value: number): number {
 	return Number(value.toFixed(HULL_PRECISION));
 }

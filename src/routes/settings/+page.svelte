@@ -128,6 +128,7 @@
 					trackingChannelId={data.settings.slackTrackingChannelId}
 					growthReportChannelId={data.settings.slackGrowthReportChannelId}
 					mobilizeSyncChannelId={data.settings.slackMobilizeSyncChannelId}
+					turfChannelId={data.settings.slackTurfChannelId}
 					mobilizeContactName={data.settings.mobilizeContactName}
 					mobilizeContactEmail={data.settings.mobilizeContactEmail}
 					mobilizeContactPhone={data.settings.mobilizeContactPhone}

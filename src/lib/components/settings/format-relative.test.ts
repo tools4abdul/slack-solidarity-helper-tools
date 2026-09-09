@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatRelative } from './format-relative.js';
+import { formatRelative, relativeSince } from './format-relative.js';
 
 describe('formatRelative', () => {
 	it('returns "just now" for any delta under one minute', () => {
@@ -44,5 +44,33 @@ describe('formatRelative', () => {
 	it('clamps negative deltas (clock skew) to "just now" rather than rendering future tense', () => {
 		expect(formatRelative(-1)).toBe('just now');
 		expect(formatRelative(-60_000)).toBe('just now');
+	});
+});
+
+describe('relativeSince', () => {
+	const NOW = new Date('2026-09-09T12:00:00.000Z');
+
+	it('measures against the supplied now, not the wall clock', () => {
+		// The property the turf-page hydration mismatch came down to: the same
+		// inputs must give the same output, whenever and wherever it is called.
+		expect(relativeSince('2026-09-09T11:30:00.000Z', NOW)).toBe('30m ago');
+		expect(relativeSince('2026-09-09T09:00:00.000Z', NOW)).toBe('3h ago');
+		expect(relativeSince('2026-09-07T12:00:00.000Z', NOW)).toBe('2 days ago');
+	});
+
+	it('is deterministic across calls, so SSR and hydration agree', () => {
+		const first = relativeSince('2026-09-09T11:00:00.000Z', NOW);
+		const second = relativeSince('2026-09-09T11:00:00.000Z', NOW);
+		expect(first).toBe(second);
+		expect(first).toBe('1h ago');
+	});
+
+	it('returns an empty string for an unparseable timestamp rather than NaN', () => {
+		expect(relativeSince('not a date', NOW)).toBe('');
+		expect(relativeSince('', NOW)).toBe('');
+	});
+
+	it('clamps a future timestamp to "just now" via formatRelative', () => {
+		expect(relativeSince('2026-09-09T12:30:00.000Z', NOW)).toBe('just now');
 	});
 });

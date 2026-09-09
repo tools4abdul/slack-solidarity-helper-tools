@@ -34,6 +34,7 @@ describe('the table', () => {
 				'slackTrackingChannelId',
 				'slackGrowthReportChannelId',
 				'slackMobilizeSyncChannelId',
+				'slackTurfChannelId',
 				'slackMemberNoteChannelId',
 				'mobilizeContactName',
 				'mobilizeContactEmail',
@@ -50,7 +51,7 @@ describe('the table', () => {
 				'themeTokens',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(17);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(18);
 	});
 });
 
@@ -59,6 +60,7 @@ describe('slack channel fields', () => {
 		'slackTrackingChannelId',
 		'slackGrowthReportChannelId',
 		'slackMobilizeSyncChannelId',
+		'slackTurfChannelId',
 		'slackMemberNoteChannelId',
 	] as const)('%s accepts a validated channel id', async (key) => {
 		expect(await run(key, 'C123')).toEqual({ ok: true, value: 'C123' });

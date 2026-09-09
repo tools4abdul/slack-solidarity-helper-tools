@@ -16,9 +16,14 @@ vi.mock('$lib/server/van/activity-store.js', () => ({
 
 const { emptyCounts } = await import('$lib/van/turf-activity.js');
 
+// Two rows per chapter, because chapter_channel_map is keyed by CHANNEL and in
+// production every chapter has two. The single-row-per-chapter fixture this
+// replaces is why the suite never caught the duplicate-key crash.
 const CHAPTERS = [
 	{ chapterId: 72, channelId: 'C2', name: 'Wayne County' },
 	{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' },
+	{ chapterId: 72, channelId: 'C4', name: 'Wayne County' },
+	{ chapterId: 71, channelId: 'C3', name: 'Washtenaw County' },
 ];
 
 const ADMIN = { slackUserId: 'U_ADMIN', slackUserName: 'Admin', isAdmin: true };
@@ -158,6 +163,20 @@ describe('/turfs/activity filters', () => {
 			'Wayne County',
 		]);
 	});
+
+	it('lists each chapter once, whatever the channel map does', async () => {
+		// A chapter with two Slack channels has two rows. Passing both through
+		// gave the picker's keyed {#each} a duplicate chapterId, which throws
+		// each_key_duplicate — an uncaught error during hydration that took the
+		// whole page's client-side app down with it: the top bar lost its theme
+		// toggle, menu, username and log-out button, and clicking the menu item
+		// did nothing until a manual reload.
+		const data = await run(event(ADMIN));
+		const ids = data.chapters.map((c: { chapterId: number }) => c.chapterId);
+
+		expect(ids).toEqual([71, 72]);
+		expect(new Set(ids).size).toBe(ids.length);
+	});
 });
 
 describe('/turfs/activity payload', () => {
@@ -171,6 +190,11 @@ describe('/turfs/activity payload', () => {
 			// 13:10Z is 9:10 AM in Detroit under EDT.
 			timeLabel: '9:10 AM',
 			dayKey: '2026-08-24',
+			// Relative label too, measured against the load's own `now` (18:00Z)
+			// rather than a clock read while rendering. The component used to
+			// compute this from Date.now(), so SSR and hydration disagreed on
+			// every row; asserting the string here is what keeps it server-side.
+			agoLabel: '4h ago',
 		});
 	});
 

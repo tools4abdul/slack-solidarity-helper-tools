@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
+import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 import {
 	COMPLETION_LOOKBACK,
 	loadCurrentHoldings,
@@ -22,6 +23,7 @@ import {
 } from '$lib/server/van/drift-store.js';
 import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
+import { relativeSince } from '$lib/components/settings/format-relative.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -44,10 +46,16 @@ export interface HoldingView extends Holding {
 	/** Campaign-local "until" stamp, formatted server-side so two organizers
 	 *  comparing notes see the same time — and so SSR and hydration agree. */
 	expiresLabel: string;
+	/** "3h ago", against this load's `now`. Server-side for the same reason
+	 *  `expiresLabel` is: the component used to compute this from `Date.now()`
+	 *  while rendering, which disagreed with SSR on every row. */
+	claimedAgoLabel: string;
 }
 
 export interface SuspectView extends SuspectCompletion {
 	completedLabel: string;
+	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
+	completedAgoLabel: string;
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -58,9 +66,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!locals.session?.isAdmin) redirect(302, '/');
 
 	const settings = await loadSettings(db);
-	const chapters = settings.chapterChannelMap
-		.map((entry) => ({ chapterId: entry.chapterId, name: entry.name }))
-		.sort((a, b) => a.name.localeCompare(b.name));
+	// Deduplicated, not just sorted — the channel map lists a chapter once per
+	// channel. Mapping the rows directly put a duplicate key in the picker's
+	// `{#each}` and took the whole page's hydration down with it. See
+	// chaptersFromChannelMap.
+	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
 
 	// Validated against the chapter list rather than trusted from the query
 	// string, as the activity page does it: an unknown id falls back to "every
@@ -86,11 +96,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const holdings: HoldingView[] = currentHoldings(holdingRows, now).map((h) => ({
 		...h,
 		expiresLabel: `${campaignDayLabel(h.expiresAt)} at ${campaignTimeLabel(h.expiresAt)}`,
+		claimedAgoLabel: relativeSince(h.claimedAt, now),
 	}));
 
 	const suspects: SuspectView[] = suspectCompletions(completionRows).map((c) => ({
 		...c,
 		completedLabel: `${campaignDayLabel(c.completedAt)} at ${campaignTimeLabel(c.completedAt)}`,
+		completedAgoLabel: relativeSince(c.completedAt, now),
 	}));
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync

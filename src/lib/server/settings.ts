@@ -104,6 +104,11 @@ export interface Settings {
 	 *  channel — the channel these alerts used before the override existed.
 	 *  DB-only override; it has no env var of its own. */
 	slackMobilizeSyncChannelId: string;
+	/** Where the VAN turf catalog sync and the geometry worker post their
+	 *  alerts. Effective value: the DB override when set, otherwise the
+	 *  resolved tracking channel — the channel these alerts used before the
+	 *  override existed. DB-only override; it has no env var of its own. */
+	slackTurfChannelId: string;
 	/** Admin channel that gets a line whenever a member note or warning is
 	 *  logged. DB-only with no env fallback; '' means "don't post", since
 	 *  announcing moderation in the wrong channel is worse than not announcing
@@ -159,6 +164,9 @@ export type AppConfigPatch = Partial<{
 	slackTrackingChannelId: string;
 	slackGrowthReportChannelId: string;
 	slackMobilizeSyncChannelId: string;
+	/** Where the VAN turf sync posts its alerts. Unset follows the tracking
+	 *  channel. */
+	slackTurfChannelId: string;
 	/** Where member notes/warnings are announced. '' means "don't post". */
 	slackMemberNoteChannelId: string;
 	mobilizeContactName: string;
@@ -246,6 +254,10 @@ export async function loadSettings(db: Database): Promise<Settings> {
 	// field existed. Resolving here means callers read one field and never have
 	// to re-implement the chain.
 	const slackMobilizeSyncChannelId = cfg?.slackMobilizeSyncChannelId ?? slackGrowthReportChannelId;
+	// Same shape, different default: no env var, and an unset override leaves
+	// the turf alerts in the tracking channel, where they posted before this
+	// field existed.
+	const slackTurfChannelId = cfg?.slackTurfChannelId ?? slackTrackingChannelId;
 	// DB-only and no fallback: posting to the wrong channel is worse than not
 	// posting, so this stays empty until an admin picks one.
 	const slackMemberNoteChannelId = cfg?.slackMemberNoteChannelId ?? '';
@@ -285,6 +297,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
 		slackMobilizeSyncChannelId,
+		slackTurfChannelId,
 		slackMemberNoteChannelId,
 		mobilizeContactName,
 		mobilizeContactEmail,
@@ -641,6 +654,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'slackTrackingChannelId',
 	'slackGrowthReportChannelId',
 	'slackMobilizeSyncChannelId',
+	'slackTurfChannelId',
 	'slackMemberNoteChannelId',
 	'mobilizeContactName',
 	'mobilizeContactEmail',

@@ -37,6 +37,9 @@
 		/** Effective Mobilize-sync alert channel — the growth-report channel
 		 *  when no override is set. */
 		mobilizeSyncChannelId: string;
+		/** Effective VAN turf alert channel — the tracking channel when no
+		 *  override is set. */
+		turfChannelId: string;
 		/** Admin channel for member note/warning announcements ('' = off). */
 		memberNoteChannelId: string;
 		/** Contact published on events the sync creates in Mobilize ('' when
@@ -68,6 +71,7 @@
 		trackingChannelId,
 		growthReportChannelId,
 		mobilizeSyncChannelId,
+		turfChannelId,
 		memberNoteChannelId,
 		siteName,
 		mobilizeContactName,
@@ -127,6 +131,12 @@
 	});
 	let mobilizeSync = $state<ChannelField>({
 		value: mobilizeSyncChannelId,
+		status: 'idle',
+		error: null,
+		lastFailedId: null,
+	});
+	let turf = $state<ChannelField>({
+		value: turfChannelId,
 		status: 'idle',
 		error: null,
 		lastFailedId: null,
@@ -474,6 +484,29 @@
 			Where the nightly Solidarity → Mobilize event sync and attendee sync post their alerts —
 			including the one that says Mobilize rejected the API key. Defaults to the weekly growth
 			report channel until you pick one here.
+		</p>
+	</SettingsRow>
+
+	<SettingsRow
+		id={APP_CONFIG_ROW_IDS.turfChannel}
+		label="Turf sync channel"
+		status={turf.status}
+		error={turf.error}
+		onRetry={turf.lastFailedId
+			? () => void saveChannel(turf, 'slackTurfChannelId', turf.lastFailedId!)
+			: undefined}
+	>
+		<AutocompletePicker
+			items={channelItems}
+			value={turf.value || null}
+			onSelect={(id) => void saveChannel(turf, 'slackTurfChannelId', id)}
+			placeholder="Pick a channel…"
+			showSublabel={true}
+		/>
+		<p class="app-config-note">
+			Where the VAN turf catalog sync and the map-geometry worker post their alerts — sync notices
+			and turfs that could not be drawn. Defaults to the volunteer-help tracking channel until you
+			pick one here.
 		</p>
 	</SettingsRow>
 
