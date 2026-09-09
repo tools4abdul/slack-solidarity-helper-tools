@@ -507,9 +507,16 @@ main {
 }
 
 /* On the summary only. A turf someone else is walking is dimmed in the list,
-   but once you have opened it the explanation of why has to be readable. */
+   but once you have opened it the explanation of why has to be readable.
+   0.75 rather than the old 0.62 because this fades the CHECKED OUT chip along
+   with everything else, and a chip is a tinted ground with text on it -- it
+   loses contrast from both sides at once, where the plain text around it only
+   loses it from one. At 0.62 the chip landed at 3.8:1 even with the text
+   colour fixed; 0.75 puts it at 5.5 light / 4.9 dark, and the row still
+   visibly recedes. A child cannot opt out of an ancestor's `opacity`, so the
+   dimming has to be survivable rather than selective. */
 .turf-row.is-unavailable .turf-card {
-	opacity: 0.62;
+	opacity: 0.75;
 }
 
 .turf-row.is-unavailable.is-selected .turf-card {
@@ -589,13 +596,24 @@ main {
 	letter-spacing: 0.03em;
 }
 
+/* One rule for all three chips: the TINT carries the status, the text is
+   --color-text.
+   Each of these used to set `color` to the same token it tinted with, which
+   makes the foreground a saturated version of its own background. In light
+   mode that survived on the strength of the light surface underneath; in dark
+   mode it did not -- available was Light Blue on a Light-Blue-tinted Medium
+   Blue at 1.72:1, and yours/checked-out sat at about 4.0:1, under AA for text
+   this size. On --color-text all three run 11-12:1 light and 7-8:1 dark.
+   The hue is not lost by moving it to the fill alone: the three tints are 11
+   to 19 apart in CIE76 in both modes, which is well clear of a just-noticeable
+   difference, and the chip has its own word in it besides. */
 .badge-available {
 	background: color-mix(in srgb, var(--color-blue) 18%, transparent);
-	color: var(--color-navy-mid);
+	color: var(--color-text);
 }
 .badge-held-by-you {
 	background: color-mix(in srgb, var(--color-success) 20%, transparent);
-	color: var(--color-success);
+	color: var(--color-text);
 }
 /* Amber rather than the muted grey the map uses for the same state. The two
    media want different things: on a polygon over a street basemap, taken turf
@@ -605,7 +623,7 @@ main {
    chrome. */
 .badge-checked-out {
 	background: color-mix(in srgb, var(--color-warning) 22%, transparent);
-	color: var(--color-warning);
+	color: var(--color-text);
 }
 
 /* --- The expanded half of a selected row --------------------------------- */

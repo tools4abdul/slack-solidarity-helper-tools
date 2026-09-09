@@ -63,7 +63,8 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 12px;
+		/* Scales with the board, like the type it separates. */
+		gap: clamp(8px, 1.2cqw, 28px);
 		padding: 0 1rem;
 		line-height: 1;
 		/* Every line on the board is the same bitmap face; the hierarchy comes

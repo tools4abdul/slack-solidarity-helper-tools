@@ -111,13 +111,13 @@
 <style>
 	/* Renders inside <LedBoard>, which supplies the panel, the diode grid and
 	   the --glyph-px / --led-pitch sizes; the fallbacks below only matter if
-	   this is ever used on its own. Only the marquee's clipping and edge
-	   fades are the ticker's own business. */
+	   this is ever used on its own — as does the spacing above it, which the
+	   board's stage owns so that it scales with the panel. Only the marquee's
+	   clipping and edge fades are the ticker's own business. */
 	.ticker {
 		position: relative;
 		overflow: hidden;
 		width: 100%;
-		margin-top: 14px;
 	}
 
 	/* Both ends fade into the panel so cells enter and leave instead of
@@ -169,9 +169,12 @@
 		display: flex;
 		width: max-content;
 		animation: ticker-scroll var(--ticker-duration) steps(var(--ticker-steps, 400)) infinite;
-	}
-	.ticker:hover .ticker__track {
-		animation-play-state: paused;
+		/* Hovering holds the board still so the list can be read. The board
+		   owns that state rather than this strip: on a board that can be
+		   clicked to change shape, the pointer is over the toggle covering the
+		   panel, never over the strip itself. Declared after the shorthand,
+		   which would otherwise reset it to running. */
+		animation-play-state: var(--ticker-play, running);
 	}
 
 	@keyframes ticker-scroll {
