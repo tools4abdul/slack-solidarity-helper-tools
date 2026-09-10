@@ -77,12 +77,22 @@
 	 *  itself stops it at the source: the same view never fetches twice. */
 	let lastBbox = '';
 
+	/** The chapter currently on screen, as a plain value.
+	 *
+	 *  This exists so the effect below can depend on the chapter ID rather than
+	 *  on `data`. Reading `data.chapter?.chapterId` directly inside an effect
+	 *  does NOT narrow the dependency to that number — the effect subscribes to
+	 *  the `data` prop itself and re-runs whenever SvelteKit hands over a new
+	 *  object, which `invalidateAll()` does on every claim. A `$derived` gates
+	 *  on value equality, so an unchanged chapter id notifies nobody. */
+	const shownChapterId = $derived(data.chapter?.chapterId ?? null);
+
 	// Cleared when the CHAPTER changes, and only then. Clearing on every `data`
 	// change would empty the map after each claim — invalidateAll() refreshes
 	// `data.turfs`, but nothing moves the viewport afterwards, so the turf the
 	// volunteer had panned to would vanish until they dragged the map again.
 	$effect(() => {
-		void data.chapter?.chapterId;
+		void shownChapterId;
 		paged = {};
 		totalNow = null;
 		lastBbox = '';
@@ -170,7 +180,12 @@
 			}
 			totalNow = body.total;
 		} catch {
-			// Offline or a dropped request. Keep what we have.
+			// Offline or a dropped request. Keep what we have — but forget the
+			// box, for the same reason the !res.ok branch above does: otherwise
+			// panning back to this exact viewport returns early on the
+			// `bbox === lastBbox` check and never retries, leaving the area
+			// permanently empty for the rest of the session.
+			lastBbox = '';
 		} finally {
 			loadingMore = false;
 		}

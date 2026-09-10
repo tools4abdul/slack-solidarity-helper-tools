@@ -12,3 +12,10 @@ docs/
 tasks/
 scripts/
 *.db
+
+private/
+.git/
+.claude/
+.specify/
+*.csv
+*.pdf
