@@ -51,7 +51,10 @@ describe('edge challenge pages', () => {
 	it('retries a read through a 530 instead of failing the event', async () => {
 		const fetchMock = stubSequence(
 			{ status: 530, text: CHALLENGE_PAGE },
-			{ status: 200, text: JSON.stringify({ data: [{ id: 5, status: 'REGISTERED' }], next: null }) },
+			{
+				status: 200,
+				text: JSON.stringify({ data: [{ id: 5, status: 'REGISTERED' }], next: null }),
+			},
 		);
 		vi.useFakeTimers();
 
