@@ -11,6 +11,7 @@ import {
 	type LeaderboardPair,
 } from '$lib/server/weekly-growth-report.js';
 import { loadSettings } from '$lib/server/settings.js';
+import { tickerShape } from '$lib/components/dashboard/ticker-size.js';
 
 async function safeLoad(
 	label: string,
@@ -66,6 +67,11 @@ export const load: PageServerLoad = async (event) => {
 		...base,
 		leaderboard,
 		countdown,
+		// ?ticker= picks the shape the LED sign opens at, so the dashboard can
+		// be pointed at a wall screen as ?ticker=widescreen and come up 16:9
+		// with nobody there to click it. Parsed server-side like ?days= so the
+		// first paint is already the right shape.
+		ticker: tickerShape(event.url.searchParams),
 		pageTitle: 'Dashboard',
 	};
 };

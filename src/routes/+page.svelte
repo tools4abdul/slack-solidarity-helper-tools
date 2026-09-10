@@ -67,7 +67,7 @@
 	     day-leader ticker rejoins it with the VAN door stats. -->
 	{#if data.countdown}
 		<div class="countdown-row">
-			<LedBoard ratio="16 / 9">
+			<LedBoard ratio={data.ticker.ratio} fit={data.ticker.fit}>
 				<CountdownBanner label={data.countdown.label} endAt={data.countdown.endAt} />
 			</LedBoard>
 		</div>

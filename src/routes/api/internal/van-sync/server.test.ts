@@ -11,6 +11,7 @@ const mockRelease = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockSweep = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
+const mockDrift = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
@@ -19,7 +20,7 @@ vi.mock('$lib/server/slack.js', () => ({
 	alertFor: mockAlertFor,
 }));
 vi.mock('$lib/server/settings.js', () => ({
-	loadSettings: async () => ({ slackTrackingChannelId: 'C_TRACK' }),
+	loadSettings: async () => ({ slackTrackingChannelId: 'C_TRACK', slackTurfChannelId: 'C_TURF' }),
 	loadVanChapterFolders: async () => [
 		{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
 	],
@@ -38,6 +39,7 @@ vi.mock('$lib/server/van/geometry-worker.js', () => ({
 vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }));
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
 vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
+vi.mock('$lib/server/van/drift-alert-store.js', () => ({ sendDriftAlerts: mockDrift }));
 vi.mock('$lib/server/env.js', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
@@ -71,6 +73,8 @@ const geometryResult = {
 	warnings: [],
 };
 
+const driftResult = { announced: 0, cleared: 0, failed: false, skipped: 'nothing-new' };
+
 const event = (key = 'cron-secret') =>
 	({ url: new URL(`https://app.example/api/internal/van-sync?key=${key}`) }) as never;
 
@@ -87,6 +91,7 @@ describe('POST /api/internal/van-sync', () => {
 		mockRunGeometryQueue.mockResolvedValue(geometryResult);
 		mockSweep.mockResolvedValue(0);
 		mockWarn.mockResolvedValue({ sent: 0, failed: 0 });
+		mockDrift.mockResolvedValue(driftResult);
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -166,6 +171,7 @@ describe('POST /api/internal/van-sync', () => {
 			claimsExpired: 0,
 			expiryWarningsSent: 0,
 			expiryWarningsFailed: 0,
+			drift: driftResult,
 		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith(
 			{},
@@ -176,6 +182,56 @@ describe('POST /api/internal/van-sync', () => {
 			{ timeBudgetMs: 3 * 60 * 1000 },
 		);
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
+	});
+
+	// The catalog writes `van_distributed_to`, which is VAN's half of the drift
+	// comparison. Alerting first would announce drift computed against the
+	// previous run's view of VAN — precisely the window an organizer's bulk export
+	// lands in.
+	it("alerts on drift only after the catalog has refreshed VAN's half", async () => {
+		const order: string[] = [];
+		mockRunCatalogSync.mockImplementation(async () => {
+			order.push('catalog');
+			return result;
+		});
+		mockDrift.mockImplementation(async () => {
+			order.push('drift');
+			return driftResult;
+		});
+		mockRunGeometryQueue.mockImplementation(async () => {
+			order.push('geometry');
+			return geometryResult;
+		});
+		await POST(event());
+		// Before geometry too: geometry is the half the time budget cuts short, and
+		// an unannounced collision costs more than a missing hull.
+		expect(order).toEqual(['catalog', 'drift', 'geometry']);
+	});
+
+	it('posts drift to the turf channel, against the housekeeping clock', async () => {
+		await POST(event());
+		expect(mockDrift).toHaveBeenCalledWith(
+			{},
+			{
+				now: mockSweep.mock.calls[0]![1],
+				channelId: 'C_TURF',
+				appUrl: 'https://app.example',
+			},
+		);
+	});
+
+	it('does not alert on drift when VAN is not configured', async () => {
+		// Without a catalog run, `van_distributed_to` is whatever the last
+		// successful sync left, and a stale comparison is worse than none.
+		mockVanClient.mockReturnValue({ ok: false, error: 'VAN_API_KEY is not set' });
+		await POST(event());
+		expect(mockDrift).not.toHaveBeenCalled();
+	});
+
+	it('reports what the drift alert did', async () => {
+		mockDrift.mockResolvedValue({ announced: 3, cleared: 1, failed: false });
+		const body = await (await POST(event())).json();
+		expect(body).toMatchObject({ drift: { announced: 3, cleared: 1, failed: false } });
 	});
 
 	it('skips without error when another sync holds the lock', async () => {

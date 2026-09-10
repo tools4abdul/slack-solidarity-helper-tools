@@ -733,6 +733,17 @@ export const vanTurfs = sqliteTable(
 		/** Canvassers VAN reports for this turf via /minivanExports, when an
 		 *  organizer distributed it outside this app. Null = not distributed. */
 		vanDistributedTo: text('van_distributed_to'),
+		/** When the turf channel was last told this turf was drifting, and which
+		 *  direction it was drifting in.
+		 *
+		 *  The idempotency key for the drift alert, and a pair rather than a lone
+		 *  flag for the reason in drift-alert.ts: a route can stop drifting one way
+		 *  and start drifting the other, and the second direction is the dangerous
+		 *  one. Cleared when the turf stops drifting, so a recurrence is audible.
+		 *  Stamped only after Slack accepted the message. */
+		driftAlertedAt: text('drift_alerted_at'),
+		/** 'claimed-not-in-minivan' | 'in-minivan-not-claimed' */
+		driftAlertedKind: text('drift_alerted_kind'),
 		firstSeenAt: text('first_seen_at').notNull(),
 		lastSeenAt: text('last_seen_at').notNull(),
 		lastRefreshedAt: text('last_refreshed_at'),

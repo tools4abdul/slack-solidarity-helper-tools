@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-network" viewBox="0 0 1400 790" role="img"
+				aria-label="Network diagram: volunteers, canvassers, organisers and a scheduler reach the app through six authenticated ingress paths; the app and its Turso database sit inside a trust boundary; the app sends data outward to Slack, solidarity.tech, Mobilize, VAN, Openfield and the US Census geocoder.">
+
+				<style><![CDATA[
+    .bg     { fill: #ffffff; }
+    text    { font-family: "Newsreader", Georgia, "Times New Roman", serif; }
+    .box    { fill: #ffffff; stroke: #b9c7c3; stroke-width: 1.2; }
+    .box-2  { fill: #e7ecea; stroke: #b9c7c3; stroke-width: 1.2; }
+    .zone   { fill: none; stroke: #788b86; stroke-width: 1.4; stroke-dasharray: 7 5; }
+    .band   { fill: none; stroke: #cfd9d6; stroke-width: 1; }
+    .t-head { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 1.3px; fill: #788b86; }
+    .t-title{ font-family: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif; font-size: 16px; font-weight: 600; fill: #121b19; }
+    .t-sub  { font-size: 13.5px; fill: #4a5c58; }
+    .t-mono { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; fill: #4a5c58; }
+    .t-auth { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #0b6b5e; }
+    .t-edge { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #788b86; }
+    .t-flag { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #a24a18; }
+    .t-safe { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #0b6b5e; }
+    .t-enc  { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #61519c; }
+    .t-zone { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; letter-spacing: 1px; fill: #788b86; }
+    .e      { fill: none; stroke: #788b86; stroke-width: 1.4; }
+    .e-pii  { fill: none; stroke: #a24a18; stroke-width: 1.9; }
+    .e-safe { fill: none; stroke: #0b6b5e; stroke-width: 1.9; }
+    .e-sig  { fill: none; stroke: #788b86; stroke-width: 1.4; stroke-dasharray: 6 4; }
+    .ah     { fill: #788b86; }
+    .ah-pii { fill: #a24a18; }
+    .ah-safe{ fill: #0b6b5e; }
+    .rule-pii { stroke: #a24a18; }
+    .rule-enc { stroke: #61519c; }
+    .rule-safe{ stroke: #0b6b5e; }
+]]></style>
+<rect class="bg" x="0" y="0" width="1400" height="790"/>
+<defs>
+					<marker id="ah" markerWidth="9" markerHeight="9" refX="8.2" refY="4.5" orient="auto">
+						<polygon class="ah" points="0,0.6 9,4.5 0,8.4"></polygon>
+					</marker>
+					<marker id="ah-pii" markerWidth="9" markerHeight="9" refX="8.2" refY="4.5" orient="auto">
+						<polygon class="ah-pii" points="0,0.6 9,4.5 0,8.4"></polygon>
+					</marker>
+					<marker id="ah-safe" markerWidth="9" markerHeight="9" refX="8.2" refY="4.5" orient="auto">
+						<polygon class="ah-safe" points="0,0.6 9,4.5 0,8.4"></polygon>
+					</marker>
+				</defs>
+
+				<text class="t-head" x="120" y="50" text-anchor="middle">WHO STARTS IT</text>
+				<text class="t-head" x="354" y="50" text-anchor="middle">INGRESS</text>
+				<text class="t-head" x="1257" y="50" text-anchor="middle">THIRD PARTIES</text>
+
+				<!-- trust boundary -->
+				<rect class="zone" x="496" y="76" width="574" height="640" rx="14"></rect>
+				<text class="t-zone" x="514" y="99">TRUST BOUNDARY — FLY.IO (ORD) + TURSO</text>
+
+				<!-- origins -->
+				<rect class="box" x="36" y="130" width="168" height="56" rx="7"></rect>
+				<text class="t-title" x="120" y="155" text-anchor="middle">Volunteer</text>
+				<text class="t-sub" x="120" y="173" text-anchor="middle">joins, or wants to</text>
+
+				<rect class="box" x="36" y="214" width="168" height="56" rx="7"></rect>
+				<text class="t-title" x="120" y="239" text-anchor="middle">Canvasser</text>
+				<text class="t-sub" x="120" y="257" text-anchor="middle">claims turf, knocks</text>
+
+				<rect class="box" x="36" y="298" width="168" height="56" rx="7"></rect>
+				<text class="t-title" x="120" y="323" text-anchor="middle">Organiser</text>
+				<text class="t-sub" x="120" y="341" text-anchor="middle">looks up, notes, warns</text>
+
+				<rect class="box" x="36" y="452" width="168" height="64" rx="7"></rect>
+				<text class="t-title" x="120" y="477" text-anchor="middle">Scheduler</text>
+				<text class="t-sub" x="120" y="495" text-anchor="middle">GitHub Actions</text>
+				<text class="t-mono" x="120" y="511" text-anchor="middle">hourly → nightly</text>
+
+				<!-- ingress -->
+				<rect class="box" x="256" y="100" width="196" height="76" rx="7"></rect>
+				<text class="t-title" x="354" y="124" text-anchor="middle">Slack Events API</text>
+				<text class="t-sub" x="354" y="143" text-anchor="middle">team_join · file_change</text>
+				<text class="t-auth" x="354" y="162" text-anchor="middle">signature verified</text>
+
+				<rect class="box" x="256" y="188" width="196" height="76" rx="7"></rect>
+				<text class="t-title" x="354" y="212" text-anchor="middle">Commands + modals</text>
+				<text class="t-sub" x="354" y="231" text-anchor="middle">/turfs · /note · /warn</text>
+				<text class="t-auth" x="354" y="250" text-anchor="middle">signature verified</text>
+
+				<rect class="box" x="256" y="276" width="196" height="76" rx="7"></rect>
+				<text class="t-title" x="354" y="300" text-anchor="middle">Help-to-join hook</text>
+				<text class="t-sub" x="354" y="319" text-anchor="middle">name · email · phone</text>
+				<text class="t-auth" x="354" y="338" text-anchor="middle">GET ?secret=</text>
+
+				<rect class="box" x="256" y="364" width="196" height="76" rx="7"></rect>
+				<text class="t-title" x="354" y="388" text-anchor="middle">Web app + /api</text>
+				<text class="t-sub" x="354" y="407" text-anchor="middle">lookup, settings, map</text>
+				<text class="t-auth" x="354" y="426" text-anchor="middle">session cookie · 8 h</text>
+
+				<rect class="box" x="256" y="452" width="196" height="76" rx="7"></rect>
+				<text class="t-title" x="354" y="476" text-anchor="middle">/api/internal/*</text>
+				<text class="t-sub" x="354" y="495" text-anchor="middle">six scheduled syncs</text>
+				<text class="t-auth" x="354" y="514" text-anchor="middle">?key= cron secret</text>
+
+				<rect class="box" x="256" y="540" width="196" height="76" rx="7"></rect>
+				<text class="t-title" x="354" y="564" text-anchor="middle">VAN export callback</text>
+				<text class="t-sub" x="354" y="583" text-anchor="middle">drains geometry queue</text>
+				<text class="t-auth" x="354" y="602" text-anchor="middle">per-turf HMAC</text>
+
+				<!-- origin → ingress -->
+				<line class="e" x1="204" y1="150" x2="252" y2="133" marker-end="url(#ah)"></line>
+				<line class="e" x1="204" y1="168" x2="252" y2="301" marker-end="url(#ah)"></line>
+				<line class="e" x1="204" y1="236" x2="252" y2="219" marker-end="url(#ah)"></line>
+				<line class="e" x1="204" y1="318" x2="252" y2="238" marker-end="url(#ah)"></line>
+				<line class="e" x1="204" y1="334" x2="252" y2="392" marker-end="url(#ah)"></line>
+				<line class="e" x1="204" y1="484" x2="252" y2="486" marker-end="url(#ah)"></line>
+
+				<!-- ingress → app -->
+				<line class="e-pii" x1="452" y1="133" x2="520" y2="152" marker-end="url(#ah-pii)"></line>
+				<line class="e-pii" x1="452" y1="221" x2="520" y2="192" marker-end="url(#ah-pii)"></line>
+				<line class="e-pii" x1="452" y1="309" x2="520" y2="232" marker-end="url(#ah-pii)"></line>
+				<line class="e-pii" x1="452" y1="397" x2="520" y2="272" marker-end="url(#ah-pii)"></line>
+				<line class="e-safe" x1="452" y1="485" x2="520" y2="312" marker-end="url(#ah-safe)"></line>
+				<line class="e-sig" x1="452" y1="573" x2="520" y2="348" marker-end="url(#ah)"></line>
+
+				<!-- app -->
+				<rect class="box-2" x="524" y="106" width="518" height="252" rx="9"></rect>
+				<text class="t-title" x="548" y="138">The app — SvelteKit, one Node process</text>
+				<line class="band" x1="548" y1="152" x2="1018" y2="152"></line>
+				<text class="t-mono" x="548" y="178">Slack event + command handlers</text>
+				<text class="t-mono" x="548" y="202">Member lookup &amp; moderation</text>
+				<text class="t-mono" x="548" y="226">Turf checkout + expiry sweeps</text>
+				<text class="t-mono" x="800" y="178">Six scheduled syncs</text>
+				<text class="t-mono" x="800" y="202">Geometry worker (hulls)</text>
+				<text class="t-mono" x="800" y="226">Geocoding — in memory only</text>
+				<text class="t-safe" x="548" y="266">Addresses redacted at both geocode call sites — never logged.</text>
+				<text class="t-edge" x="548" y="288">Sessions live server-side; the cookie holds only a random id.</text>
+				<text class="t-edge" x="548" y="310">Sync locks stop two cron runs writing the same ledger.</text>
+				<text class="t-edge" x="548" y="332">Admin tokens decrypted per request, never held in memory long.</text>
+
+				<!-- app ↔ db -->
+				<line class="e" x1="700" y1="358" x2="700" y2="386" marker-end="url(#ah)"></line>
+				<text class="t-edge" x="690" y="378" text-anchor="end">writes</text>
+				<line class="e" x1="860" y1="390" x2="860" y2="362" marker-end="url(#ah)"></line>
+				<text class="t-edge" x="872" y="378">reads</text>
+
+				<!-- db -->
+				<rect class="box-2" x="524" y="390" width="518" height="306" rx="9"></rect>
+				<text class="t-title" x="548" y="420">Turso — libSQL, the only place anything rests</text>
+
+				<rect class="box" x="540" y="432" width="486" height="92" rx="6"></rect>
+				<line class="rule-pii" x1="540" y1="432" x2="540" y2="524" stroke-width="3"></line>
+				<text class="t-flag" x="556" y="452">IDENTIFIES A PERSON</text>
+				<text class="t-mono" x="556" y="472">requests · slack_joins · member_account_links</text>
+				<text class="t-mono" x="556" y="490">member_notes · sessions · mobilize_synced_rsvps</text>
+				<text class="t-mono" x="556" y="508">van_turf_checkouts · van_blocked_users · door_knock_canvasser_daily</text>
+
+				<rect class="box" x="540" y="534" width="486" height="54" rx="6"></rect>
+				<line class="rule-enc" x1="540" y1="534" x2="540" y2="588" stroke-width="3"></line>
+				<text class="t-enc" x="556" y="554">ENCRYPTED AT REST — AES-256-GCM, KEY HELD BY FLY</text>
+				<text class="t-mono" x="556" y="574">slack_user_tokens</text>
+
+				<rect class="box" x="540" y="598" width="486" height="92" rx="6"></rect>
+				<line class="rule-safe" x1="540" y1="598" x2="540" y2="690" stroke-width="3"></line>
+				<text class="t-safe" x="556" y="618">COUNTS, SHAPES AND CACHES — NAMES NOBODY</text>
+				<text class="t-mono" x="556" y="638">solidarity_daily_snapshots · weekly_chapter_growth · door_knock_daily</text>
+				<text class="t-mono" x="556" y="656">van_turfs (hull + door count) · van_zip_centroids · zip_chapter_map</text>
+				<text class="t-mono" x="556" y="674">slack_invite_sightings · door_knock_code_ids · app_config</text>
+
+				<!-- egress -->
+				<rect class="box" x="1150" y="92" width="214" height="68" rx="7"></rect>
+				<text class="t-title" x="1257" y="116" text-anchor="middle">Slack</text>
+				<text class="t-sub" x="1257" y="135" text-anchor="middle">DMs, invites, note text</text>
+				<text class="t-flag" x="1257" y="153" text-anchor="middle">names people</text>
+
+				<rect class="box" x="1150" y="172" width="214" height="68" rx="7"></rect>
+				<text class="t-title" x="1257" y="196" text-anchor="middle">solidarity.tech</text>
+				<text class="t-sub" x="1257" y="215" text-anchor="middle">lookup by email, RSVPs</text>
+				<text class="t-flag" x="1257" y="233" text-anchor="middle">names people</text>
+
+				<rect class="box" x="1150" y="252" width="214" height="68" rx="7"></rect>
+				<text class="t-title" x="1257" y="276" text-anchor="middle">Mobilize</text>
+				<text class="t-sub" x="1257" y="295" text-anchor="middle">event + RSVP sync</text>
+				<text class="t-flag" x="1257" y="313" text-anchor="middle">names people</text>
+
+				<rect class="box" x="1150" y="332" width="214" height="68" rx="7"></rect>
+				<text class="t-title" x="1257" y="356" text-anchor="middle">EveryAction / VAN</text>
+				<text class="t-sub" x="1257" y="375" text-anchor="middle">catalog reads, exports</text>
+				<text class="t-safe" x="1257" y="393" text-anchor="middle">nothing personal out</text>
+
+				<rect class="box" x="1150" y="412" width="214" height="68" rx="7"></rect>
+				<text class="t-title" x="1257" y="436" text-anchor="middle">Openfield</text>
+				<text class="t-sub" x="1257" y="455" text-anchor="middle">leaderboard reads</text>
+				<text class="t-safe" x="1257" y="473" text-anchor="middle">nothing personal out</text>
+
+				<rect class="box" x="1150" y="492" width="214" height="68" rx="7"></rect>
+				<text class="t-title" x="1257" y="516" text-anchor="middle">US Census geocoder</text>
+				<text class="t-sub" x="1257" y="535" text-anchor="middle">street addresses only</text>
+				<text class="t-flag" x="1257" y="553" text-anchor="middle">in memory, not stored</text>
+
+				<line class="e-pii" x1="1042" y1="132" x2="1146" y2="126" marker-end="url(#ah-pii)"></line>
+				<line class="e-pii" x1="1042" y1="172" x2="1146" y2="206" marker-end="url(#ah-pii)"></line>
+				<line class="e-pii" x1="1042" y1="212" x2="1146" y2="286" marker-end="url(#ah-pii)"></line>
+				<line class="e-safe" x1="1042" y1="252" x2="1146" y2="366" marker-end="url(#ah-safe)"></line>
+				<line class="e-safe" x1="1042" y1="292" x2="1146" y2="446" marker-end="url(#ah-safe)"></line>
+				<line class="e-pii" x1="1042" y1="332" x2="1146" y2="526" marker-end="url(#ah-pii)"></line>
+
+				<!-- VAN callback returning -->
+				<path class="e-sig" d="M1257 400 V 748 H 354 V 620" marker-end="url(#ah)"></path>
+				<text class="t-edge" x="800" y="741" text-anchor="middle">export job finished → wake the machine, drain the queue (no payload trusted)</text>
+
+			</svg>

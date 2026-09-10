@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createEvent, MobilizeError, type MobilizeApiConfig } from './mobilize.js';
+import {
+	createEvent,
+	listEventAttendances,
+	MobilizeError,
+	type MobilizeApiConfig,
+} from './mobilize.js';
 
 const API: MobilizeApiConfig = { apiKey: 'test-key', orgId: 44679 };
 
@@ -13,8 +18,70 @@ function stubResponse(status: number, body: unknown) {
 	}));
 }
 
+/** Raw bodies, so a non-JSON challenge page can be replayed verbatim. */
+function stubSequence(...responses: { status: number; text: string }[]) {
+	const fetchMock = vi.fn(async () => {
+		const next = responses.shift();
+		if (!next) throw new Error('fetch called more times than the test stubbed');
+		return {
+			ok: next.status >= 200 && next.status < 300,
+			status: next.status,
+			text: async () => next.text,
+			headers: new Headers(),
+		};
+	});
+	vi.stubGlobal('fetch', fetchMock);
+	return fetchMock;
+}
+
+// The page that actually came back for event 1025563, trimmed.
+const CHALLENGE_PAGE =
+	'<!DOCTYPE html><html lang="en"><head> <meta charset="UTF-8"> <title>Please wait...</title>' +
+	' <script> function redirectBasedOnURL() { var currentURL = window.location.href; }</script>';
+
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
+});
+
+describe('edge challenge pages', () => {
+	// An edge layer in front of api.mobilize.us answers the odd request with a
+	// challenge page under a 5xx. Before this retried, one blip cost a whole
+	// event's signups for the run.
+	it('retries a read through a 530 instead of failing the event', async () => {
+		const fetchMock = stubSequence(
+			{ status: 530, text: CHALLENGE_PAGE },
+			{
+				status: 200,
+				text: JSON.stringify({ data: [{ id: 5, status: 'REGISTERED' }], next: null }),
+			},
+		);
+		vi.useFakeTimers();
+
+		const pending = listEventAttendances(API, 1025563);
+		await vi.runAllTimersAsync();
+
+		expect(await pending).toHaveLength(1);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	// A 530 never reached Mobilize, but a 5xx on a write can mean the origin
+	// processed it and only the reply was lost — replaying that creates a
+	// second event, so writes stay on 429-only.
+	it('does not replay a write, and says the API was never reached', async () => {
+		const fetchMock = stubSequence({ status: 530, text: CHALLENGE_PAGE });
+
+		await expect(createEvent(API, {})).rejects.toThrow(/never reached the API/);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('still reports a real rejection body rather than swallowing it', async () => {
+		stubSequence({
+			status: 400,
+			text: JSON.stringify({ error: { description: 'This field may not be blank.' } }),
+		});
+		await expect(createEvent(API, {})).rejects.toThrow(/may not be blank/);
+	});
 });
 
 describe('createEvent envelope', () => {

@@ -11,6 +11,7 @@ import { runGeometryQueue } from '$lib/server/van/geometry-worker.js';
 import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
 import { sendExpiryWarnings } from '$lib/server/van/expiry-warning-store.js';
+import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
 import { alertFor } from '$lib/server/slack.js';
 import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
@@ -158,6 +159,19 @@ export const POST: RequestHandler = async ({ url }) => {
 			{ skipped: result.foldersSkipped, degraded: result.degraded },
 		);
 
+		// Story 8.2's report, pushed instead of pulled. After the catalog because
+		// the catalog writes VAN's half of the comparison (`van_distributed_to`),
+		// and before geometry because geometry is the half that gets cut short by
+		// the time budget — an unannounced collision costs more than a missing hull.
+		// Reads the channel here rather than reusing the notices block below, which
+		// only loads settings when it has something to say.
+		const { slackTurfChannelId: driftChannelId } = await loadSettings(db);
+		const drift = await sendDriftAlerts(db, {
+			now,
+			channelId: driftChannelId,
+			appUrl: APP_URL,
+		});
+
 		// Geometry runs after the catalog because the catalog is what fills the
 		// queue: a turf cut minutes ago gets its shape on this run rather than
 		// the next one. It is also the half that is safe to cut short — an
@@ -193,6 +207,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			claimsExpired,
 			expiryWarningsSent: warnings.sent,
 			expiryWarningsFailed: warnings.failed,
+			drift,
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
