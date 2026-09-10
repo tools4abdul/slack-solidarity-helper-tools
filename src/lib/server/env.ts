@@ -7,6 +7,38 @@ import { parseEncryptionKey } from './token-crypto.js';
 
 const get = (key: string) => (env as Record<string, string | undefined>)[key] ?? '';
 
+/**
+ * Numeric env vars, falling back on anything that is not a finite number.
+ *
+ * `parseInt(get(KEY) || '25', 10)` — the shape these used to have — only
+ * rescues the EMPTY string. A junk value (`MOBILIZE_SYNC_MAX_CREATES=unlimited`,
+ * or a stray space) parses to NaN and propagates, and NaN is the worst possible
+ * value for a guardrail: every `count > NaN` comparison is false, so a cap set
+ * to NaN silently stops capping instead of failing loudly. Falling back to the
+ * documented default keeps a mistyped value safe rather than unbounded.
+ */
+function intEnv(key: string, fallback: number): number {
+	const parsed = parseInt(get(key), 10);
+	if (!Number.isFinite(parsed)) {
+		if (get(key) !== '') {
+			console.warn(`[env] ${key} is not a number: "${get(key)}" — using ${fallback}`);
+		}
+		return fallback;
+	}
+	return parsed;
+}
+
+function floatEnv(key: string, fallback: number): number {
+	const parsed = parseFloat(get(key));
+	if (!Number.isFinite(parsed)) {
+		if (get(key) !== '') {
+			console.warn(`[env] ${key} is not a number: "${get(key)}" — using ${fallback}`);
+		}
+		return fallback;
+	}
+	return parsed;
+}
+
 export const SLACK_BOT_TOKEN = get('SLACK_BOT_TOKEN');
 export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
@@ -61,7 +93,7 @@ export const TURSO_DATABASE_URL = get('TURSO_DATABASE_URL');
 export const TURSO_AUTH_TOKEN = get('TURSO_AUTH_TOKEN');
 export const WEBHOOK_SECRET = get('WEBHOOK_SECRET');
 export const APP_URL = get('APP_URL');
-export const PORT = parseInt(get('PORT') || '3000', 10);
+export const PORT = intEnv('PORT', 3000);
 export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
@@ -86,23 +118,17 @@ export const MOBILIZE_CONTACT_PHONE = get('MOBILIZE_CONTACT_PHONE');
 // Blast-radius guard: if one night's plan wants more new events than this, the
 // sync creates nothing and alerts instead. A flood means dedup or the source
 // data broke, and these events are publicly visible once created.
-export const MOBILIZE_SYNC_MAX_CREATES = parseInt(get('MOBILIZE_SYNC_MAX_CREATES') || '25', 10);
+export const MOBILIZE_SYNC_MAX_CREATES = intEnv('MOBILIZE_SYNC_MAX_CREATES', 25);
 
 // Attendee sync (Mobilize signups -> Solidarity RSVPs).
 // Last-resort chapter for a new profile when the person's zip isn't in the
 // derived zip->chapter map and the event isn't chapter-scoped. Leave unset to
 // have such people reported instead of filed under a guess.
-export const SOLIDARITY_DEFAULT_CHAPTER_ID = parseInt(
-	get('SOLIDARITY_DEFAULT_CHAPTER_ID') || '0',
-	10,
-);
+export const SOLIDARITY_DEFAULT_CHAPTER_ID = intEnv('SOLIDARITY_DEFAULT_CHAPTER_ID', 0);
 // Guardrail: a run creating more than this many NEW Solidarity profiles stops.
 // A spike almost always means matching is failing, and the damage — duplicate
 // person records in the CRM — is tedious to undo.
-export const ATTENDEE_SYNC_MAX_NEW_PROFILES = parseInt(
-	get('ATTENDEE_SYNC_MAX_NEW_PROFILES') || '50',
-	10,
-);
+export const ATTENDEE_SYNC_MAX_NEW_PROFILES = intEnv('ATTENDEE_SYNC_MAX_NEW_PROFILES', 50);
 
 // Match-health thresholds (see attendee-sync-health.ts). These alert; they never
 // stop a run — ATTENDEE_SYNC_MAX_NEW_PROFILES above is the only thing that does.
@@ -111,20 +137,13 @@ export const ATTENDEE_SYNC_MAX_NEW_PROFILES = parseInt(
 // 18% and 27% of signups, so the 10% floor sits below anything observed and
 // warns only on a genuine collapse. Ambiguous lookups measured 0 of 111, which
 // is why a quarter of them is already an alarm.
-export const ATTENDEE_SYNC_MIN_MATCH_RATE = parseFloat(
-	get('ATTENDEE_SYNC_MIN_MATCH_RATE') || '0.10',
+export const ATTENDEE_SYNC_MIN_MATCH_RATE = floatEnv('ATTENDEE_SYNC_MIN_MATCH_RATE', 0.1);
+export const ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE = intEnv(
+	'ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE',
+	25,
 );
-export const ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE = parseInt(
-	get('ATTENDEE_SYNC_MATCH_RATE_MIN_SAMPLE') || '25',
-	10,
-);
-export const ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE = parseFloat(
-	get('ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE') || '0.25',
-);
-export const ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE = parseInt(
-	get('ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE') || '8',
-	10,
-);
+export const ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE = floatEnv('ATTENDEE_SYNC_MAX_AMBIGUOUS_RATE', 0.25);
+export const ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE = intEnv('ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE', 8);
 
 // Shared secret for internal cron-triggered endpoints (e.g. nightly snapshot).
 // Callers pass it as ?key=<value>.
@@ -165,7 +184,7 @@ export const VAN_DATABASE_MODE = get('VAN_DATABASE_MODE').trim();
 // EveryAction issues these per developer, so the `101` in VAN's docs is an
 // example — discover the real one with `npm run van:check`. Unset is fine:
 // the catalog sync runs without it and only geometry is skipped.
-export const VAN_EXPORT_JOB_TYPE_ID = parseInt(get('VAN_EXPORT_JOB_TYPE_ID') || '0', 10);
+export const VAN_EXPORT_JOB_TYPE_ID = intEnv('VAN_EXPORT_JOB_TYPE_ID', 0);
 
 // Basemap tiles for the turf map. Defaults to CARTO's keyless Positron
 // endpoint, which is what the demo has always used.

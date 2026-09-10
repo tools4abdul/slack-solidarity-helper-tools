@@ -72,7 +72,15 @@ export const POST: RequestHandler = async ({ url }) => {
 		return json({ error: `invalid lookback: ${lookbackParam}` }, { status: 400 });
 	}
 	const maxParam = url.searchParams.get('maxProfiles');
-	const maxNewProfiles = maxParam ? parseInt(maxParam, 10) : undefined;
+	const maxNewProfiles = maxParam ? Number(maxParam) : undefined;
+	// Validated like `window` and `lookback` above, and for a sharper reason:
+	// this is the guardrail that stops a broken matching pass from filling the
+	// CRM with duplicate people. `parseInt('all', 10)` is NaN, `NaN ?? default`
+	// stays NaN, and `created > NaN` is false — so an unvalidated junk value
+	// does not raise the cap, it removes it. Refuse the run instead.
+	if (maxParam && (!Number.isInteger(maxNewProfiles) || maxNewProfiles! < 0)) {
+		return json({ error: `invalid maxProfiles: ${maxParam}` }, { status: 400 });
+	}
 
 	try {
 		const run = await withSyncLock(db, SYNC_LOCK_NAME, SYNC_LOCK_TTL_MS, () =>

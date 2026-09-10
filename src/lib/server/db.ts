@@ -24,26 +24,41 @@ export const db = new Proxy({} as ReturnType<typeof drizzle>, {
 	get: (_t, prop, recv) => Reflect.get(getDb(), prop, recv),
 });
 
+/**
+ * The outcome of a session lookup, as three states rather than two.
+ *
+ * `missing` and `unavailable` both mean "this request has no session", but they
+ * must not be treated the same way afterwards. `missing` is a settled fact —
+ * the row is gone or expired, and the cookie holding its id is now worthless,
+ * so clearing it is right. `unavailable` means the DATABASE did not answer; the
+ * session may well still exist. Collapsing the two (which this returned `null`
+ * for both of, before) means a few seconds of Turso trouble deletes the session
+ * cookie of every signed-in user and forces the whole workspace back through
+ * Slack OAuth — a transient blip turned into a mass logout.
+ */
+export type SessionLookup =
+	{ status: 'found'; data: SessionData } | { status: 'missing' } | { status: 'unavailable' };
+
 export class TursoStore {
-	async get(sid: string): Promise<SessionData | null> {
+	async get(sid: string): Promise<SessionLookup> {
 		try {
 			const rows = await db
 				.select({ data: sessions.data, expiresAt: sessions.expiresAt })
 				.from(sessions)
 				.where(eq(sessions.sid, sid));
-			if (rows.length === 0) return null;
+			if (rows.length === 0) return { status: 'missing' };
 			const row = rows[0]!;
 			if (new Date(row.expiresAt) < new Date()) {
 				await this.destroy(sid);
-				return null;
+				return { status: 'missing' };
 			}
-			return JSON.parse(row.data) as SessionData;
+			return { status: 'found', data: JSON.parse(row.data) as SessionData };
 		} catch (err) {
 			console.warn(
-				'[session] failed to load session — treating as no session:',
+				'[session] session lookup failed — signing this request out but KEEPING the cookie:',
 				err instanceof Error ? err.message : err,
 			);
-			return null;
+			return { status: 'unavailable' };
 		}
 	}
 

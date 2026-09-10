@@ -36,9 +36,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const sid = event.cookies.get('session');
 
 	if (sid) {
-		const sessionData = await sessionStore.get(sid);
-		if (sessionData) {
-			event.locals.session = sessionData;
+		const lookup = await sessionStore.get(sid);
+		if (lookup.status === 'found') {
+			event.locals.session = lookup.data;
 			event.cookies.set('session', sid, {
 				path: '/',
 				httpOnly: true,
@@ -48,7 +48,16 @@ export const handle: Handle = async ({ event, resolve }) => {
 			});
 		} else {
 			event.locals.session = null;
-			event.cookies.delete('session', { path: '/' });
+			// Only clear the cookie when the session is genuinely gone. On
+			// 'unavailable' the database did not answer, and the session may be
+			// perfectly valid — deleting the cookie there would turn a few
+			// seconds of Turso trouble into a workspace-wide logout that
+			// everyone has to fix by re-running Slack OAuth. Leaving it costs
+			// nothing: this request is still treated as signed out, and the
+			// next one retries the lookup.
+			if (lookup.status === 'missing') {
+				event.cookies.delete('session', { path: '/' });
+			}
 		}
 	} else {
 		event.locals.session = null;
@@ -80,8 +89,66 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// rather than leaving a stray one.
 	const themeAttr = themeAttribute(parseThemeMode(event.cookies.get(THEME_COOKIE)));
 
-	return resolve(event, {
+	const response = await resolve(event, {
 		transformPageChunk: ({ html }) =>
 			html.replace('%theme.style%', themeStyle).replace(' %theme.attr%', themeAttr),
 	});
+
+	setSecurityHeaders(response.headers);
+	return response;
 };
+
+/**
+ * Response headers this app never sets per-route, applied in one place.
+ *
+ * Defence in depth rather than a hole being plugged: the session cookie is
+ * SameSite=Lax, so it is not sent to a cross-site iframe and the clickjacking
+ * route into /settings is already closed. These make that explicit and cover
+ * the cases the cookie policy does not.
+ *
+ * Be honest about what this CSP does and does not buy. Both style-src and
+ * script-src carry 'unsafe-inline', because SvelteKit emits an inline
+ * bootstrap script on every page and this file injects the theme as an inline
+ * <style> block by design (see above). So this is NOT an XSS backstop — an
+ * injected inline script would still run. What it does enforce is origin:
+ * nothing may be loaded from, or posted to, a host we did not name, and
+ * object-src/base-uri close the two classic redirection tricks.
+ *
+ * Tightening it to a real script defence means giving Kit a nonce
+ * (`kit.csp.directives` in svelte.config.js, which generates them per render)
+ * rather than widening it here. That is worth doing; it is a bigger change
+ * than this one, and a loose CSP beats none in the meantime.
+ *
+ * frame-ancestors is what modern browsers consult; X-Frame-Options is sent
+ * alongside for anything old enough to need it.
+ */
+function setSecurityHeaders(headers: Headers): void {
+	headers.set(
+		'Content-Security-Policy',
+		[
+			"default-src 'self'",
+			// The map's basemap tiles come from a configurable CDN, and the
+			// browser is what fetches them (see MAP_TILE_URL_TEMPLATE).
+			"img-src 'self' data: blob: https:",
+			"style-src 'self' 'unsafe-inline'",
+			"script-src 'self' 'unsafe-inline'",
+			"connect-src 'self' https:",
+			"font-src 'self' data:",
+			"object-src 'none'",
+			"base-uri 'self'",
+			// Nothing in this app is ever legitimately framed.
+			"frame-ancestors 'none'",
+			"form-action 'self'",
+		].join('; '),
+	);
+	headers.set('X-Frame-Options', 'DENY');
+	headers.set('X-Content-Type-Options', 'nosniff');
+	// Same-origin referrers keep /turfs?chapter=… out of third-party logs, and
+	// no referrer at all leaves the tile CDN.
+	headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+	// fly.toml already forces HTTPS; this stops the first plaintext hop on a
+	// return visit. Not preloaded — that is a one-way door for the domain.
+	if (!dev) {
+		headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+	}
+}

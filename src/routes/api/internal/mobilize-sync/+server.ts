@@ -75,9 +75,22 @@ export const POST: RequestHandler = async ({ url }) => {
 
 	const dryRun = url.searchParams.get('dry') === '1';
 	const maxCreatesParam = url.searchParams.get('maxCreates');
-	const maxCreates = maxCreatesParam ? parseInt(maxCreatesParam, 10) : undefined;
+	const maxCreates = maxCreatesParam ? Number(maxCreatesParam) : undefined;
+	// The cap is the one thing standing between a broken plan and a pile of
+	// public events, so a value it cannot understand has to stop the run.
+	// `parseInt('all', 10)` is NaN, `NaN ?? MOBILIZE_SYNC_MAX_CREATES` stays
+	// NaN, and `toCreate.length > NaN` is false — an unvalidated junk value
+	// does not raise the limit, it deletes it. An operator typing
+	// `?maxCreates=all` means "no limit" and would get exactly the flood this
+	// guard exists to prevent.
+	if (maxCreatesParam && (!Number.isInteger(maxCreates) || maxCreates! < 0)) {
+		return json({ error: `invalid maxCreates: ${maxCreatesParam}` }, { status: 400 });
+	}
 	const budgetParam = url.searchParams.get('budgetMs');
-	const budgetMs = budgetParam ? parseInt(budgetParam, 10) : undefined;
+	const budgetMs = budgetParam ? Number(budgetParam) : undefined;
+	if (budgetParam && (!Number.isInteger(budgetMs) || budgetMs! <= 0)) {
+		return json({ error: `invalid budgetMs: ${budgetParam}` }, { status: 400 });
+	}
 	// The 30-minute schedule sets this. An event that reports the same edit on
 	// every pass — an image Mobilize keeps dropping, say — would otherwise post
 	// the same Slack line 48 times a day and train everyone to ignore the

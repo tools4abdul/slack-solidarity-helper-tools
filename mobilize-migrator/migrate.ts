@@ -43,6 +43,16 @@ const args = process.argv.slice(2);
 const apply = args.includes('--apply');
 const limitArg = args.indexOf('--limit');
 const createLimit = limitArg >= 0 ? Number(args[limitArg + 1]) : undefined;
+// `--limit` with a missing or non-numeric value yields NaN, and `report.created
+// >= NaN` is always false — so the run would create EVERY planned event
+// publicly, which is the exact opposite of what someone typing `--limit` wants.
+// A cap that cannot be understood has to stop the run, not lift itself.
+if (limitArg >= 0 && (!Number.isInteger(createLimit) || createLimit! < 0)) {
+	console.error(
+		`--limit needs a non-negative whole number, got: ${args[limitArg + 1] ?? '(nothing)'}`,
+	);
+	process.exit(1);
+}
 
 // Fail fast on missing credentials rather than after a long read phase.
 const api = loadApiConfig();
@@ -151,3 +161,11 @@ console.log(
 		`${report.unchanged} unchanged, ${report.failed} failed.`,
 );
 if (!apply) console.log('Re-run with --apply to write these.');
+
+// Exit non-zero on a run that did not do what it was asked. Without this a
+// revoked API key, an aborted guardrail, or a run where every create was
+// rejected all exit 0 — and any wrapper (a cron, a CI step) reads that as
+// success and never surfaces it.
+if (report.failed > 0 || report.authFailed || report.abortedReason) {
+	process.exitCode = 1;
+}

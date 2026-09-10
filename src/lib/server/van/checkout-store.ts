@@ -11,7 +11,7 @@
 // volunteer can act on; the index is what makes two simultaneous clicks
 // resolve to exactly one winner even if the friendly layer is bypassed.
 
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
@@ -99,6 +99,44 @@ export async function claimTurf(
 	const decision = canClaim(snapshot, claims, slackUserId, now, input.options ?? {});
 	if (!decision.ok) return { ok: false, status: 409, message: decision.message };
 
+	// Clear a lapsed claim before inserting over it.
+	//
+	// The partial unique index is `WHERE released_at IS NULL AND completed_at
+	// IS NULL` — it knows nothing about expiry. `isActive` does. So a claim
+	// that has expired but has not yet been swept is invisible to `canClaim`
+	// (which just said this turf is free, and to every read path, which renders
+	// it green and claimable) while still occupying the index. Without this the
+	// insert below collides and the volunteer is told "someone claimed this a
+	// moment before you did" about a person who went home hours ago — and it
+	// keeps happening until the next sweep, which overnight is up to an hour
+	// away. That is the failure the read-time expiry check exists to prevent,
+	// leaking in through the write path.
+	//
+	// `relevantClaims` already filtered to unreleased, uncompleted rows, so any
+	// row still holding this turf after `canClaim` approved is necessarily
+	// expired — the check below is just to keep the write off the hot path.
+	//
+	// The `lte` on expiresAt is what makes this safe against a concurrent
+	// claim: a fresh one inserted since our read has expiresAt in the future
+	// and is left alone, so that race still resolves to an honest 409 rather
+	// than us releasing a live claim. ISO-8601 UTC compares correctly as text,
+	// and every writer here uses toISOString(). A corrupt timestamp is not
+	// cleared and is left to sweepExpiredClaims, which parses in JS.
+	const nowIso = now.toISOString();
+	if (claims.some((c) => c.mapRouteId === mapRouteId)) {
+		await db
+			.update(vanTurfCheckouts)
+			.set({ releasedAt: nowIso, releaseReason: 'expired' })
+			.where(
+				and(
+					eq(vanTurfCheckouts.mapRouteId, mapRouteId),
+					isNull(vanTurfCheckouts.releasedAt),
+					isNull(vanTurfCheckouts.completedAt),
+					lte(vanTurfCheckouts.expiresAt, nowIso),
+				),
+			);
+	}
+
 	// onConflictDoNothing + returning() is the race resolver: the partial
 	// unique index rejects the second of two simultaneous inserts, and the
 	// loser gets zero rows back rather than an exception to parse.
@@ -108,7 +146,7 @@ export async function claimTurf(
 			mapRouteId,
 			slackUserId,
 			slackUserName,
-			claimedAt: now.toISOString(),
+			claimedAt: nowIso,
 			expiresAt: decision.expiresAt,
 		})
 		.onConflictDoNothing()
