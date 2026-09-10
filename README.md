@@ -677,7 +677,7 @@ Both are shared deliberately: when the chapter limiter was module state inside t
 
 **Chapter views are logged only above a threshold** — 4 distinct chapters in an hour — and the one line names every chapter seen. Logging every view produced a line each time a volunteer reopened their own county, which buried the entries that meant something. Someone pacing under the threshold browses without a log line; the rate limit still caps them at eight an hour.
 
-**Distance sorting** uses browser geolocation when granted. When it is declined or unavailable, a ZIP box resolves through the Census geocoder (cached in `van_zip_centroids`) and the server sorts before serialising. It is a plain GET form, so it works with JavaScript off. Every failure path returns an unsorted list rather than an error — losing distance sorting must never cost someone the turf list.
+**Distance sorting** uses browser geolocation when granted. When it is declined or unavailable, a ZIP box resolves through the Census TIGERweb ZCTA layer — _not_ the Census geocoder, which resolves street addresses only and returns nothing for a bare ZIP — and is cached in `van_zip_centroids`. The server sorts before serialising. It is a plain GET form, so it works with JavaScript off. Every failure path returns an unsorted list rather than an error — losing distance sorting must never cost someone the turf list.
 
 **The map is optional.** Turf with no hull and no centroid — which is all of it on a key without export-job access — is listed but not drawn. The list view is the accessible path, the data-saving path, and the one that works when the tile provider is down.
 

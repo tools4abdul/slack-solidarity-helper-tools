@@ -15,8 +15,10 @@ function res(status: number, body: unknown): Response {
 	} as unknown as Response;
 }
 
-const MATCH = {
-	result: { addressMatches: [{ coordinates: { x: -83.743, y: 42.281 } }] },
+/** A ZCTA query result, in the shape TIGERweb really returns it: signed and
+ *  zero-padded strings, not numbers. */
+const ZCTA = {
+	features: [{ attributes: { INTPTLAT: '+42.2620394', INTPTLON: '-083.7166908' } }],
 };
 
 /** Records what was written, and can be made to fail on read or write. */
@@ -73,37 +75,58 @@ describe('geocodeZip', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 	});
 
-	it('returns the point the geocoder gives', async () => {
-		const fetchFn = vi.fn().mockResolvedValue(res(200, MATCH));
-		expect(await geocodeZip('48104', fetchFn as never)).toEqual({ lat: 42.281, lng: -83.743 });
+	it('returns the ZCTA internal point, parsed from the padded strings', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
+		expect(await geocodeZip('48104', fetchFn as never)).toEqual({
+			lat: 42.2620394,
+			lng: -83.7166908,
+		});
 	});
 
-	it('sends the ZIP to the Census geocoder', async () => {
-		const fetchFn = vi.fn().mockResolvedValue(res(200, MATCH));
+	// The regression that made `/turfs 48104` fail: bare ZIPs used to go to the
+	// address geocoder, which has no ZIP mode and answers `addressMatches: []` for
+	// one. Asserting the host and the query keeps the ZIP path off it.
+	it('asks TIGERweb for the ZCTA, not the address geocoder', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
 		await geocodeZip('48104', fetchFn as never);
-		expect(String(fetchFn.mock.calls[0]![0])).toContain('geocoding.geo.census.gov');
-		expect(String(fetchFn.mock.calls[0]![0])).toContain('address=48104');
+		const url = new URL(String(fetchFn.mock.calls[0]![0]));
+		expect(url.hostname).toBe('tigerweb.geo.census.gov');
+		expect(url.searchParams.get('where')).toBe("ZCTA5='48104'");
+		expect(url.searchParams.get('returnGeometry')).toBe('false');
+	});
+
+	// It reads as belt-and-braces because normalizeZip already ran upstream — but
+	// the ZIP lands in a `where` clause, so the guarantee belongs at this boundary
+	// rather than in the callers that happen to hold it today.
+	it('refuses a ZIP that is not five digits rather than putting it in the query', async () => {
+		const fetchFn = vi.fn();
+		expect(await geocodeZip("48104' OR '1'='1", fetchFn as never)).toBeNull();
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it('takes the five-digit half of a ZIP+4', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
+		await geocodeZip('48104-1234', fetchFn as never);
+		expect(new URL(String(fetchFn.mock.calls[0]![0])).searchParams.get('where')).toBe(
+			"ZCTA5='48104'",
+		);
 	});
 
 	// The never-throw contract. Distance sorting is a convenience; losing it
 	// must never cost someone the turf list.
 	it.each([
 		['a non-200', () => Promise.resolve(res(500, ''))],
-		['no matches', () => Promise.resolve(res(200, { result: { addressMatches: [] } }))],
-		['a missing result envelope', () => Promise.resolve(res(200, {}))],
+		['no such ZCTA', () => Promise.resolve(res(200, { features: [] }))],
+		['a missing features envelope', () => Promise.resolve(res(200, {}))],
 		[
 			'non-numeric coordinates',
 			() =>
-				Promise.resolve(
-					res(200, { result: { addressMatches: [{ coordinates: { x: 'a', y: 'b' } }] } }),
-				),
+				Promise.resolve(res(200, { features: [{ attributes: { INTPTLAT: 'a', INTPTLON: 'b' } }] })),
 		],
 		[
 			'null island',
 			() =>
-				Promise.resolve(
-					res(200, { result: { addressMatches: [{ coordinates: { x: 0, y: 0 } }] } }),
-				),
+				Promise.resolve(res(200, { features: [{ attributes: { INTPTLAT: '0', INTPTLON: '0' } }] })),
 		],
 		['a network failure', () => Promise.reject(new Error('ECONNRESET'))],
 		[
@@ -120,6 +143,17 @@ describe('geocodeZip', () => {
 	])('returns null for %s rather than throwing', async (_label, impl) => {
 		expect(await geocodeZip('48104', impl as never)).toBeNull();
 	});
+
+	// ArcGIS reports its own errors with HTTP 200 and an `error` envelope. Without
+	// this branch a rejected query reads as a clean "no such ZIP".
+	it('treats an ArcGIS error envelope as a failure despite the 200', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValue(
+				res(200, { error: { code: 400, message: 'Unable to complete operation.' } }),
+			);
+		expect(await geocodeZip('48104', fetchFn as never)).toBeNull();
+	});
 });
 
 describe('lookupZipCentroid', () => {
@@ -128,24 +162,24 @@ describe('lookupZipCentroid', () => {
 	});
 
 	it('returns a cached answer without calling the geocoder', async () => {
-		const { db } = makeDb([{ zip: '48104', lat: 42.281, lng: -83.743 }]);
+		const { db } = makeDb([{ zip: '48104', lat: 42.2620394, lng: -83.7166908 }]);
 		const fetchFn = vi.fn();
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).toEqual({
-			lat: 42.281,
-			lng: -83.743,
+			lat: 42.2620394,
+			lng: -83.7166908,
 		});
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
 
 	it('geocodes and caches a ZIP it has not seen', async () => {
 		const { db, written } = makeDb([]);
-		const fetchFn = vi.fn().mockResolvedValue(res(200, MATCH));
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).toEqual({
-			lat: 42.281,
-			lng: -83.743,
+			lat: 42.2620394,
+			lng: -83.7166908,
 		});
 		expect(written).toHaveLength(1);
-		expect(written[0]).toMatchObject({ zip: '48104', lat: 42.281, lng: -83.743 });
+		expect(written[0]).toMatchObject({ zip: '48104', lat: 42.2620394, lng: -83.7166908 });
 	});
 
 	it('rejects a malformed ZIP without touching the network', async () => {
@@ -157,23 +191,23 @@ describe('lookupZipCentroid', () => {
 
 	it('still answers when the cache read fails', async () => {
 		const { db } = makeDb([], { readThrows: true });
-		const fetchFn = vi.fn().mockResolvedValue(res(200, MATCH));
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).not.toBeNull();
 	});
 
 	it('still answers when the cache write fails', async () => {
 		// Having the answer and failing to store it beats failing the lookup.
 		const { db } = makeDb([], { writeThrows: true });
-		const fetchFn = vi.fn().mockResolvedValue(res(200, MATCH));
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).toEqual({
-			lat: 42.281,
-			lng: -83.743,
+			lat: 42.2620394,
+			lng: -83.7166908,
 		});
 	});
 
-	it('returns null when the geocoder has no answer', async () => {
+	it('returns null when the ZIP is not a ZCTA', async () => {
 		const { db, written } = makeDb([]);
-		const fetchFn = vi.fn().mockResolvedValue(res(200, { result: { addressMatches: [] } }));
+		const fetchFn = vi.fn().mockResolvedValue(res(200, { features: [] }));
 		expect(await lookupZipCentroid(db, '48104', fetchFn as never)).toBeNull();
 		expect(written).toHaveLength(0);
 	});
@@ -274,6 +308,22 @@ describe('resolveLocation', () => {
 			zip: '48104',
 		});
 		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	// The reported bug, end to end: `/turfs 48104` on a cold cache. It used to
+	// send the bare ZIP to the address geocoder, get `addressMatches: []`, and
+	// tell the volunteer "I couldn't find that place" — so the ZIP path only
+	// worked for a ZIP somebody had already warmed by typing a street address.
+	it('resolves a ZIP that is not in the cache yet', async () => {
+		const { db, written } = makeDb([]);
+		const fetchFn = vi.fn().mockResolvedValue(res(200, ZCTA));
+		await expect(resolveLocation(db, '48104', fetchFn as never)).resolves.toEqual({
+			point: { lat: 42.2620394, lng: -83.7166908 },
+			zip: '48104',
+		});
+		expect(new URL(String(fetchFn.mock.calls[0]![0])).hostname).toBe('tigerweb.geo.census.gov');
+		// Cached on the way out, so the next volunteer that morning pays nothing.
+		expect(written).toHaveLength(1);
 	});
 
 	it('geocodes anything that is not a ZIP as an address', async () => {

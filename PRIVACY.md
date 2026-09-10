@@ -126,7 +126,10 @@ servers. Three limits apply, enforced in `src/lib/server/van/geocode-batch.ts`:
   that is fully geocoded, this never runs.
 
 The US Census Bureau is a federal statistical agency; its geocoder is a public service that
-requires no account, and it is already used for the address sorting described above.
+requires no account, and it is already used for the address sorting described above. A bare ZIP
+code is answered from the Bureau's TIGERweb service instead — the published ZIP Code Tabulation
+Area boundaries — because the geocoder resolves street addresses only. That lookup sends the five
+digits and nothing else.
 
 ### Canvassing results
 
@@ -152,17 +155,17 @@ actions (for example, that a claim was made on a route ID); they are not used to
 
 Data leaves this app in exactly these directions:
 
-| Recipient                  | What reaches them                                                                                                                                      | Why                               |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
-| **Slack**                  | Messages, DMs, channel invites, modal contents                                                                                                         | The app is a Slack bot            |
-| **solidarity.tech**        | Lookups by email; RSVP and event reads                                                                                                                 | Chapter matching, member lookup   |
-| **Mobilize**               | Event and RSVP sync                                                                                                                                    | Keeping the two calendars aligned |
-| **EveryAction / VAN**      | Read-only turf catalog requests                                                                                                                        | The turf list                     |
-| **Openfield** (canvassing) | Service-account reads of leaderboards                                                                                                                  | Doors-knocked numbers             |
-| **US Census geocoder**     | A ZIP or address string, at request time; and voter street addresses in bulk where VAN has not geocoded them (see [Turf map shapes](#turf-map-shapes)) | Distance sorting; turf map shapes |
-| **CARTO / OpenStreetMap**  | Your browser's IP, when the turf map loads tiles                                                                                                       | The basemap                       |
-| **Fly.io**                 | Everything, as the host                                                                                                                                | Hosting                           |
-| **Turso**                  | The database contents                                                                                                                                  | Storage                           |
+| Recipient                  | What reaches them                                                                                                                                                                                    | Why                               |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| **Slack**                  | Messages, DMs, channel invites, modal contents                                                                                                                                                       | The app is a Slack bot            |
+| **solidarity.tech**        | Lookups by email; RSVP and event reads                                                                                                                                                               | Chapter matching, member lookup   |
+| **Mobilize**               | Event and RSVP sync                                                                                                                                                                                  | Keeping the two calendars aligned |
+| **EveryAction / VAN**      | Read-only turf catalog requests                                                                                                                                                                      | The turf list                     |
+| **Openfield** (canvassing) | Service-account reads of leaderboards                                                                                                                                                                | Doors-knocked numbers             |
+| **US Census Bureau**       | A ZIP or address string, at request time (ZIPs to TIGERweb, addresses to the geocoder); and voter street addresses in bulk where VAN has not geocoded them (see [Turf map shapes](#turf-map-shapes)) | Distance sorting; turf map shapes |
+| **CARTO / OpenStreetMap**  | Your browser's IP, when the turf map loads tiles                                                                                                                                                     | The basemap                       |
+| **Fly.io**                 | Everything, as the host                                                                                                                                                                              | Hosting                           |
+| **Turso**                  | The database contents                                                                                                                                                                                | Storage                           |
 
 Nothing is sold, rented, or shared for advertising. Data is disclosed to anyone else only if
 the law requires it.
