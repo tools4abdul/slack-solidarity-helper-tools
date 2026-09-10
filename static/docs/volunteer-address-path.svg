@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="fig-address" viewBox="0 0 1040 400" role="img"
+				aria-label="Two address flows. Turf geometry: a VAN export row goes to hull-extract, which sends an address to the US Census geocoder only when VAN left latitude and longitude empty; coordinates exist in memory, become a convex hull and door count, and only that is stored while addresses are discarded. Separately, an address typed into the slash-turfs command is geocoded to a ZIP centroid which is cached, and the address is dropped.">
+
+				<style><![CDATA[
+    .bg     { fill: #ffffff; }
+    text    { font-family: "Newsreader", Georgia, "Times New Roman", serif; }
+    .box    { fill: #ffffff; stroke: #b9c7c3; stroke-width: 1.2; }
+    .box-2  { fill: #e7ecea; stroke: #b9c7c3; stroke-width: 1.2; }
+    .zone   { fill: none; stroke: #788b86; stroke-width: 1.4; stroke-dasharray: 7 5; }
+    .band   { fill: none; stroke: #cfd9d6; stroke-width: 1; }
+    .t-head { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 1.3px; fill: #788b86; }
+    .t-title{ font-family: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif; font-size: 16px; font-weight: 600; fill: #121b19; }
+    .t-sub  { font-size: 13.5px; fill: #4a5c58; }
+    .t-mono { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; fill: #4a5c58; }
+    .t-auth { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #0b6b5e; }
+    .t-edge { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #788b86; }
+    .t-flag { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #a24a18; }
+    .t-safe { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #0b6b5e; }
+    .t-enc  { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 11.5px; fill: #61519c; }
+    .t-zone { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 12px; letter-spacing: 1px; fill: #788b86; }
+    .e      { fill: none; stroke: #788b86; stroke-width: 1.4; }
+    .e-pii  { fill: none; stroke: #a24a18; stroke-width: 1.9; }
+    .e-safe { fill: none; stroke: #0b6b5e; stroke-width: 1.9; }
+    .e-sig  { fill: none; stroke: #788b86; stroke-width: 1.4; stroke-dasharray: 6 4; }
+    .ah     { fill: #788b86; }
+    .ah-pii { fill: #a24a18; }
+    .ah-safe{ fill: #0b6b5e; }
+    .rule-pii { stroke: #a24a18; }
+    .rule-enc { stroke: #61519c; }
+    .rule-safe{ stroke: #0b6b5e; }
+]]></style>
+<rect class="bg" x="0" y="0" width="1040" height="400"/>
+<defs>
+					<marker id="a2" markerWidth="9" markerHeight="9" refX="8.2" refY="4.5" orient="auto">
+						<polygon class="ah" points="0,0.6 9,4.5 0,8.4"></polygon>
+					</marker>
+					<marker id="a2-pii" markerWidth="9" markerHeight="9" refX="8.2" refY="4.5" orient="auto">
+						<polygon class="ah-pii" points="0,0.6 9,4.5 0,8.4"></polygon>
+					</marker>
+					<marker id="a2-safe" markerWidth="9" markerHeight="9" refX="8.2" refY="4.5" orient="auto">
+						<polygon class="ah-safe" points="0,0.6 9,4.5 0,8.4"></polygon>
+					</marker>
+				</defs>
+
+				<text class="t-head" x="24" y="44">TURF MAP SHAPES</text>
+
+				<rect class="box" x="24" y="88" width="156" height="56" rx="7"></rect>
+				<text class="t-title" x="102" y="112" text-anchor="middle">VAN export row</text>
+				<text class="t-sub" x="102" y="130" text-anchor="middle">name, address, VanID</text>
+
+				<line class="e-pii" x1="180" y1="116" x2="208" y2="116" marker-end="url(#a2-pii)"></line>
+
+				<rect class="box-2" x="212" y="84" width="176" height="64" rx="7"></rect>
+				<text class="t-title" x="300" y="107" text-anchor="middle">hull-extract</text>
+				<text class="t-sub" x="300" y="125" text-anchor="middle">keeps an address only</text>
+				<text class="t-sub" x="300" y="141" text-anchor="middle">when VAN left lat/lng empty</text>
+
+				<path class="e-pii" d="M330 84 C 350 48, 380 40, 426 46" marker-end="url(#a2-pii)"></path>
+				<rect class="box" x="430" y="20" width="190" height="56" rx="7"></rect>
+				<text class="t-title" x="525" y="44" text-anchor="middle">US Census geocoder</text>
+				<text class="t-sub" x="525" y="62" text-anchor="middle">street, city, state, ZIP</text>
+				<path class="e-safe" d="M620 52 C 660 60, 650 90, 656 108" marker-end="url(#a2-safe)"></path>
+
+				<line class="e-safe" x1="388" y1="122" x2="656" y2="122" marker-end="url(#a2-safe)"></line>
+				<text class="t-safe" x="522" y="140" text-anchor="middle">VAN's own lat/lng, always preferred</text>
+
+				<rect class="box" x="660" y="88" width="150" height="56" rx="7"></rect>
+				<text class="t-title" x="735" y="112" text-anchor="middle">Coordinates</text>
+				<text class="t-sub" x="735" y="130" text-anchor="middle">in memory</text>
+
+				<line class="e-safe" x1="810" y1="116" x2="842" y2="116" marker-end="url(#a2-safe)"></line>
+
+				<rect class="box" x="846" y="88" width="170" height="56" rx="7"></rect>
+				<text class="t-title" x="931" y="112" text-anchor="middle">Convex hull</text>
+				<text class="t-sub" x="931" y="130" text-anchor="middle">+ a door count</text>
+
+				<line class="e-safe" x1="931" y1="144" x2="931" y2="166" marker-end="url(#a2-safe)"></line>
+				<rect class="box" x="846" y="170" width="170" height="34" rx="6"></rect>
+				<line class="rule-safe" x1="846" y1="170" x2="846" y2="204" stroke-width="3"></line>
+				<text class="t-mono" x="931" y="191" text-anchor="middle">van_turfs.hull_json</text>
+
+				<line class="e-pii" x1="735" y1="144" x2="735" y2="180" marker-end="url(#a2-pii)"></line>
+				<rect class="box" x="410" y="184" width="380" height="34" rx="6"></rect>
+				<line class="rule-pii" x1="410" y1="184" x2="410" y2="218" stroke-width="3"></line>
+				<text class="t-flag" x="600" y="205" text-anchor="middle">addresses, names and VanIDs dropped — never written, never logged</text>
+
+				<line class="band" x1="24" y1="240" x2="1016" y2="240"></line>
+
+				<text class="t-head" x="24" y="266">SORTING THE TURF LIST</text>
+
+				<rect class="box" x="24" y="286" width="200" height="56" rx="7"></rect>
+				<text class="t-title" x="124" y="310" text-anchor="middle">/turfs 123 Main St</text>
+				<text class="t-sub" x="124" y="328" text-anchor="middle">typed into Slack</text>
+
+				<line class="e-pii" x1="224" y1="314" x2="258" y2="314" marker-end="url(#a2-pii)"></line>
+
+				<rect class="box" x="262" y="286" width="190" height="56" rx="7"></rect>
+				<text class="t-title" x="357" y="310" text-anchor="middle">US Census geocoder</text>
+				<text class="t-sub" x="357" y="328" text-anchor="middle">one-line lookup</text>
+
+				<line class="e-pii" x1="357" y1="342" x2="357" y2="360" marker-end="url(#a2-pii)"></line>
+				<rect class="box" x="240" y="364" width="234" height="30" rx="6"></rect>
+				<line class="rule-pii" x1="240" y1="364" x2="240" y2="394" stroke-width="3"></line>
+				<text class="t-flag" x="357" y="383" text-anchor="middle">address dropped, logged as a marker</text>
+
+				<line class="e-safe" x1="452" y1="314" x2="486" y2="314" marker-end="url(#a2-safe)"></line>
+
+				<rect class="box" x="490" y="286" width="160" height="56" rx="7"></rect>
+				<text class="t-title" x="570" y="310" text-anchor="middle">ZIP + centroid</text>
+				<text class="t-sub" x="570" y="328" text-anchor="middle">rounded, coarse</text>
+
+				<line class="e-safe" x1="650" y1="314" x2="686" y2="314" marker-end="url(#a2-safe)"></line>
+
+				<rect class="box" x="690" y="288" width="200" height="52" rx="7"></rect>
+				<line class="rule-safe" x1="690" y1="288" x2="690" y2="340" stroke-width="3"></line>
+				<text class="t-mono" x="706" y="310">van_zip_centroids</text>
+				<text class="t-sub" x="706" y="328">a ZIP, not a person</text>
+
+			</svg>

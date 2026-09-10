@@ -106,6 +106,33 @@ interface Envelope<T> {
 const MAX_ATTEMPTS = 6;
 const BACKOFF_MS = 2_000;
 
+/**
+ * Statuses worth a second attempt on a READ.
+ *
+ * 429 is Mobilize itself. The 5xx entries are not: an edge layer sits in front
+ * of api.mobilize.us and answers the occasional request with a challenge page
+ * under a 5xx — 530 in the wild — rather than passing it through. Left
+ * unretried, one such blip permanently failed a whole event's signups for the
+ * run, which is what happened to event 1025563.
+ */
+const RETRY_STATUSES = new Set([429, 502, 503, 504, 520, 521, 522, 524, 530]);
+
+/**
+ * Writes retry on 429 only.
+ *
+ * A 530 challenge page never reached Mobilize, so replaying it would be safe —
+ * but a 502 or 504 may well mean the origin processed the write and only the
+ * response was lost. Replaying THAT creates a second event. Reads carry no such
+ * risk, and the failure being fixed here is a read, so the wider set stops at
+ * the method boundary rather than guessing from the body which case it is.
+ */
+function retryableStatuses(init: RequestInit): ReadonlySet<number> {
+	const method = (init.method ?? 'GET').toUpperCase();
+	return method === 'GET' || method === 'HEAD' ? RETRY_STATUSES : ONLY_429;
+}
+
+const ONLY_429: ReadonlySet<number> = new Set([429]);
+
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -119,9 +146,10 @@ async function request(
 	headers.set('Authorization', `Bearer ${config.apiKey}`);
 	headers.set('Accept', 'application/json');
 
+	const retryable = retryableStatuses(init);
 	for (let attempt = 0; ; attempt++) {
 		const res = await fetch(url, { ...init, headers });
-		if (res.status !== 429 || attempt >= MAX_ATTEMPTS - 1) return res;
+		if (!retryable.has(res.status) || attempt >= MAX_ATTEMPTS - 1) return res;
 		// Mobilize sends Retry-After on some 429s; prefer it over guessing.
 		const retryAfter = Number(res.headers.get('retry-after'));
 		await sleep(
@@ -138,6 +166,12 @@ async function request(
  * diagnosis, so it goes in the message: a nightly run reporting only
  * `/organizations/44679/events returned 400` says nothing a reader can act on,
  * which is exactly how ten failing events went unexplained for a night.
+ *
+ * An HTML body is the exception, because it did not come from Mobilize at all —
+ * it is the edge challenge page described on RETRY_STATUSES. Pasting 300
+ * characters of `<!DOCTYPE html>… <title>Please wait...` into Slack buries the
+ * one fact a reader needs, which is that the API was never reached and there is
+ * nothing about the event to fix.
  */
 function describeFailure(status: number, url: string, body: string): string {
 	const path = url.replace(BASE, '');
@@ -145,6 +179,11 @@ function describeFailure(status: number, url: string, body: string): string {
 		return `${path} returned 403 — MOBILIZE_API_KEY is rejected, or lacks the write access these endpoints require`;
 	}
 	const detail = body.trim().replace(/\s+/g, ' ').slice(0, 300);
+	// Matched on a document opener rather than on any angle bracket, so a JSON
+	// rejection quoting some markup still reports its own text.
+	if (/^(<!doctype html|<html[\s>])/i.test(detail)) {
+		return `${path} returned ${status} — blocked by an edge challenge page, not a Mobilize API error; the request never reached the API`;
+	}
 	return detail ? `${path} returned ${status}: ${detail}` : `${path} returned ${status}`;
 }
 

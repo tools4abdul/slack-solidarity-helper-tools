@@ -10,17 +10,29 @@
 		 *  takes its content's height, which is what the settings speed preview
 		 *  wants: a strip of scrolling ticker in a 16:9 box is mostly empty. */
 		ratio?: string | null;
+		/** Which of the two shapes the sign opens on: true starts it fitted to
+		 *  its content, false starts it on `ratio`. The dashboard reads this
+		 *  from ?ticker= so a screen on the wall can be sent straight to the
+		 *  widescreen version — nobody is there to click it. Ignored when
+		 *  `ratio` is null, since then there is only the one shape. */
+		fit?: boolean;
 	}
 
-	let { children, ratio = null }: Props = $props();
+	let { children, ratio = null, fit = true }: Props = $props();
 
-	// The sign loads as a strip no taller than what it is showing, and clicking
-	// the panel stretches it to `ratio` — a display sized for a screen on the
-	// wall rather than for a dashboard someone is scrolling past. That way the
-	// page opens at the size the content justifies and the big version is
-	// something you ask for. Plain component state: it is a way of looking at
-	// the page, not a preference, and it costs one click to set again.
-	let fitted = $state(true);
+	// By default the sign loads as a strip no taller than what it is showing,
+	// and clicking the panel stretches it to `ratio` — a display sized for a
+	// screen on the wall rather than for a dashboard someone is scrolling past.
+	// That way the page opens at the size the content justifies and the big
+	// version is something you ask for, either with the click or up front
+	// through `fit`. Plain component state: it is a way of looking at the page,
+	// not a preference, and it costs one click to set again.
+	// A writable derived rather than plain state, because both directions have
+	// to work: the click overrides what `fit` asked for, and a change to `fit`
+	// takes the sign back. That second half is not hypothetical — changing
+	// ?ticker= is a navigation within the same route, so this component is
+	// reused and a plain $state(fit) would keep rendering the old shape.
+	let fitted = $derived(fit);
 	const widescreen = $derived(ratio !== null && !fitted);
 </script>
 

@@ -3,6 +3,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 
 import { SLACK_BOT_TOKEN, SLACK_GROWTH_REPORT_CHANNEL_ID } from './env.js';
 import { loadSettings } from './settings.js';
+import { errMessage } from '../err-message.js';
 
 let _slack: WebClient | null = null;
 
@@ -51,6 +52,36 @@ export async function alertForMobilizeSync(
 		);
 	}
 	return alertFor(tag, channelId);
+}
+
+/**
+ * Post to a channel and say whether it landed.
+ *
+ * The boolean is the whole point, and it is why this exists alongside
+ * `alertFor`: an alert that carries its own idempotency stamp must not stamp
+ * after a failed post. Same reasoning as `sendDm` in slack-dm.js — the drift
+ * alert stamps `van_turfs.drift_alerted_kind` only on success, so a Slack outage
+ * retries on the next sync instead of silently burning the one message that says
+ * two volunteers are about to knock the same doors.
+ *
+ * Callers wanting fire-and-forget behaviour should keep using `alertFor`, which
+ * is the right shape for a notice nobody records.
+ */
+export async function postAlert(channelId: string, text: string, logTag: string): Promise<boolean> {
+	if (!channelId) return false;
+	try {
+		await slack.chat.postMessage({
+			channel: channelId,
+			text,
+			// Section block renders the mrkdwn; `text` stays the notification
+			// fallback. Same shape as sendDm, so an alert and a DM read alike.
+			blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+		});
+		return true;
+	} catch (err) {
+		console.error(`${logTag} Slack post to ${channelId} failed:`, errMessage(err));
+		return false;
+	}
 }
 
 export function alertFor(tag: string, channelId: string): (text: string) => Promise<void> {

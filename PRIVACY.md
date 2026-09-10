@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-09-04_
+_Last updated: 2026-09-09_
 
 This document covers **Tools for Abdul's deployment** of slack-solidarity-helper-tools at
 `https://slack.tools4abdul.com`, and — in [For other operators](#for-other-operators) — what
@@ -82,6 +82,14 @@ visible to organisers on the activity and organizer pages.
 Being blocked from turf checkout stores your Slack ID, display name, the reason the admin gave,
 and who set it (`van_blocked_users`). The reason is shown to other organisers; it is
 deliberately **not** repeated to you in the DM telling you your turf was released.
+
+If an organiser hands turf out inside VAN rather than through this app, VAN reports who it went
+to, and **the canvasser names on that export are stored** against the turf
+(`van_turfs.van_distributed_to`). That is what marks a turf as already assigned so nobody claims
+it twice, and what the drift report compares against this app's own ledger. It is the only
+per-person detail this app copies out of VAN — no voter name, address, date of birth, party,
+phone number, email or VAN ID is ever stored, and the code that reads VAN's export files drops
+those columns as it passes over them (`src/lib/server/van/hull-extract.ts`).
 
 ### Location, when you use `/turfs`
 
