@@ -118,6 +118,7 @@ describe('allAnchorIds', () => {
 			'info-commands',
 			'allowed-users',
 			'excluded-chapters',
+			'zip-excluded-chapters',
 			'van-turf-checkout',
 			'van-chapter-folders',
 			'van-blocklist',

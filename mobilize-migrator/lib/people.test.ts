@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
 	buildZipChapterMap,
+	normalizeZipKey,
 	createUser,
 	findExistingUser,
 	normalizeEmail,
@@ -260,6 +261,124 @@ describe('buildZipChapterMap', () => {
 		const map = buildZipChapterMap([{ address: { zip_code: '48104' }, chapter_ids: [1, 2] }]);
 		// Tie broken deterministically by lower chapter id.
 		expect(map.get('48104')?.chapterId).toBe(1);
+	});
+
+	// Solidarity's zip_code is free text. Every lookup normalizes to five digits,
+	// so a member stored under a ZIP+4 key used to be absent from the tally that
+	// places their own neighbours.
+	it('folds ZIP+4 onto the five-digit key it is looked up by', () => {
+		const map = buildZipChapterMap([
+			{ address: { zip_code: '48104-1234' }, chapter_ids: [1305] },
+			{ address: { zip_code: '48104' }, chapter_ids: [1305] },
+		]);
+		expect(map.get('48104')).toEqual({ chapterId: 1305, memberCount: 2 });
+		expect(map.get('48104-1234')).toBeUndefined();
+	});
+
+	it.each([
+		['a Canadian postcode', 'N1H2N7'],
+		['a phone number', '6169148324'],
+		['six digits', '200000'],
+		['four digits', '2140'],
+		['a stray letter', 'x'],
+		['pasted prose', 'I want to gather information from people to learn how to help'],
+	])('skips %s rather than keying a row on it', (_label, zip) => {
+		expect(buildZipChapterMap([{ address: { zip_code: zip }, chapter_ids: [1305] }]).size).toBe(0);
+	});
+
+	// The same fallback chapter-reconcile.ts and the team_join handler use. When
+	// this module disagreed with them, a member carrying chapter_id but an empty
+	// chapter_ids counted everywhere except in their own zip's tally.
+	it('falls back to chapter_id when chapter_ids is empty', () => {
+		const map = buildZipChapterMap([
+			{ address: { zip_code: '48104' }, chapter_id: 1305, chapter_ids: [] },
+			{ address: { zip_code: '48104' }, chapter_id: 1305 },
+		]);
+		expect(map.get('48104')).toEqual({ chapterId: 1305, memberCount: 2 });
+	});
+
+	it('prefers chapter_ids over chapter_id when both are present', () => {
+		const map = buildZipChapterMap([
+			{ address: { zip_code: '48104' }, chapter_id: 9999, chapter_ids: [1305] },
+		]);
+		expect(map.get('48104')).toEqual({ chapterId: 1305, memberCount: 1 });
+	});
+
+	// A superseded statewide chapter whose leftover members out-vote the counties
+	// carved out of it. The zip must go to the county, not to nobody — filtering
+	// after a winner was picked would blank it.
+	it('hands the zip to the runner-up when the winner is excluded', () => {
+		const users = [
+			{ address: { zip_code: '48104' }, chapter_ids: [1008] },
+			{ address: { zip_code: '48104' }, chapter_ids: [1008] },
+			{ address: { zip_code: '48104' }, chapter_ids: [1008] },
+			{ address: { zip_code: '48104' }, chapter_ids: [1330] },
+		];
+		expect(buildZipChapterMap(users).get('48104')).toEqual({ chapterId: 1008, memberCount: 3 });
+		expect(buildZipChapterMap(users, new Set([1008])).get('48104')).toEqual({
+			chapterId: 1330,
+			memberCount: 1,
+		});
+	});
+
+	it('leaves a zip unmapped when every member is in an excluded chapter', () => {
+		const map = buildZipChapterMap(
+			[{ address: { zip_code: '48104' }, chapter_ids: [1008] }],
+			new Set([1008]),
+		);
+		expect(map.size).toBe(0);
+	});
+
+	// Dropping the person rather than the chapter would discard evidence about
+	// where they actually live.
+	it('still counts a member of both an excluded and a live chapter', () => {
+		const map = buildZipChapterMap(
+			[{ address: { zip_code: '48104' }, chapter_ids: [1008, 1330] }],
+			new Set([1008]),
+		);
+		expect(map.get('48104')).toEqual({ chapterId: 1330, memberCount: 1 });
+	});
+
+	it('excludes on the chapter_id fallback too', () => {
+		const map = buildZipChapterMap(
+			[{ address: { zip_code: '48104' }, chapter_id: 1008, chapter_ids: [] }],
+			new Set([1008]),
+		);
+		expect(map.size).toBe(0);
+	});
+
+	it('changes nothing when the exclusion set is empty', () => {
+		const users = [{ address: { zip_code: '48104' }, chapter_ids: [1008] }];
+		expect(buildZipChapterMap(users, new Set())).toEqual(buildZipChapterMap(users));
+	});
+
+	it('ignores a member with no chapter either way', () => {
+		expect(
+			buildZipChapterMap([{ address: { zip_code: '48104' }, chapter_id: null, chapter_ids: [] }])
+				.size,
+		).toBe(0);
+	});
+});
+
+describe('normalizeZipKey', () => {
+	it.each([
+		['five digits', '48104', '48104'],
+		['ZIP+4', '48104-1234', '48104'],
+		['surrounding whitespace', '  48104 ', '48104'],
+	])('maps %s to the lookup key', (_label, raw, expected) => {
+		expect(normalizeZipKey(raw)).toBe(expected);
+	});
+
+	it.each([
+		['empty', ''],
+		['null', null],
+		['undefined', undefined],
+		['four digits', '4810'],
+		['six digits', '481041'],
+		['a partial ZIP+4', '48104-12'],
+		['letters', 'N1H2N7'],
+	])('rejects %s', (_label, raw) => {
+		expect(normalizeZipKey(raw)).toBeNull();
 	});
 });
 

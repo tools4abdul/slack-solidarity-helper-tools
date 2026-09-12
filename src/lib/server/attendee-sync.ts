@@ -14,7 +14,7 @@
 // zip -> chapter map rebuilds on staleness rather than on a mode, which is why
 // neither cron entry is special-cased.
 
-import { desc, eq, sql } from 'drizzle-orm';
+import { countDistinct, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 
 import {
@@ -114,6 +114,16 @@ export interface AttendeeSyncOptions {
 	 */
 	lookbackHours?: number;
 	maxNewProfiles?: number;
+	/**
+	 * Chapters that may never win a zip, from settings.
+	 *
+	 * Passed in rather than read here so this module keeps its one dependency
+	 * direction — it reads env and schema, never settings — and so the rebuild
+	 * stays testable as "given these exclusions, produce this map" without a
+	 * settings fixture standing in the way. The route is the composition root and
+	 * already holds the settings it needs for its Slack alerts.
+	 */
+	zipExcludedChapterIds?: ReadonlySet<number>;
 }
 
 export interface AttendeeSyncResult extends AttendeeSyncReport {
@@ -121,6 +131,8 @@ export interface AttendeeSyncResult extends AttendeeSyncReport {
 	windowHours: number | null;
 	lookbackHours: number;
 	zipsMapped: number;
+	/** Stale zips deleted by the rebuild, when one ran. */
+	zipsPruned: number;
 }
 
 const ZIP_MAP_MAX_AGE_MS = 24 * 3600_000;
@@ -138,17 +150,55 @@ async function zipMapIsStale(db: Db): Promise<boolean> {
 }
 
 /**
+ * How far the rebuilt map may shrink before the prune is treated as suspect.
+ *
+ * The prune below is the only thing in this app that deletes rows it did not
+ * just read, and the read is a paginated walk of every Solidarity user. That
+ * walk stops silently at `MAX_PAGES` and returns what it has, so a member base
+ * that outgrows the cap looks exactly like a member base that shrank — and
+ * pruning against it would delete real mappings that nothing rebuilds until
+ * those members are walked again.
+ *
+ * Half is deliberately loose. The prune is meant to clear tens of stale rows
+ * out of thousands, so a legitimate rebuild never approaches this; anything
+ * that does is a bad read, not a quiet week.
+ */
+const MIN_PRUNE_RATIO = 0.5;
+
+export interface ZipMapRefresh {
+	/** Zips written by this rebuild. */
+	mapped: number;
+	/** Rows deleted because no member maps to them any more. */
+	pruned: number;
+	/** Set when the prune was skipped, and why. */
+	pruneSkipped?: 'empty-result' | 'implausible-shrink';
+}
+
+/**
  * Rebuild zip -> chapter from where members actually sit. Solidarity chapters
  * have no geographic fields, so this is derived rather than fetched. Nightly is
  * often enough; the imminent pass reads the cached table.
+ *
+ * Authoritative, not additive. This used to upsert only, which meant a zip that
+ * dropped out of the computation — every member there losing their chapter, or
+ * the last one moving away — kept whatever the map last said about it, forever.
+ * Nothing distinguished "we recomputed this and it still says Kent" from "we
+ * have not been able to say anything about this since July". Deleting is the
+ * honest answer: an absent zip falls back to the event's own chapter when a
+ * profile is created and to the channel (then the picker) in /turfs, and both of
+ * those beat a mapping nobody can date.
  */
-export async function refreshZipChapterMap(db: Db): Promise<number> {
+export async function refreshZipChapterMap(
+	db: Db,
+	excludedChapterIds: ReadonlySet<number> = new Set(),
+): Promise<ZipMapRefresh> {
 	const users = await fetchPaginated<{
 		address?: { zip_code?: string | null } | null;
+		chapter_id?: number | null;
 		chapter_ids?: number[] | null;
 	}>(SOLIDARITY_API_TOKEN, '/v1/users', 'zip chapter map', '', 'attendee-sync');
 
-	const map = buildZipChapterMap(users);
+	const map = buildZipChapterMap(users, excludedChapterIds);
 	const now = new Date().toISOString();
 	const rows = [...map].map(([zipCode, { chapterId, memberCount }]) => ({
 		zipCode,
@@ -171,7 +221,46 @@ export async function refreshZipChapterMap(db: Db): Promise<number> {
 				},
 			});
 	}
-	return rows.length;
+
+	// Nothing at all came back. Never prune on this: an empty walk is a broken
+	// read every time — a campaign with no members has no signups to sync either.
+	if (rows.length === 0) {
+		console.warn('[attendee-sync] zip map rebuild produced no rows; keeping the existing map');
+		return { mapped: 0, pruned: 0, pruneSkipped: 'empty-result' };
+	}
+
+	const [{ count: existing = 0 } = {}] = await db
+		.select({ count: countDistinct(zipChapterMap.zipCode) })
+		.from(zipChapterMap);
+
+	if (existing > 0 && rows.length < existing * MIN_PRUNE_RATIO) {
+		console.warn(
+			`[attendee-sync] zip map rebuild returned ${rows.length} zip(s) against ${existing} ` +
+				'already stored — skipping the prune, since a truncated read looks exactly like this',
+		);
+		return { mapped: rows.length, pruned: 0, pruneSkipped: 'implausible-shrink' };
+	}
+
+	// Everything this rebuild did not just stamp. Keyed on the timestamp rather
+	// than on a NOT IN over several thousand zips, which would be the same
+	// question asked in a form libsql has to bind every one of them for.
+	const stale = await db
+		.select({ zipCode: zipChapterMap.zipCode })
+		.from(zipChapterMap)
+		.where(ne(zipChapterMap.updatedAt, now));
+	for (let i = 0; i < stale.length; i += 200) {
+		await db.delete(zipChapterMap).where(
+			inArray(
+				zipChapterMap.zipCode,
+				stale.slice(i, i + 200).map((r) => r.zipCode),
+			),
+		);
+	}
+	if (stale.length > 0) {
+		console.log(`[attendee-sync] zip map: pruned ${stale.length} zip(s) no member maps to`);
+	}
+
+	return { mapped: rows.length, pruned: stale.length };
 }
 
 // drizzle has no typed `excluded` helper for sqlite upserts; this keeps the
@@ -193,8 +282,11 @@ export async function runSolidarityAttendeeSync(
 	// whole sync needs only one cron entry. Walking every Solidarity user is
 	// expensive, hence once a day rather than every run.
 	let zipsMapped = 0;
+	let zipsPruned = 0;
 	if (apply && (await zipMapIsStale(db))) {
-		zipsMapped = await refreshZipChapterMap(db);
+		const refresh = await refreshZipChapterMap(db, options.zipExcludedChapterIds);
+		zipsMapped = refresh.mapped;
+		zipsPruned = refresh.pruned;
 	}
 
 	const now = Date.now();
@@ -271,7 +363,7 @@ export async function runSolidarityAttendeeSync(
 		SOLIDARITY_DEFAULT_CHAPTER_ID || null,
 	);
 
-	return { ...report, dryRun: !apply, windowHours, lookbackHours, zipsMapped };
+	return { ...report, dryRun: !apply, windowHours, lookbackHours, zipsMapped, zipsPruned };
 }
 
 export type { AttendeeSyncReport };

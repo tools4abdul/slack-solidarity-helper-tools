@@ -32,8 +32,8 @@ export const POST: RequestHandler = async ({ url }) => {
 
 	try {
 		const settings = await loadSettings(db);
-		if (!settings.slackMemberNoteChannelId && !dryRun) {
-			return json({ error: 'Member note channel is not configured' }, { status: 500 });
+		if (!settings.slackTrackingChannelId && !dryRun) {
+			return json({ error: 'Tracking channel is not configured' }, { status: 500 });
 		}
 
 		const result = await runSlackInviteAudit(SOLIDARITY_API_TOKEN);
@@ -50,7 +50,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		const posted = !dryRun && auditIsWorthPosting(result, changes.length);
 		if (posted) {
 			await slack.chat.postMessage({
-				channel: settings.slackMemberNoteChannelId,
+				channel: settings.slackTrackingChannelId,
 				text: message,
 				unfurl_links: false,
 			});

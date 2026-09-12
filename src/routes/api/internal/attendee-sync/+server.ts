@@ -15,6 +15,7 @@ import {
 import { assessMatchHealth } from '$lib/server/attendee-sync-health.js';
 import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
+import { loadSettings } from '$lib/server/settings.js';
 
 const SYNC_LOCK_NAME = 'attendee-sync';
 
@@ -60,6 +61,20 @@ export const POST: RequestHandler = async ({ url }) => {
 		return json({ error: 'MOBILIZE_API_KEY is not set' }, { status: 500 });
 	}
 
+	// Chapters that may never win a zip. Read here because this is the composition
+	// root: the sync module deliberately depends on env and schema but not on
+	// settings. A read failure must not stop the sync — it only means this run
+	// rebuilds the zip map without the exclusions, which the next run corrects.
+	let zipExcludedChapterIds: Set<number> = new Set();
+	try {
+		zipExcludedChapterIds = (await loadSettings(db)).zipExcludedChapterIds;
+	} catch (err) {
+		console.error(
+			'[attendee-sync] could not read zip chapter exclusions; rebuilding without them:',
+			err instanceof Error ? err.message : err,
+		);
+	}
+
 	const dryRun = url.searchParams.get('dry') === '1';
 	const windowParam = url.searchParams.get('window');
 	const windowHours = windowParam ? Number(windowParam) : undefined;
@@ -89,6 +104,7 @@ export const POST: RequestHandler = async ({ url }) => {
 				windowHours,
 				lookbackHours,
 				maxNewProfiles,
+				zipExcludedChapterIds,
 			}),
 		);
 
@@ -107,7 +123,11 @@ export const POST: RequestHandler = async ({ url }) => {
 		// and these logs go to Fly and Slack.
 		console.log(
 			`[attendee-sync]${dryRun ? ' (dry)' : ''} window=${result.windowHours ?? 'all'} ` +
-				`lookback=${result.lookbackHours}h events ${result.events}, gone ${result.eventsGone}, ` +
+				`lookback=${result.lookbackHours}h ` +
+				(result.zipsMapped > 0
+					? `zips ${result.zipsMapped} mapped/${result.zipsPruned} pruned, `
+					: '') +
+				`events ${result.events}, gone ${result.eventsGone}, ` +
 				`timeslots ${result.timeslots}, ` +
 				`signups ${result.participations}: ` +
 				`rsvps +${result.rsvpsCreated}/~${result.rsvpsUpdated} (${result.rsvpsWaitlisted} waitlisted` +
