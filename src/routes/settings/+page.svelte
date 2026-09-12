@@ -10,6 +10,7 @@
 	import AllowedUsersEditor from '$lib/components/settings/AllowedUsersEditor.svelte';
 	import InfoCommandsEditor from '$lib/components/settings/InfoCommandsEditor.svelte';
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
+	import ZipExcludedChaptersEditor from '$lib/components/settings/ZipExcludedChaptersEditor.svelte';
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
 	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
@@ -185,6 +186,23 @@
 				<ExcludedChaptersEditor
 					chapters={data.solidarityChapters.items}
 					excludedIds={[...data.settings.reportExcludedChapterIds]}
+				/>
+			{/if}
+		</section>
+
+		<section
+			id={SECTION_IDS.zipExcludedChapters}
+			data-settings-anchor={SECTION_IDS.zipExcludedChapters}
+			tabindex="-1"
+		>
+			<h2>Chapters without ZIP codes</h2>
+			{#if data.errors.solidarityChapters}
+				<p class="error">Solidarity chapters: {data.errors.solidarityChapters}</p>
+			{/if}
+			{#if data.solidarityChapters}
+				<ZipExcludedChaptersEditor
+					chapters={data.solidarityChapters.items}
+					excludedIds={[...data.settings.zipExcludedChapterIds]}
 				/>
 			{/if}
 		</section>

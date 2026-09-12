@@ -104,10 +104,21 @@ function makeDb(): MockDb {
 	};
 }
 
-// `loadSettings` always issues six reads, in this exact order: chapter,
-// coalition, allowed users, excluded chapters, welcome flags, app_config.
+// `loadSettings` always issues eight reads, in this exact order: chapter,
+// coalition, allowed users, excluded chapters, zip-excluded chapters, welcome
+// flags, app_config, info commands.
+const LOAD_SETTINGS_READS = 8;
 function pushAllEmpty(db: MockDb) {
-	for (let i = 0; i < 7; i++) db._pushSelect([]);
+	for (let i = 0; i < LOAD_SETTINGS_READS; i++) db._pushSelect([]);
+}
+
+// Reads that land before app_config and before channel_welcome_flags. Named
+// rather than spelled out at each call site: these tests queue rows by position,
+// so a read added to loadSettings silently shifts every one of them.
+const READS_BEFORE_WELCOME_FLAGS = 5;
+const READS_BEFORE_APP_CONFIG = 6;
+function pushEmpty(db: MockDb, count: number) {
+	for (let i = 0; i < count; i++) db._pushSelect([]);
 }
 
 describe('loadSettings — Story 1 (env fallback when tables are empty)', () => {
@@ -156,6 +167,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			coalitionChannelMap: [],
 			allowedSlackUserIds: new Set(),
 			reportExcludedChapterIds: new Set(),
+			zipExcludedChapterIds: new Set(),
 			welcomeDisabledChannelIds: new Set(),
 			slackTrackingChannelId: '',
 			slackGrowthReportChannelId: '',
@@ -300,11 +312,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 
 	it('app_config row with one populated field uses DB for that field and env for the other two NULLs', async () => {
 		const db = makeDb();
-		db._pushSelect([]);
-		db._pushSelect([]);
-		db._pushSelect([]);
-		db._pushSelect([]);
-		db._pushSelect([]);
+		pushEmpty(db, READS_BEFORE_APP_CONFIG);
 		db._pushSelect([
 			{
 				id: 1,
@@ -333,7 +341,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		// NULL column, growth overridden in the DB: follows the growth override,
 		// not the env var it shadows.
 		const db2 = makeDb();
-		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		pushEmpty(db2, READS_BEFORE_APP_CONFIG);
 		db2._pushSelect([
 			{
 				id: 1,
@@ -348,7 +356,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 
 		// Own override set: wins over the growth channel, which stays put.
 		const db3 = makeDb();
-		for (let i = 0; i < 5; i++) db3._pushSelect([]);
+		pushEmpty(db3, READS_BEFORE_APP_CONFIG);
 		db3._pushSelect([
 			{
 				id: 1,
@@ -374,7 +382,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		// NULL column, tracking overridden in the DB: follows the tracking
 		// override, not the env var it shadows.
 		const db2 = makeDb();
-		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		pushEmpty(db2, READS_BEFORE_APP_CONFIG);
 		db2._pushSelect([
 			{
 				id: 1,
@@ -389,7 +397,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 
 		// Own override set: wins over the tracking channel, which stays put.
 		const db3 = makeDb();
-		for (let i = 0; i < 5; i++) db3._pushSelect([]);
+		pushEmpty(db3, READS_BEFORE_APP_CONFIG);
 		db3._pushSelect([
 			{
 				id: 1,
@@ -417,7 +425,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(fromEnv.mobilizeContactPhone).toBe('');
 
 		const db2 = makeDb();
-		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		pushEmpty(db2, READS_BEFORE_APP_CONFIG);
 		db2._pushSelect([
 			{
 				id: 1,
@@ -439,7 +447,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		// reserves NULL for "keep"), and that has to stick — otherwise the env
 		// value silently comes back and the admin can never remove it.
 		const db = makeDb();
-		for (let i = 0; i < 5; i++) db._pushSelect([]);
+		pushEmpty(db, READS_BEFORE_APP_CONFIG);
 		db._pushSelect([
 			{
 				id: 1,
@@ -462,6 +470,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'chapterChannelMap',
 				'coalitionChannelMap',
 				'reportExcludedChapterIds',
+				'zipExcludedChapterIds',
 				'welcomeDisabledChannelIds',
 				'slackGrowthReportChannelId',
 				'slackGrowthReportRankingAlpha',
@@ -487,7 +496,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 
 	it('countdown fields come from the app_config row and default to empty strings for NULL columns', async () => {
 		const db = makeDb();
-		for (let i = 0; i < 5; i++) db._pushSelect([]);
+		pushEmpty(db, READS_BEFORE_APP_CONFIG);
 		db._pushSelect([
 			{
 				id: 1,
@@ -508,7 +517,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 
 		// NULL columns (or a missing row) mean "not configured" — no env fallback.
 		const db2 = makeDb();
-		for (let i = 0; i < 5; i++) db2._pushSelect([]);
+		pushEmpty(db2, READS_BEFORE_APP_CONFIG);
 		db2._pushSelect([
 			{
 				id: 1,
@@ -527,7 +536,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(result2.countdownEndAt).toBe('');
 	});
 
-	it('no module-level cache — two calls each hit the DB (7 reads × 2 = 14)', async () => {
+	it(`no module-level cache — two calls each hit the DB (${LOAD_SETTINGS_READS} reads × 2)`, async () => {
 		const db = makeDb();
 		pushAllEmpty(db);
 		pushAllEmpty(db);
@@ -535,15 +544,12 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		await loadSettings(db as never);
 		await loadSettings(db as never);
 
-		expect(db.select).toHaveBeenCalledTimes(14);
+		expect(db.select).toHaveBeenCalledTimes(LOAD_SETTINGS_READS * 2);
 	});
 
 	it('welcomeDisabledChannelIds contains only channels with the flag off', async () => {
 		const db = makeDb();
-		db._pushSelect([]);
-		db._pushSelect([]);
-		db._pushSelect([]);
-		db._pushSelect([]);
+		pushEmpty(db, READS_BEFORE_WELCOME_FLAGS);
 		db._pushSelect([
 			{
 				channelId: 'C_QUIET',

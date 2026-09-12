@@ -45,6 +45,7 @@ const settingsFixture = {
 	coalitionChannelMap: [],
 	allowedSlackUserIds: new Set<string>(),
 	reportExcludedChapterIds: new Set<number>(),
+	zipExcludedChapterIds: new Set<number>(),
 	slackTrackingChannelId: 'C_TRACK',
 	slackGrowthReportChannelId: 'C_GROWTH',
 	slackMobilizeSyncChannelId: 'C_GROWTH',

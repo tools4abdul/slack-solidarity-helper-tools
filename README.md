@@ -562,7 +562,7 @@ Scheduler-only. Writes today's per-chapter Solidarity signup counts into `solida
 
 ### `POST /api/internal/slack-invite-audit`
 
-Scheduler-only, hourly. Finds every Slack invite link published anywhere in Solidarity, checks each one still admits the public, and posts a report to the member-note channel (`slackMemberNoteChannelId` in `/settings`) **when there is something to say** — broken links, links it could not check, or a change since the last run. A clean run posts nothing; an hourly "all clear" would only teach the channel to ignore the audit. The response body still carries the full report either way, and `posted` says whether it went to Slack.
+Scheduler-only, hourly. Finds every Slack invite link published anywhere in Solidarity, checks each one still admits the public, and posts a report to the volunteer-help tracking channel (`slackTrackingChannelId` in `/settings`) **when there is something to say** — broken links, links it could not check, or a change since the last run. A clean run posts nothing; an hourly "all clear" would only teach the channel to ignore the audit. The response body still carries the full report either way, and `posted` says whether it went to Slack.
 
 | Parameter | Required | Description                                                     |
 | --------- | -------- | --------------------------------------------------------------- |

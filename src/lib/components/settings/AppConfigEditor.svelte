@@ -439,7 +439,8 @@
 			showSublabel={true}
 		/>
 		<p class="app-config-note">
-			Where “volunteer needs help joining Slack” webhook notifications are posted.
+			Where “volunteer needs help joining Slack” webhook notifications are posted, along with the
+			hourly Slack invite link audit whenever it has something to report.
 		</p>
 	</SettingsRow>
 

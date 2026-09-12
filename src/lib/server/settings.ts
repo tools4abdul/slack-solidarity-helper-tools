@@ -15,6 +15,7 @@ import {
 	coalitionChannelMap,
 	allowedSlackUsers,
 	reportExcludedChapters,
+	zipExcludedChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
@@ -42,6 +43,7 @@ export {
 	coalitionChannelMap,
 	allowedSlackUsers,
 	reportExcludedChapters,
+	zipExcludedChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
@@ -94,6 +96,11 @@ export interface Settings {
 	coalitionChannelMap: CoalitionEntry[];
 	allowedSlackUserIds: Set<string>;
 	reportExcludedChapterIds: Set<number>;
+	/** Chapters that may never win a zip in zip_chapter_map. Separate from
+	 *  reportExcludedChapterIds on purpose — one decides what shows in the growth
+	 *  report, the other decides where a zip resolves, and a superseded chapter
+	 *  routinely needs the second without the first. DB-only, no env fallback. */
+	zipExcludedChapterIds: Set<number>;
 	/** Channels the bot should NOT post its channel welcome message in after
 	 *  inviting a new member. Absent = welcome on (the default). DB-only. */
 	welcomeDisabledChannelIds: Set<string>;
@@ -204,6 +211,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		coalitionRows,
 		allowedRows,
 		excludedRows,
+		zipExcludedRows,
 		welcomeRows,
 		appConfigRows,
 		infoCommandRows,
@@ -212,6 +220,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		db.select().from(coalitionChannelMap),
 		db.select().from(allowedSlackUsers),
 		db.select().from(reportExcludedChapters),
+		db.select().from(zipExcludedChapters),
 		db.select().from(channelWelcomeFlags),
 		db.select().from(appConfig).limit(1),
 		db.select().from(infoCommands),
@@ -238,6 +247,12 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		excludedRows.length > 0
 			? new Set(excludedRows.map((r) => r.chapterId))
 			: REPORT_EXCLUDED_CHAPTER_IDS;
+
+	// DB-only: an empty table means "exclude nothing", not "fall back to env".
+	// There is no env list to inherit, and inventing one would give this the
+	// report exclusions' seeding semantics — which are wrong here, since the two
+	// answer different questions about the same chapter.
+	const zipExcludedChapterIds: Set<number> = new Set(zipExcludedRows.map((r) => r.chapterId));
 
 	// DB-only, like the coalition map: no env fallback. Only rows with the
 	// flag off matter — a row toggled back on behaves like no row.
@@ -293,6 +308,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		coalitionChannelMap: coalitionChannelMapField,
 		allowedSlackUserIds,
 		reportExcludedChapterIds,
+		zipExcludedChapterIds,
 		welcomeDisabledChannelIds,
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
@@ -641,6 +657,58 @@ export async function deleteExcludedChapter(
 	await db.delete(reportExcludedChapters).where(eq(reportExcludedChapters.chapterId, chapterId));
 	console.log(
 		`[settings] deleted report_excluded_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * Exclude a chapter from ever winning a zip.
+ *
+ * No ensure*Seeded companion, unlike the report exclusions: that helper exists to
+ * copy an env list into the table before the first interactive edit, and this
+ * setting has no env list to inherit. An empty table means nothing is excluded.
+ *
+ * Takes effect on the next zip map rebuild rather than immediately — the map is
+ * a derived table refreshed on staleness, so a chapter excluded now still holds
+ * its zips until the attendee sync next walks the membership.
+ */
+export async function saveZipExcludedChapter(
+	db: Database,
+	entry: { chapterId: number; reason?: string | null },
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	const row = {
+		chapterId: entry.chapterId,
+		reason: entry.reason ?? null,
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt,
+	};
+	await db
+		.insert(zipExcludedChapters)
+		.values(row)
+		.onConflictDoUpdate({
+			target: zipExcludedChapters.chapterId,
+			set: {
+				reason: row.reason,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(
+		`[settings] saved zip_excluded_chapters chapter_id=${entry.chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteZipExcludedChapter(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(zipExcludedChapters).where(eq(zipExcludedChapters.chapterId, chapterId));
+	console.log(
+		`[settings] deleted zip_excluded_chapters chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
 	);
 }
 

@@ -264,18 +264,74 @@ export function resolveChapterId(resolver: ChapterResolver, zipcode: string | nu
 }
 
 /**
+ * The five-digit key a zip maps under, or null if there isn't one.
+ *
+ * Solidarity's `zip_code` is free text and is not validated on the way in. A
+ * live table built without this carried 107 unusable keys, among them ZIP+4
+ * (`48212-3678`), Canadian postcodes (`N1H2N7`), a phone number, `x`, and one
+ * row whose key was an entire paragraph of prose someone had pasted into the
+ * field. None of those can ever be read back — every lookup normalizes to five
+ * digits first — so a member behind one of them was silently absent from the
+ * count that decides their zip's chapter.
+ *
+ * ZIP+4 is therefore folded onto its five-digit prefix rather than dropped: it
+ * is a real member at a real zip, and the only thing wrong with it is the shape
+ * of the key. Everything else returns null and is skipped, because guessing at
+ * what `494-8` means would be inventing evidence.
+ */
+export function normalizeZipKey(raw: string | null | undefined): string | null {
+	const match = /^(\d{5})(?:-\d{4})?$/.exec((raw ?? '').trim());
+	return match ? match[1] : null;
+}
+
+/**
+ * Every chapter a Solidarity user belongs to.
+ *
+ * Same fallback as `resolveChapterIds` in chapter-reconcile.ts and the
+ * team_join handler, and it has to be: those two decide which channels someone
+ * is invited to, and this decides which chapter their zip resolves to. When
+ * they disagreed, a member carrying `chapter_id` but an empty `chapter_ids`
+ * counted everywhere in the app except here — invisible to exactly the tally
+ * that places their neighbours.
+ */
+function chapterIdsOf(user: {
+	chapter_id?: number | null;
+	chapter_ids?: number[] | null;
+}): number[] {
+	if (user.chapter_ids?.length) return user.chapter_ids;
+	if (user.chapter_id != null) return [user.chapter_id];
+	return [];
+}
+
+/**
  * Build the zip -> chapter table from where existing members actually sit.
  * Solidarity chapters carry no geographic data, so this is derived rather than
  * fetched. Ties break toward the chapter with more members in that zip.
+ *
+ * `excludedChapterIds` are chapters that may never win a zip. They are dropped
+ * from the tally rather than from the result, and that is the whole point of the
+ * option: a superseded statewide chapter whose leftover members out-vote the
+ * county chapters carved out of it should hand those zips *to the counties*, not
+ * blank them. Filtering after a winner was picked would do the latter.
+ *
+ * A member in both an excluded chapter and a live one still counts for the live
+ * one — `chapter_ids` is a list, and dropping the person rather than the chapter
+ * would discard evidence about where they actually live.
  */
 export function buildZipChapterMap(
-	users: { address?: { zip_code?: string | null } | null; chapter_ids?: number[] | null }[],
+	users: {
+		address?: { zip_code?: string | null } | null;
+		chapter_id?: number | null;
+		chapter_ids?: number[] | null;
+	}[],
+	excludedChapterIds: ReadonlySet<number> = new Set(),
 ): Map<string, { chapterId: number; memberCount: number }> {
 	const counts = new Map<string, Map<number, number>>();
 	for (const user of users) {
-		const zip = user.address?.zip_code?.trim();
+		const zip = normalizeZipKey(user.address?.zip_code);
 		if (!zip) continue;
-		for (const chapterId of user.chapter_ids ?? []) {
+		for (const chapterId of chapterIdsOf(user)) {
+			if (excludedChapterIds.has(chapterId)) continue;
 			const perZip = counts.get(zip) ?? new Map<number, number>();
 			perZip.set(chapterId, (perZip.get(chapterId) ?? 0) + 1);
 			counts.set(zip, perZip);
