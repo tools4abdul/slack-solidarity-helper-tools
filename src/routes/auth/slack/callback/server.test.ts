@@ -75,6 +75,11 @@ function makeEvent(opts: EventOpts = {}) {
 	};
 }
 
+const SETTINGS = {
+	allowedSlackUserIds: new Set(['UADMIN']),
+	moderatorSlackUserIds: new Set(['UMOD']),
+};
+
 function mockSuccessfulOAuth(userId: string, userName: string, scope = 'chat:write'): void {
 	// A single call — the user id comes off the token response itself, so there
 	// is no users.identity round trip to stub.
@@ -95,7 +100,7 @@ describe('GET /auth/slack/callback', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
+		mockLoadSettings.mockResolvedValue(SETTINGS);
 		mockSaveUserToken.mockResolvedValue(undefined);
 		mockDeleteUserToken.mockResolvedValue(undefined);
 		mockUsersInfo.mockResolvedValue({ ok: true, user: { name: 'Someone' } });
@@ -122,6 +127,7 @@ describe('GET /auth/slack/callback', () => {
 			slackUserId: 'UADMIN',
 			slackUserName: 'Admin User',
 			isAdmin: true,
+			isModerator: false,
 		});
 	});
 
@@ -138,6 +144,7 @@ describe('GET /auth/slack/callback', () => {
 			slackUserId: 'UNORMAL',
 			slackUserName: 'Bob',
 			isAdmin: false,
+			isModerator: false,
 		});
 	});
 
@@ -153,6 +160,7 @@ describe('GET /auth/slack/callback', () => {
 			slackUserId: 'USUPER',
 			slackUserName: 'Root',
 			isAdmin: true,
+			isModerator: false,
 		});
 	});
 
@@ -186,8 +194,54 @@ describe('GET /auth/slack/callback', () => {
 		errorSpy.mockRestore();
 	});
 
+	it('moderator path: isModerator true, isAdmin false', async () => {
+		mockSuccessfulOAuth('UMOD', 'Mo');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302, location: '/' });
+
+		expect(mockSessionSet.mock.calls[0]?.[1]).toEqual({
+			slackUserId: 'UMOD',
+			slackUserName: 'Mo',
+			isAdmin: false,
+			isModerator: true,
+		});
+	});
+
+	// isModerator means "moderator and nothing more"; an admin never carries it.
+	it('someone on both lists is an admin, not a moderator', async () => {
+		mockLoadSettings.mockResolvedValue({
+			allowedSlackUserIds: new Set(['UBOTH']),
+			moderatorSlackUserIds: new Set(['UBOTH']),
+		});
+		mockSuccessfulOAuth('UBOTH', 'Both');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSessionSet.mock.calls[0]?.[1]).toMatchObject({ isAdmin: true, isModerator: false });
+	});
+
+	it('sends a moderator back to the member page they asked for', async () => {
+		mockSuccessfulOAuth('UMOD', 'Mo');
+
+		await expect(
+			GET(makeEvent({ redirectTo: '/members?user=U123' }) as never),
+		).rejects.toMatchObject({ status: 302, location: '/members?user=U123' });
+	});
+
+	it('does not send a moderator to an admin page', async () => {
+		mockSuccessfulOAuth('UMOD', 'Mo');
+
+		await expect(GET(makeEvent({ redirectTo: '/settings' }) as never)).rejects.toMatchObject({
+			status: 302,
+			location: '/',
+		});
+	});
+
 	it('admin gate reads the settings allowed list (DB-backed with env fallback)', async () => {
-		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UFROMDB']) });
+		mockLoadSettings.mockResolvedValue({
+			allowedSlackUserIds: new Set(['UFROMDB']),
+			moderatorSlackUserIds: new Set(),
+		});
 		mockSuccessfulOAuth('UFROMDB', 'Dana');
 
 		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
@@ -274,7 +328,7 @@ describe('GET /auth/slack/callback — user token capture', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
+		mockLoadSettings.mockResolvedValue(SETTINGS);
 		mockSaveUserToken.mockResolvedValue(undefined);
 		mockDeleteUserToken.mockResolvedValue(undefined);
 		mockUsersInfo.mockResolvedValue({ ok: true, user: { name: 'Someone' } });
@@ -298,6 +352,19 @@ describe('GET /auth/slack/callback — user token capture', () => {
 			accessToken: 'tok',
 			scopes: 'chat:write',
 		});
+		expect(mockDeleteUserToken).not.toHaveBeenCalled();
+	});
+
+	// Info commands post as whoever runs them, and moderators may run them.
+	it("stores a moderator's token too", async () => {
+		mockSuccessfulOAuth('UMOD', 'Mo');
+
+		await expect(GET(makeEvent() as never)).rejects.toMatchObject({ status: 302 });
+
+		expect(mockSaveUserToken).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ slackUserId: 'UMOD' }),
+		);
 		expect(mockDeleteUserToken).not.toHaveBeenCalled();
 	});
 
@@ -344,7 +411,7 @@ describe('GET /auth/slack/callback — recovering a login that lost its cookie',
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['UADMIN']) });
+		mockLoadSettings.mockResolvedValue(SETTINGS);
 		mockUsersInfo.mockResolvedValue({ ok: true, user: { name: 'Someone' } });
 		warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

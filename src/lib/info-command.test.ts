@@ -4,8 +4,10 @@ import {
 	validateCommandName,
 	validateInfoMessage,
 	renderInfoMessage,
+	renderCommandList,
 	INFO_MESSAGE_MAX_LENGTH,
 	INFO_COMMAND_MAX_LENGTH,
+	COMMAND_LIST_MAX_LENGTH,
 } from './info-command.js';
 
 describe('normalizeCommandName', () => {
@@ -72,6 +74,10 @@ describe('validateCommandName', () => {
 	it('catches a reserved name written in mixed case', () => {
 		expect(validateCommandName('/Member-Note')).toMatchObject({ ok: false });
 	});
+
+	it('refuses /list-commands, which the app answers itself', () => {
+		expect(validateCommandName('/list-commands')).toMatchObject({ ok: false });
+	});
 });
 
 describe('validateInfoMessage', () => {
@@ -136,5 +142,81 @@ describe('renderInfoMessage', () => {
 
 	it('passes text through untouched when there is nothing to resolve', () => {
 		expect(renderInfoMessage('No channels here.', channels)).toBe('No channels here.');
+	});
+});
+
+describe('renderCommandList', () => {
+	const channels = new Map([['phone-bank', 'C_PHONE']]);
+
+	it('lists each command with its message quoted beneath it', () => {
+		const messages = renderCommandList(
+			[
+				{ command: '/info-canvass', message: 'Canvass info' },
+				{ command: '/info-phone', message: 'Phone info' },
+			],
+			channels,
+		);
+		expect(messages).toEqual([
+			'2 info commands:\n\n*/info-canvass*\n>Canvass info\n\n*/info-phone*\n>Phone info',
+		]);
+	});
+
+	it('uses the singular for one command', () => {
+		const [text] = renderCommandList([{ command: '/a', message: 'x' }], channels);
+		expect(text!.startsWith('1 info command:')).toBe(true);
+	});
+
+	it('shows messages as they would be posted, with channel links resolved', () => {
+		const [text] = renderCommandList(
+			[{ command: '/info-phone', message: 'Sign up: #phone-bank' }],
+			channels,
+		);
+		expect(text).toContain('>Sign up: <#C_PHONE>');
+	});
+
+	it('quotes every line of a multi-line message', () => {
+		// `>` only quotes one line; an unprefixed second line would fall out of
+		// the quote and read as part of the reply.
+		const [text] = renderCommandList(
+			[{ command: '/info-phone', message: 'Line one\nLine two' }],
+			channels,
+		);
+		expect(text).toContain('>Line one\n>Line two');
+	});
+
+	// Moderators run this too, and cannot open /settings.
+	it('says so when there are no commands, without pointing at settings', () => {
+		const messages = renderCommandList([], channels);
+		expect(messages).toEqual(['No info commands have been set up yet.']);
+	});
+
+	describe('a list too long for one Slack message', () => {
+		const entries = Array.from({ length: 30 }, (_, i) => ({
+			command: `/cmd-${String(i).padStart(2, '0')}`,
+			message: `${i}`.padEnd(INFO_MESSAGE_MAX_LENGTH, 'x'),
+		}));
+		const messages = renderCommandList(entries, channels);
+
+		it('splits into several messages, each within the limit', () => {
+			expect(messages.length).toBeGreaterThan(1);
+			for (const m of messages) expect(m.length).toBeLessThanOrEqual(COMMAND_LIST_MAX_LENGTH);
+		});
+
+		it('lists every command exactly once, in order, across the messages', () => {
+			const listed = messages.join('\n\n').match(/^\*\/cmd-\d+\*$/gm);
+			expect(listed).toEqual(entries.map((e) => `*${e.command}*`));
+		});
+
+		it('splits only between entries, never through a blurb', () => {
+			for (const m of messages.slice(1)) expect(m.startsWith('*/cmd-')).toBe(true);
+			for (const e of entries) {
+				expect(messages.some((m) => m.includes(`*${e.command}*\n>${e.message}`))).toBe(true);
+			}
+		});
+
+		it('puts the count only at the top of the first message', () => {
+			expect(messages[0]!.startsWith('30 info commands:')).toBe(true);
+			expect(messages.slice(1).some((m) => m.includes('info commands:'))).toBe(false);
+		});
 	});
 });

@@ -31,12 +31,15 @@ import {
 	deleteCoalitionEntry,
 	saveAllowedUser,
 	deleteAllowedUser,
+	saveModerator,
+	deleteModerator,
 	saveExcludedChapter,
 	deleteExcludedChapter,
 	saveAppConfig,
 	chapterChannelMap,
 	coalitionChannelMap,
 	allowedSlackUsers,
+	slackModerators,
 	reportExcludedChapters,
 	appConfig,
 } from './settings.js';
@@ -104,10 +107,10 @@ function makeDb(): MockDb {
 	};
 }
 
-// `loadSettings` always issues eight reads, in this exact order: chapter,
+// `loadSettings` always issues nine reads, in this exact order: chapter,
 // coalition, allowed users, excluded chapters, zip-excluded chapters, welcome
-// flags, app_config, info commands.
-const LOAD_SETTINGS_READS = 8;
+// flags, app_config, info commands, moderators.
+const LOAD_SETTINGS_READS = 9;
 function pushAllEmpty(db: MockDb) {
 	for (let i = 0; i < LOAD_SETTINGS_READS; i++) db._pushSelect([]);
 }
@@ -166,6 +169,8 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			chapterChannelMap: [],
 			coalitionChannelMap: [],
 			allowedSlackUserIds: new Set(),
+			// DB-only: never inherits the admin env list.
+			moderatorSlackUserIds: new Set(),
 			reportExcludedChapterIds: new Set(),
 			zipExcludedChapterIds: new Set(),
 			welcomeDisabledChannelIds: new Set(),
@@ -467,6 +472,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 		expect(Object.keys(result).sort()).toEqual(
 			[
 				'allowedSlackUserIds',
+				'moderatorSlackUserIds',
 				'chapterChannelMap',
 				'coalitionChannelMap',
 				'reportExcludedChapterIds',
@@ -711,6 +717,47 @@ describe('settings setters — Story 3', () => {
 		});
 		const onConflict = captured!.onConflict as { target: unknown };
 		expect(onConflict.target).toBe(allowedSlackUsers.slackUserId);
+	});
+
+	it('saveModerator writes payload + audit columns to slack_moderators', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		await saveModerator(db as never, { slackUserId: 'U_MO', displayName: 'Mo' }, editor);
+
+		const [captured] = db._capturedInserts();
+		expect(captured!.table).toBe(slackModerators);
+		expect(captured!.values).toMatchObject({
+			slackUserId: 'U_MO',
+			displayName: 'Mo',
+			lastEditedBy: 'U_ALICE',
+			lastEditedByName: 'Alice',
+			lastEditedAt: FROZEN.toISOString(),
+		});
+		const onConflict = captured!.onConflict as { target: unknown };
+		expect(onConflict.target).toBe(slackModerators.slackUserId);
+	});
+
+	it('deleteModerator deletes from slack_moderators, not the admin list', async () => {
+		const db = makeDb();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		await deleteModerator(db as never, 'U_MO', editor);
+
+		const captured = db._capturedDeletes();
+		expect(captured).toHaveLength(1);
+		expect(captured[0]!.table).toBe(slackModerators);
+	});
+
+	it('loadSettings reads moderators into their own set, never into the admin set', async () => {
+		const db = makeDb();
+		pushEmpty(db, LOAD_SETTINGS_READS - 1);
+		db._pushSelect([{ slackUserId: 'U_MO' }]);
+
+		const result = await loadSettings(db as never);
+
+		expect(result.moderatorSlackUserIds).toEqual(new Set(['U_MO']));
+		expect(result.allowedSlackUserIds.has('U_MO')).toBe(false);
 	});
 
 	it('saveExcludedChapter writes payload (with explicit null reason when omitted)', async () => {

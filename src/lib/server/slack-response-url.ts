@@ -36,16 +36,39 @@ export function respondToSlack(
 	message: ResponseUrlMessage,
 	options: ResponseUrlOptions = {},
 ): void {
-	if (!responseUrl) return;
+	void postToResponseUrl(responseUrl, message, options);
+}
+
+/**
+ * The awaitable form, for callers that need their posts to land in order —
+ * separate fetches that are not awaited can arrive at Slack in any order.
+ * Never throws; resolves to whether Slack accepted the post.
+ */
+export async function postToResponseUrl(
+	responseUrl: string | undefined | null,
+	message: ResponseUrlMessage,
+	options: ResponseUrlOptions = {},
+): Promise<boolean> {
+	if (!responseUrl) return false;
 	const { replaceOriginal = false, logTag = '[slack]' } = options;
-	void fetch(responseUrl, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({
-			response_type: 'ephemeral',
-			text: message.text,
-			...(message.blocks ? { blocks: message.blocks } : {}),
-			...(replaceOriginal ? { replace_original: true } : {}),
-		}),
-	}).catch((err) => console.warn(`${logTag} response_url post failed:`, errMessage(err)));
+	try {
+		const res = await fetch(responseUrl, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				response_type: 'ephemeral',
+				text: message.text,
+				...(message.blocks ? { blocks: message.blocks } : {}),
+				...(replaceOriginal ? { replace_original: true } : {}),
+			}),
+		});
+		if (!res.ok) {
+			console.warn(`${logTag} response_url post rejected: HTTP ${res.status}`);
+			return false;
+		}
+		return true;
+	} catch (err) {
+		console.warn(`${logTag} response_url post failed:`, errMessage(err));
+		return false;
+	}
 }

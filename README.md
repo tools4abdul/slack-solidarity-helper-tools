@@ -55,29 +55,42 @@ only page outside the auth guard.
 3. Their five most recent `/v1/user_actions` and `/v1/event_rsvps` rows are shown, newest first. Neither endpoint returns a label, so page names and event titles are resolved from cached `/v1/pages` and `/v1/events` lookups
 4. If no Solidarity account matches, the page shows the member's Slack email and a search box to find and **Link** the right account by name or email. Solidarity's API has no name search, so the roster is fetched once and cached for an hour, then searched server-side — the roster itself is never sent to the browser
 
+Moderators can open `/members` too, without the **Link** / **Unlink** controls — see [Moderators](#moderators).
+
+### Moderators
+
+A moderator can use the app's Slack side — `/member-note`, **Log member note**, **View member record**, the info commands and `/list-commands` — and read the `/members` page that **View member record** links to. That is all: no `/settings`, `/pending` or other admin page, no linking or unlinking Solidarity accounts on `/members`, and no organizer view of `/turfs` (to `/turfs` a moderator is an ordinary volunteer).
+
+- Admins add moderators on `/settings` → **Allowed Slack users** → **Moderators**. The list is DB-only (`slack_moderators`): unlike the admin list there is no env fallback.
+- In Slack, a change takes effect on the next command. On the web it takes effect at the person's next sign-in, because access is decided at login and stored on the session.
+- Info commands post as the person who runs them, so a moderator has to sign in to the web app once before those work — same as an admin. `/member-note`, the shortcuts and `/list-commands` work without signing in.
+- Someone on both lists is an admin.
+
 ### Member notes and warnings
 
-1. An admin runs `/member-note` (optionally `@mentioning` someone), or picks **Log member note** from a message's ⋯ menu, which prefills both the member and a link to that message
+1. An admin or moderator runs `/member-note` (optionally `@mentioning` someone), or picks **Log member note** from a message's ⋯ menu, which prefills both the member and a link to that message
 2. A modal collects the member, Note vs. Warning, the details, an optional Slack message link, and whether to DM the member
 3. Choosing **Warning** reveals an editable copy of the warning message, prefilled from the configured template. Edits apply to that one warning only
 4. The note is written to the database _before_ any DM is attempted, so a Slack failure never loses the record
 5. For warnings, the member is DMed the rendered message. The warning number is the member's all-time count of warnings; notes don't count toward it
-6. **View member record** on a message's ⋯ menu posts an admin a link straight to that person's `/members` page
+6. **View member record** on a message's ⋯ menu posts an admin or moderator a link straight to that person's `/members` page
 7. If a **member notes channel** is configured on `/settings`, a line is posted there for every note and warning — `Note "…" added to user @person by @admin`, with `and warning "…" sent to them` when the member was actually DM'd — so moderation is visible to all admins rather than only whoever filed it. Make it a private admin channel: the note text and the warning both appear in it.
 
 The warning DM template is edited on `/settings` and supports `{{nth}}` (which warning this is), `{{note}}` (the details the admin typed), `{{message_link}}` (the linked message), and `#channel-name` links.
 
 ### Info commands
 
-Slash commands that post a set message **as the admin who runs them** — not as the bot. For the answers you retype constantly: "here's where to sign up to phone bank", "here's how to join a canvass".
+Slash commands that post a set message **as the admin or moderator who runs them** — not as the bot. For the answers you retype constantly: "here's where to sign up to phone bank", "here's how to join a canvass".
 
 1. An admin adds a command on `/settings` → **Info commands**: a name (`/info-phone`) and the message it posts. Channels are written as `#channel-name` and become real links at post time
-2. **You must also register the command in your Slack app** (see setup step 11) — Slack only routes commands it knows about, so a command that exists only in `/settings` does nothing
-3. Running it posts the message into the current channel under the admin's own name and avatar. It is a real message from them: no **APP** badge, and they can edit or delete it like anything else they wrote
-4. This works by storing a per-admin Slack user token, captured at login. Tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY` and are stored only for admins — a non-admin's token is deleted on sight
+2. **You must also register the command in your Slack app** (see setup step 12) — Slack only routes commands it knows about, so a command that exists only in `/settings` does nothing
+3. Running it posts the message into the current channel under the runner's own name and avatar. It is a real message from them: no **APP** badge, and they can edit or delete it like anything else they wrote
+4. This works by storing a per-user Slack user token, captured at login. Tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY` and are stored only for admins and moderators — anyone else's token is deleted on sight
 5. Admins who last logged in before this feature shipped will be told to sign in again: Slack does not add a new scope to a token it has already issued
 
-Because the token is captured at login, and only admins can log in, these commands are admin-only. An admin who has never signed in to the web app gets an ephemeral prompt with the link, rather than a failed post.
+Because the token is captured at login and stored only for admins and moderators, these commands are limited to them (see [Moderators](#moderators)). An admin or moderator who has never signed in to the web app gets an ephemeral prompt with the link, rather than a failed post.
+
+`/list-commands` shows every info command and the message it posts, rendered as it would be posted, in a reply only the person who ran it can see. It needs no stored token, and like the commands it lists it is for admins and moderators.
 
 ### The `/turfs` command
 
@@ -138,7 +151,7 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
    If you are adding `commands` to an existing app, **reinstall the app** afterwards and re-copy the bot token if it changes.
 
 3. Under **OAuth & Permissions**, set the user scopes to exactly one entry:
-   - `chat:write` — signs the admin in _and_ lets the info commands post as them rather than as the bot
+   - `chat:write` — signs people in _and_ lets the info commands post as whoever runs them rather than as the bot
 
    **If `identity.basic` is listed there, remove it.** Slack refuses any authorization that mixes an `identity.*` scope with a normal one, failing the install with _"Invalid permissions requested"_. Sign in no longer needs it: `oauth.v2.access` returns the user's id directly, and the display name comes from `users.info` on the bot token.
 
@@ -172,6 +185,8 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
 
     This step is not optional and not automatic: Slack will not route a command it has no registration for, so a command that exists only on `/settings` silently does nothing. Deleting a command is likewise two steps — remove the row on `/settings` **and** the registration here.
 
+    Also create `/list-commands` once, with the same Request URL and escaping off. It replies — visible only to the admin who ran it — with every info command and the message it posts.
+
 13. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
     ```
     https://your-app.fly.dev/api/slack/interactivity
@@ -180,14 +195,14 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
     - "Log member note" — callback ID `log_member_note`
     - "View member record" — callback ID `view_member_record`
 
-One new environment variable is required — `TOKEN_ENCRYPTION_KEY`, which encrypts the per-admin Slack tokens the info commands post with. Generate one and set it before deploying; the app refuses to start without it, and a key that doesn't decode to 32 bytes is rejected at startup rather than at first use:
+One new environment variable is required — `TOKEN_ENCRYPTION_KEY`, which encrypts the per-user Slack tokens the info commands post with. Generate one and set it before deploying; the app refuses to start without it, and a key that doesn't decode to 32 bytes is rejected at startup rather than at first use:
 
 ```
 openssl rand -base64 32
 fly secrets set TOKEN_ENCRYPTION_KEY="<the generated value>"
 ```
 
-Rotating the key does not break logins — it invalidates every stored token, and each admin re-authorizes the next time they run an info command.
+Rotating the key does not break logins — it invalidates every stored token, and each admin or moderator re-authorizes the next time they run an info command.
 
 The warning DM template and the info-command messages are configured on `/settings`.
 
@@ -387,13 +402,16 @@ The `team_join` handler does nothing if the member's email is not found in solid
 Slash commands. Verifies the Slack signature over the raw body, then parses it as
 form-encoded.
 
-- `/member-note` opens the note modal via `views.open`. Admin-only.
+- `/member-note` opens the note modal via `views.open`. Admins and moderators.
 - `/turfs` lists the nearest available turf — see [The `/turfs` command](#the-turfs-command).
-  **The only command here open to non-admins**, deliberately: it serves the same data as
+  **The only command here open to everyone**, deliberately: it serves the same data as
   the `/turfs` web page, which is already open to any signed-in member minus the turf
   block list. Its gates are `$lib/server/van/turf-slack.ts`'s.
-- Anything else is looked up in `info_commands` and posted as the admin who ran it.
-  Admin-only.
+- `/list-commands` replies ephemerally with every row in `info_commands`. Admins and
+  moderators. A list too long for one Slack message (~40k characters) is sent as several,
+  in order, through `response_url` — which Slack caps at five posts.
+- Anything else is looked up in `info_commands` and posted as the person who ran it.
+  Admins and moderators.
 
 ### `POST /api/slack/interactivity`
 
@@ -401,15 +419,23 @@ Handles `message_action` (both message shortcuts), `block_actions` (the Note/War
 toggle, which re-renders the modal via `views.update`; and the turf Claim / Give back /
 Show next 5 buttons) and `view_submission` (saving the note). Same signature
 verification. On submit the note row is written first, the modal is closed, and the
-warning DM is sent detached — so a DM failure never loses the note.
+warning DM is sent detached — so a DM failure never loses the note. Both shortcuts and the
+submission are open to admins and moderators.
 
 Turf buttons are dispatched by `action_id` **before** the note-modal guard, because they
 come from a message rather than a modal and so carry no `view` — the modal guard would
 otherwise swallow them silently.
 
-### `GET /members` (admin)
+### `GET /members` (admin, moderator)
 
 Member lookup page. `?user=<slackUserId>` selects a member; the detail is streamed.
+Moderators get the page without the Link / Unlink controls; the two endpoints below refuse
+them regardless.
+
+### `POST /api/settings/moderators` (admin)
+
+`{ "action": "add" | "remove", "userId": "U…" }`. Same contract as the admin allowlist
+endpoint, without its env seeding or self-removal guard.
 
 ### `POST /api/members/link` (admin)
 

@@ -23,6 +23,7 @@ export const load: LayoutServerLoad = async ({ locals, url, cookies }) => {
 		signedIn: locals.session !== null,
 		userName: locals.session?.slackUserName ?? null,
 		isAdmin: locals.session?.isAdmin ?? false,
+		isModerator: locals.session?.isModerator ?? false,
 		// Same cookie hooks.server.ts used to stamp <html>, so the toggle's first
 		// render agrees with the markup already on screen.
 		themeMode: parseThemeMode(cookies.get(THEME_COOKIE)),

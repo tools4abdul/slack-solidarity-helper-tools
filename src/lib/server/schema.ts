@@ -122,6 +122,22 @@ export const allowedSlackUsers = sqliteTable('allowed_slack_users', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// Moderators: people who may use the app's Slack commands and shortcuts
+// (/member-note, the info commands, the member-record shortcut) and read the
+// /members page it links to — and nothing else. Deliberately a separate table
+// rather than a role column on allowed_slack_users: every `isAdmin` check in
+// the app keeps meaning exactly what it did, and a moderator can only ever gain
+// what the handful of places that read this table grant.
+//
+// DB-only, unlike the admin list: there is no env fallback and no seeding.
+export const slackModerators = sqliteTable('slack_moderators', {
+	slackUserId: text('slack_user_id').primaryKey(),
+	displayName: text('display_name').notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
 export const reportExcludedChapters = sqliteTable('report_excluded_chapters', {
 	chapterId: integer('chapter_id').primaryKey(),
 	reason: text('reason'),

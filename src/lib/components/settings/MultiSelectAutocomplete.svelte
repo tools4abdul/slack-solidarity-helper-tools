@@ -54,7 +54,11 @@
 		chipCheckbox = undefined,
 	}: Props = $props();
 
-	let inputEl: HTMLInputElement | null = $state(null);
+	// The ONLY source of what the text box shows. bits-ui keeps an inputValue of
+	// its own and, in multiple mode, writes the picked item's label into it
+	// *after* onValueChange returns — so clearing here used to be overwritten,
+	// leaving stale text in the box while this read '' and Backspace deleted the
+	// chip just added. The input below renders this value instead of bits-ui's.
 	let inputText = $state('');
 
 	const stringValues = $derived(values.map((v) => String(v)));
@@ -88,7 +92,6 @@
 		}
 		// Reset the filter so the next dropdown open shows the full list again.
 		inputText = '';
-		if (inputEl) inputEl.value = '';
 	}
 
 	function handleKeydown(e: KeyboardEvent): void {
@@ -139,12 +142,15 @@
 			onblur={() => {
 				// No free-text commit on blur — the input is only ever a filter.
 				inputText = '';
-				if (inputEl) inputEl.value = '';
 			}}
 			placeholder={values.length === 0 ? placeholder : ''}
 			class="mpicker-input"
-			bind:ref={inputEl}
-		/>
+		>
+			{#snippet child({ props })}
+				<!-- `value` after the spread, so it overrides bits-ui's (see inputText). -->
+				<input {...props} value={inputText} />
+			{/snippet}
+		</Combobox.Input>
 		<Combobox.Trigger class="mpicker-trigger" aria-label="Open dropdown">▾</Combobox.Trigger>
 	</div>
 	<Combobox.Portal>

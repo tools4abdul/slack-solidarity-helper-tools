@@ -8,6 +8,9 @@ export interface SessionData {
 	slackUserId: string;
 	slackUserName: string;
 	isAdmin: boolean;
+	/** Slack moderator (and not an admin). Optional because sessions created
+	 *  before moderators existed lack it, and absent must read as false. */
+	isModerator?: boolean;
 }
 
 // Lazy-initialized so module import (e.g. SvelteKit's build-time analyse step,

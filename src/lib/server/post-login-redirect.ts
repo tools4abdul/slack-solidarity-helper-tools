@@ -9,11 +9,16 @@
 //     so a non-admin who asked for an admin page lands on `/` instead of
 //     bouncing off that page's own guard.
 
-/** Page routes that require `isAdmin`. Kept in sync with the `locals.session
- *  ?.isAdmin` guards in the corresponding `+page.server.ts` / `+layout.server
- *  .ts` loads — this list only decides where login *sends* people; the routes
+/** Page routes that require `isAdmin` (or, for MODERATOR_PREFIXES below,
+ *  `isModerator`). Kept in sync with the `locals.session` guards in the
+ *  corresponding `+page.server.ts` / `+layout.server.ts` loads — this list only decides where login *sends* people; the routes
  *  still enforce their own access. */
 const ADMIN_ONLY_PREFIXES = ['/pending', '/members', '/channel-chapter-diff', '/settings'];
+
+/** The subset of ADMIN_ONLY_PREFIXES a moderator may also see — the page the
+ *  Slack "View member record" shortcut links to. Same caveat: the routes
+ *  enforce this themselves. */
+const MODERATOR_PREFIXES = ['/members'];
 
 /** Generous cap: real destinations are short, and a cookie has to hold this. */
 const MAX_TARGET_LENGTH = 512;
@@ -51,11 +56,16 @@ export function sanitizeRedirectTarget(raw: string | null | undefined): string |
 	return parsed.pathname + parsed.search;
 }
 
-/** True when `path` belongs to a page only admins may see. */
-export function isAdminOnlyPath(path: string): boolean {
-	return ADMIN_ONLY_PREFIXES.some(
+function matchesPrefix(path: string, prefixes: readonly string[]): boolean {
+	return prefixes.some(
 		(prefix) => path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`),
 	);
+}
+
+/** True when `path` belongs to a page only admins (and, for some, moderators)
+ *  may see. */
+export function isAdminOnlyPath(path: string): boolean {
+	return matchesPrefix(path, ADMIN_ONLY_PREFIXES);
 }
 
 /**
@@ -64,12 +74,13 @@ export function isAdminOnlyPath(path: string): boolean {
  */
 export function resolvePostLoginRedirect(
 	raw: string | null | undefined,
-	session: { isAdmin: boolean },
+	session: { isAdmin: boolean; isModerator?: boolean },
 ): string {
 	const target = sanitizeRedirectTarget(raw);
 	if (target === null) return '/';
-	if (!session.isAdmin && isAdminOnlyPath(target)) return '/';
-	return target;
+	if (session.isAdmin || !isAdminOnlyPath(target)) return target;
+	if (session.isModerator && matchesPrefix(target, MODERATOR_PREFIXES)) return target;
+	return '/';
 }
 
 /**

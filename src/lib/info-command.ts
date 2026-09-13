@@ -26,7 +26,12 @@ export const INFO_COMMAND_MAX_LENGTH = 32;
  * `/member-note` here would shadow the moderation modal with a blurb, which is
  * both surprising and hard to diagnose from the Slack side.
  */
-export const RESERVED_COMMANDS = new Set(['/member-note', '/turfs']);
+export const RESERVED_COMMANDS = new Set(['/member-note', '/turfs', '/list-commands']);
+
+/** Slack truncates a message's text past 40,000 characters. A /list-commands
+ *  message stops short of that and the list continues in the next one, so no
+ *  blurb is ever cut in half. */
+export const COMMAND_LIST_MAX_LENGTH = 39_000;
 
 const COMMAND_RE = /^\/[a-z0-9][a-z0-9_-]*$/;
 
@@ -108,4 +113,44 @@ export function validateInfoMessage(raw: unknown): MessageCheck {
  */
 export function renderInfoMessage(message: string, nameToId: ReadonlyMap<string, string>): string {
 	return resolveChannelLinks(message, nameToId);
+}
+
+/**
+ * The /list-commands reply: every info command with the message it would post,
+ * rendered exactly as it would be posted (channel links and all), each blurb
+ * quoted so it reads as "this is what goes out" rather than as the reply.
+ *
+ * Returns one or more messages, each within COMMAND_LIST_MAX_LENGTH, that
+ * together list every command — split only between entries. Nearly always
+ * one. `entries` is taken in the order given; the caller sorts.
+ *
+ * Nothing here points at /settings: moderators run this too, and cannot open it.
+ */
+export function renderCommandList(
+	entries: readonly { command: string; message: string }[],
+	nameToId: ReadonlyMap<string, string>,
+): string[] {
+	if (entries.length === 0) return ['No info commands have been set up yet.'];
+
+	const messages: string[] = [];
+	let current = entries.length === 1 ? '1 info command:' : `${entries.length} info commands:`;
+	for (const { command, message } of entries) {
+		// Slack's `>` quotes a single line, so a multi-line blurb needs it on
+		// every line to stay inside one quote.
+		const quoted = renderInfoMessage(message, nameToId)
+			.split('\n')
+			.map((line) => `>${line}`)
+			.join('\n');
+		const entry = `*${command}*\n${quoted}`;
+		// +2 for the blank line entries are separated by. A lone entry always
+		// fits — a blurb is capped at INFO_MESSAGE_MAX_LENGTH, far below this.
+		if (current.length + 2 + entry.length > COMMAND_LIST_MAX_LENGTH) {
+			messages.push(current);
+			current = entry;
+		} else {
+			current += `\n\n${entry}`;
+		}
+	}
+	messages.push(current);
+	return messages;
 }

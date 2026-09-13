@@ -5,7 +5,7 @@ import { slack } from '$lib/server/slack.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { APP_URL } from '$lib/server/env.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
-import { isSlackAdmin, NOT_AUTHORIZED_TEXT } from '$lib/server/slack-admin.js';
+import { canUseSlackCommands, NOT_AUTHORIZED_TEXT } from '$lib/server/slack-admin.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { insertNote, recordDmOutcome } from '$lib/server/member-notes.js';
 import { renderWarningDm } from '$lib/warning-dm.js';
@@ -98,7 +98,7 @@ const ok = () => textResponse('', { status: 200 });
 
 async function handleMessageAction(payload: SlackPayload): Promise<Response> {
 	const actorId = payload.user?.id ?? '';
-	if (!(await isSlackAdmin(actorId))) {
+	if (!(await canUseSlackCommands(actorId))) {
 		// A shortcut has no ephemeral channel of its own, so the refusal goes
 		// back through response_url. Detached: the 200 must not wait on it.
 		respondEphemeral(payload.response_url, NOT_AUTHORIZED_TEXT);
@@ -297,7 +297,7 @@ async function handleViewSubmission(payload: SlackPayload): Promise<Response> {
 	const actorId = payload.user?.id ?? '';
 	// Re-checked because the modal may have been opened before an allowlist
 	// change landed.
-	if (!(await isSlackAdmin(actorId))) {
+	if (!(await canUseSlackCommands(actorId))) {
 		return json({
 			response_action: 'errors',
 			errors: { [BLOCK.member]: NOT_AUTHORIZED_TEXT },

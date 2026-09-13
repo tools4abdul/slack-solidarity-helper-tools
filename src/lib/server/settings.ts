@@ -14,6 +14,7 @@ import {
 	chapterChannelMap,
 	coalitionChannelMap,
 	allowedSlackUsers,
+	slackModerators,
 	reportExcludedChapters,
 	zipExcludedChapters,
 	channelWelcomeFlags,
@@ -42,6 +43,7 @@ export {
 	chapterChannelMap,
 	coalitionChannelMap,
 	allowedSlackUsers,
+	slackModerators,
 	reportExcludedChapters,
 	zipExcludedChapters,
 	channelWelcomeFlags,
@@ -95,6 +97,9 @@ export interface Settings {
 	chapterChannelMap: ChapterEntry[];
 	coalitionChannelMap: CoalitionEntry[];
 	allowedSlackUserIds: Set<string>;
+	/** Slack moderators: the Slack commands and /members, nothing else (see
+	 *  slack_moderators in schema.ts). DB-only; empty is the normal start. */
+	moderatorSlackUserIds: Set<string>;
 	reportExcludedChapterIds: Set<number>;
 	/** Chapters that may never win a zip in zip_chapter_map. Separate from
 	 *  reportExcludedChapterIds on purpose — one decides what shows in the growth
@@ -215,6 +220,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		welcomeRows,
 		appConfigRows,
 		infoCommandRows,
+		moderatorRows,
 	] = await Promise.all([
 		db.select().from(chapterChannelMap),
 		db.select().from(coalitionChannelMap),
@@ -224,6 +230,9 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		db.select().from(channelWelcomeFlags),
 		db.select().from(appConfig).limit(1),
 		db.select().from(infoCommands),
+		// Last, so the read-order-sensitive tests' offsets for the reads above
+		// stay put.
+		db.select().from(slackModerators),
 	]);
 
 	const chapterChannelMapField: ChapterEntry[] =
@@ -307,6 +316,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		chapterChannelMap: chapterChannelMapField,
 		coalitionChannelMap: coalitionChannelMapField,
 		allowedSlackUserIds,
+		moderatorSlackUserIds: new Set(moderatorRows.map((r) => r.slackUserId)),
 		reportExcludedChapterIds,
 		zipExcludedChapterIds,
 		welcomeDisabledChannelIds,
@@ -587,6 +597,46 @@ export async function deleteAllowedUser(
 	);
 }
 
+export async function saveModerator(
+	db: Database,
+	entry: { slackUserId: string; displayName: string },
+	editor: Editor,
+): Promise<void> {
+	const row = {
+		slackUserId: entry.slackUserId,
+		displayName: entry.displayName,
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt: new Date().toISOString(),
+	};
+	await db
+		.insert(slackModerators)
+		.values(row)
+		.onConflictDoUpdate({
+			target: slackModerators.slackUserId,
+			set: {
+				displayName: row.displayName,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	console.log(
+		`[settings] saved slack_moderators slack_user_id=${entry.slackUserId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteModerator(
+	db: Database,
+	slackUserId: string,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(slackModerators).where(eq(slackModerators.slackUserId, slackUserId));
+	console.log(
+		`[settings] deleted slack_moderators slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
+	);
+}
+
 /**
  * One-time copy of the env fallback into report_excluded_chapters — same
  * rationale and concurrency posture as the other ensure*Seeded helpers: the
@@ -851,6 +901,15 @@ export async function findInfoCommand(
 		.where(eq(infoCommands.command, command))
 		.limit(1);
 	return rows[0] ?? null;
+}
+
+/** Every command, sorted by name — for /list-commands. Same reason as
+ *  findInfoCommand for not going through loadSettings. */
+export async function listInfoCommands(db: Database): Promise<InfoCommandEntry[]> {
+	const rows = await db
+		.select({ command: infoCommands.command, message: infoCommands.message })
+		.from(infoCommands);
+	return rows.sort((a, b) => a.command.localeCompare(b.command));
 }
 
 // ---------------------------------------------------------------------------
