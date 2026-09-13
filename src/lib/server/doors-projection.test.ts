@@ -2,12 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
 	projectDoorsAtDeadline,
 	knockableMsBetween,
-	loadDoorKnockDayTotals,
 	PROJECTION_WINDOW_DAYS,
 	KNOCK_DAY_MS,
-	type DoorKnockDayTotal,
-} from './door-knock-projection.js';
-import { vi } from 'vitest';
+	type DoorsDayTotal,
+} from './doors-projection.js';
 
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -15,7 +13,7 @@ const DAY = 86_400_000;
 // whole-DAY offsets from NOW are whole 13-hour canvassing days.
 const NOW = Date.UTC(2026, 6, 9, 12);
 
-function days(totals: number[]): DoorKnockDayTotal[] {
+function days(totals: number[]): DoorsDayTotal[] {
 	return totals.map((total, i) => ({
 		date: new Date(Date.UTC(2026, 6, 1 + i)).toISOString().slice(0, 10),
 		total,
@@ -92,27 +90,5 @@ describe('projectDoorsAtDeadline', () => {
 		expect(projectDoorsAtDeadline(days([100]), NOW, NOW)).toBeNull();
 		expect(projectDoorsAtDeadline(days([100]), NOW - DAY, NOW)).toBeNull();
 		expect(projectDoorsAtDeadline(days([100]), NaN, NOW)).toBeNull();
-	});
-});
-
-describe('loadDoorKnockDayTotals', () => {
-	// SUM() can come back as a string, so the loader coerces on the way out.
-	it('maps and numbers the grouped rows', async () => {
-		const orderBy = vi.fn(async () => [
-			{ date: '2026-07-01', total: 140 },
-			{ date: '2026-07-02', total: '175' },
-		]);
-		const groupBy = vi.fn(() => ({ orderBy }));
-		const select = vi.fn(() => ({ from: () => ({ groupBy }) }));
-
-		const rows = await loadDoorKnockDayTotals({ select } as never);
-
-		expect(rows).toEqual([
-			{ date: '2026-07-01', total: 140 },
-			{ date: '2026-07-02', total: 175 },
-		]);
-		// One row per date, oldest first — the pace window slices off the tail.
-		expect(groupBy).toHaveBeenCalledTimes(1);
-		expect(orderBy).toHaveBeenCalledTimes(1);
 	});
 });

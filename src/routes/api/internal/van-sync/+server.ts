@@ -12,6 +12,10 @@ import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
 import { sendExpiryWarnings } from '$lib/server/van/expiry-warning-store.js';
 import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
+import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
+import { reconcileClaims } from '$lib/server/van/reconcile-store.js';
+import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
+import { doorsHealthWarning } from '$lib/server/van/doors-store.js';
 import { alertFor } from '$lib/server/slack.js';
 import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 
@@ -32,6 +36,12 @@ import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 // drawn as a pin, then whatever is left goes to geometry.
 const REQUEST_BUDGET_MS = 4 * 60 * 1000 + 30 * 1000;
 const CATALOG_BUDGET_MS = 3 * 60 * 1000;
+// The refresh sweep sends at most a handful of POSTs and each returns
+// immediately — VAN does the re-cut afterwards on its own time. It gets its own
+// slice ahead of geometry rather than sharing geometry's leftovers: a sweep
+// that never runs means door counts that never move, which is the whole point
+// of the feature, while a geometry run cut short is a turf drawn as a pin.
+const REFRESH_BUDGET_MS = 30 * 1000;
 // Below this there is no point starting a turf we cannot finish — the export
 // job would be submitted and then abandoned mid-download.
 const MIN_GEOMETRY_BUDGET_MS = 20 * 1000;
@@ -159,17 +169,59 @@ export const POST: RequestHandler = async ({ url }) => {
 			{ skipped: result.foldersSkipped, degraded: result.degraded },
 		);
 
+		// Story 4's confirmation half. The catalog read is the only place VAN's
+		// `dateRefreshed` shows up, so a refresh we asked for on an earlier tick
+		// is confirmed here, using the read that already happened.
+		const refreshesSettled = await settleRefreshes(db, result.regionsRead);
+
+		// Reconciliation, before the drift report and before geometry: it is the
+		// half of Story 4.5 that touches volunteers. A re-cut region has just
+		// retired somebody's route and released their claim (the catalog did that
+		// atomically), and this is what pairs the dead route to its replacement,
+		// hands it back, and says so. Drift then reads a settled ledger rather
+		// than one mid-repair.
+		// One read for both: the reconciliation needs the claim TTL and the drift
+		// alert needs the channel, and they run back to back.
+		const { vanTurfClaimTtlHours, slackTurfChannelId: turfChannelId } = await loadSettings(db);
+		const reconciled = await reconcileClaims(db, {
+			now,
+			appUrl: APP_URL,
+			ttlHours: vanTurfClaimTtlHours,
+		});
+
+		// Story 5.6: the sync-back check. After the reconciliation, because that
+		// is what releases claims a re-cut invalidated — verifying those as
+		// completions would measure a delta against turf that no longer exists.
+		const doorDeltas = await stampDoorDeltas(db, { now, appUrl: APP_URL });
+
+		// Story 9.4's health check, and the biggest risk in the canvassing board:
+		// every doors number depends on map regions being cut with a "not yet
+		// contacted" filter, which nothing in this codebase can enforce. A week of
+		// completions that cleared nothing is the only signal we get, and it rides
+		// out with the sync's other notices.
+		let doorsWarning: string | null = null;
+		try {
+			doorsWarning = await doorsHealthWarning(db, now);
+		} catch (err) {
+			console.error('[van] doors health check failed:', err instanceof Error ? err.message : err);
+		}
+
 		// Story 8.2's report, pushed instead of pulled. After the catalog because
 		// the catalog writes VAN's half of the comparison (`van_distributed_to`),
 		// and before geometry because geometry is the half that gets cut short by
 		// the time budget — an unannounced collision costs more than a missing hull.
-		// Reads the channel here rather than reusing the notices block below, which
-		// only loads settings when it has something to say.
-		const { slackTurfChannelId: driftChannelId } = await loadSettings(db);
 		const drift = await sendDriftAlerts(db, {
 			now,
-			channelId: driftChannelId,
+			channelId: turfChannelId,
 			appUrl: APP_URL,
+		});
+
+		// Ask VAN to re-cut what is due (Story 4.2/4.4). Last of the VAN calls
+		// that matter, because its effect lands on a later tick: the POST returns
+		// straight away and the new counts arrive with a future catalog read.
+		const refresh = await runRefreshSweep(db, configured.client, {
+			now,
+			timeBudgetMs: Math.min(REFRESH_BUDGET_MS, requestDeadline - Date.now()),
 		});
 
 		// Geometry runs after the catalog because the catalog is what fills the
@@ -185,7 +237,13 @@ export const POST: RequestHandler = async ({ url }) => {
 		// `geometry.deadLetters`, which runGeometryQueue has already posted through
 		// its own `alert` — including them here would put each one in the channel
 		// twice.
-		const notices = [...result.degraded, ...result.warnings, ...(geometry?.warnings ?? [])];
+		const notices = [
+			...result.degraded,
+			...result.warnings,
+			...refresh.warnings,
+			...(doorsWarning ? [doorsWarning] : []),
+			...(geometry?.warnings ?? []),
+		];
 		if (notices.length > 0) {
 			try {
 				const { slackTurfChannelId } = await loadSettings(db);
@@ -208,6 +266,11 @@ export const POST: RequestHandler = async ({ url }) => {
 			expiryWarningsSent: warnings.sent,
 			expiryWarningsFailed: warnings.failed,
 			drift,
+			refreshesSettled,
+			reconciled,
+			doorDeltas,
+			doorsWarning,
+			refresh,
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

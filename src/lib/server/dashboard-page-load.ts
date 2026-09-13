@@ -1,6 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import { parseDaysParam, type DashboardDaysPreset } from '$lib/components/dashboard/days.js';
 import { type DaySignups, loadSolidaritySignups, loadSlackSignups } from './dashboard-signups.js';
+import { loadDoorsClearedSignups } from './van/doors-store.js';
 import { db } from './db.js';
 import { loadSettings } from './settings.js';
 import { loginRedirectPath } from './post-login-redirect.js';
@@ -13,6 +14,8 @@ export interface DashboardPageData {
 	isAdmin: boolean;
 	solidarity: SourceResult;
 	slack: SourceResult;
+	/** Doors cleared per campaign day, from the turf checkout ledger. */
+	doors: SourceResult;
 }
 
 interface DashboardLoadEvent {
@@ -48,12 +51,15 @@ export async function loadDashboardPageData(event: DashboardLoadEvent): Promise<
 	// /settings apply to the charts the same as to the weekly growth report.
 	const { reportExcludedChapterIds } = await loadSettings(db);
 
-	// The doors-knocked series is not loaded while the door-knock cards are off
-	// the dashboard; `loadDoorKnockSignups` stays in dashboard-signups.js for
-	// when the VAN door stats are wired up.
-	const [solidaritySettled, slackSettled] = await Promise.allSettled([
+	// Settled rather than awaited together: one source failing dims its own card
+	// instead of the page. The doors series comes from the VAN checkout ledger
+	// (plan.md Story 9) — it replaces Openfield's nightly snapshot, and unlike
+	// that one it can honour the chapter exclusions, because a checkout row
+	// carries a real chapter id.
+	const [solidaritySettled, slackSettled, doorsSettled] = await Promise.allSettled([
 		loadSolidaritySignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
 		loadSlackSignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
+		loadDoorsClearedSignups(db, { days, excludedChapterIds: reportExcludedChapterIds }),
 	]);
 
 	return {
@@ -62,5 +68,6 @@ export async function loadDashboardPageData(event: DashboardLoadEvent): Promise<
 		isAdmin: session.isAdmin,
 		solidarity: settledResult('solidarity', solidaritySettled),
 		slack: settledResult('slack', slackSettled),
+		doors: settledResult('doors', doorsSettled),
 	};
 }

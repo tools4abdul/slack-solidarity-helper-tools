@@ -211,6 +211,7 @@ describe('loadActivityCounts', () => {
 		['expired', 'expired'],
 		['blocked', 'blocked'],
 		['retired', 'retired'],
+		['walked-out', 'walked-out'],
 		['admin', 'given-back'],
 	] as const)('counts a %s release as %s', async (reason, kind) => {
 		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: reason });
@@ -219,14 +220,19 @@ describe('loadActivityCounts', () => {
 	});
 
 	// The split that keeps the summary honest.
-	it('does not fold blocked or retired into given-back', async () => {
+	it('does not fold blocked, retired or walked-out into given-back', async () => {
 		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: 'volunteer' });
 		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: 'blocked' });
 		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: 'retired' });
+		await checkout({ released_at: '2026-08-24T16:00:00.000Z', release_reason: 'walked-out' });
 		const counts = await loadActivityCounts(db, allChapters);
 		expect(counts['given-back']).toBe(1);
 		expect(counts.blocked).toBe(1);
 		expect(counts.retired).toBe(1);
+		// The reconciliation checked this one back in because VAN said the doors
+		// were gone. Reading it as a hand-back would have an organizer chasing a
+		// volunteer who did nothing wrong.
+		expect(counts['walked-out']).toBe(1);
 	});
 
 	it('counts a release with a NULL reason as given back', async () => {

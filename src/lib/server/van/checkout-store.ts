@@ -15,6 +15,7 @@ import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
+import { requestRegionRefresh } from './refresh.js';
 import {
 	canClaim,
 	type ClaimOptions,
@@ -148,6 +149,18 @@ export async function claimTurf(
 			slackUserName,
 			claimedAt: nowIso,
 			expiresAt: decision.expiresAt,
+			// VAN's door count as the volunteer takes the turf on. The baseline
+			// half of the post-completion check (Story 5.6): van_turfs holds one
+			// number and it moves, so by the time the completion is verified the
+			// count they started against is gone unless it is captured here.
+			claimDoorCount: row.doorCount,
+			// What we are about to tell them, recorded at the moment we tell them.
+			// van_turfs.printed_list_number is what VAN says today; this is what
+			// the volunteer has in their hand, and Story 4.5's reconciliation is
+			// the comparison of the two. Without it a regenerated printed list is
+			// undetectable and the volunteer finds out by standing on a street
+			// with a number MiniVAN will not load.
+			issuedListNumber: row.printedListNumber,
 		})
 		.onConflictDoNothing()
 		.returning({ id: vanTurfCheckouts.id });
@@ -210,6 +223,30 @@ export async function endClaim(
 			status: 409,
 			message: "You don't currently hold that turf.",
 		};
+	}
+
+	// A completed turf is the one moment we know VAN's door counts are wrong:
+	// the volunteer just knocked doors that are still on the list. Ask for a
+	// re-cut of the region so the next person to look sees what is actually
+	// left (Story 4.2's on-demand path).
+	//
+	// A want, not a call. The refresh sweep decides when to send it — it may
+	// defer while other volunteers are still out in that region — and the
+	// volunteer's request must not wait on a VAN round-trip to return. The
+	// helper never throws, so a completion that is already written cannot fail
+	// on its bookkeeping.
+	if (kind === 'complete') {
+		const [turf] = await db
+			.select({ folderId: vanTurfs.folderId, mapRegionId: vanTurfs.mapRegionId })
+			.from(vanTurfs)
+			.where(eq(vanTurfs.mapRouteId, mapRouteId));
+		if (turf) {
+			await requestRegionRefresh(db, {
+				folderId: turf.folderId,
+				mapRegionId: turf.mapRegionId,
+				now,
+			});
+		}
 	}
 
 	console.log(`[van] ${kind}: user=${slackUserId} route=${mapRouteId}`);

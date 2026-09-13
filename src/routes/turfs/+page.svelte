@@ -15,6 +15,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
+	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
 	import { mappableTurfs, type TurfView } from '$lib/van/turf-view.js';
 
@@ -218,9 +219,13 @@
 
 	const myTurfs = $derived(turfs.filter((t) => t.status === 'held-by-you'));
 	const availableCount = $derived(turfs.filter((t) => t.status === 'available').length);
-	const freshest = $derived(
-		turfs.map((t) => t.refreshedMinutesAgo).filter((m): m is number => m !== null)[0] ?? null,
-	);
+	// The OLDEST count on the page, not the first row's — see turf-freshness.ts.
+	// The same helper backs the /turfs Slack command, so the two surfaces cannot
+	// describe the same list's age differently.
+	const stalestMinutes = $derived(oldestRefreshMinutes(turfs));
+	/** Turf whose region VAN is re-cutting right now. Counted for the note under
+	 *  the list; individual rows carry their own chip. */
+	const updatingCount = $derived(turfs.filter((t) => t.updating).length);
 
 	function select(mapRouteId: number) {
 		selectedId = mapRouteId;
@@ -326,13 +331,6 @@
 			top: 0,
 			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
 		});
-	}
-
-	function staleness(minutes: number | null): string {
-		if (minutes === null) return 'freshness unknown';
-		if (minutes < 60) return `${minutes} min ago`;
-		const hours = Math.round(minutes / 60);
-		return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
 	}
 </script>
 
@@ -584,7 +582,11 @@
 				<div class="list-head">
 					<h2>{availableCount} turf{availableCount === 1 ? '' : 's'} available</h2>
 					{#if turfs.length > 0}
-						<span class="freshness">Door counts from VAN, {staleness(freshest)}</span>
+						<span class="freshness">
+							Doors remaining as of {describeAge(stalestMinutes)}
+							{#if updatingCount > 0}
+								· {updatingCount} updating{/if}
+						</span>
 					{/if}
 				</div>
 
@@ -632,6 +634,16 @@
 									     status shows up as an unstyled chip rather than silently
 									     borrowing the wrong colour. -->
 									<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
+									{#if turf.updating}
+										<!-- VAN is re-cutting this turf's region, so its door count
+										     is about to move. Deliberately a chip and not a
+										     disabled state: Story 4.5 keeps the turf claimable
+										     during a refresh, because blocking would take the page
+										     down on exactly the mornings it is busiest. -->
+										<span class="badge badge-updating" title="VAN is recounting this area"
+											>Updating</span
+										>
+									{/if}
 								</span>
 								<span class="card-meta">
 									<span class="doors">{turf.doorsRemaining} doors left</span>
@@ -662,8 +674,17 @@
 											<dd>{turf.regionName || '—'}</dd>
 										</div>
 										<div>
+											<!-- Story 4.3: never imply live data. A volunteer who
+											     walks a turf on stale counts finds knocked doors
+											     and stops trusting the tool, so the number and its
+											     age are shown together rather than the number
+											     alone. -->
 											<dt>Doors left</dt>
-											<dd>{turf.doorsRemaining}</dd>
+											<dd>
+												{turf.doorsRemaining}
+												<span class="detail-age">as of {describeAge(turf.refreshedMinutesAgo)}</span
+												>
+											</dd>
 										</div>
 										<div>
 											<dt>People in list</dt>
@@ -676,6 +697,12 @@
 											</div>
 										{/if}
 									</dl>
+									{#if turf.updating}
+										<p class="detail-note">
+											VAN is recounting this area — the doors left may change shortly. You can still
+											check it out.
+										</p>
+									{/if}
 									{#if turf.status === 'available'}
 										<button
 											type="button"

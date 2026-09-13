@@ -3,7 +3,6 @@ import {
 	getDashboardSignups,
 	loadSlackSignups,
 	loadSolidaritySignups,
-	loadDoorKnockSignups,
 } from './dashboard-signups.js';
 
 // The aggregation function makes several kinds of db calls:
@@ -11,8 +10,8 @@ import {
 //     anchors the window to the newest data rather than to "today"
 //   - select().from().where().orderBy() and select().from() for Solidarity
 //     snapshot rows and chapter-name lookup
-//   - db.all(sql`...`) for the door-knock query and the three Slack queries
-//     (per-chapter, null-chapter, total)
+//   - db.all(sql`...`) for the three Slack queries (per-chapter,
+//     null-chapter, total)
 //
 // We model the chained select with a queue so we can return different rows for
 // the max-date probe / snapshot query / chapter-name query, and a separate
@@ -79,54 +78,8 @@ function makeDb(): MockDb {
 	};
 }
 
-describe('loadDoorKnockSignups', () => {
-	it('groups snapshot rows by date with stable synthetic chapter ids', async () => {
-		const db = makeDb();
-		db._pushSelect(maxDateRows('2026-05-10')); // latest-date probe
-		db._pushSelect([
-			{ date: '2026-05-09', chapterName: 'Washtenaw', attempts: 42 },
-			{ date: '2026-05-09', chapterName: 'Detroit', attempts: 100 },
-			{ date: '2026-05-10', chapterName: 'Detroit', attempts: 55 },
-		]);
-
-		const days = await loadDoorKnockSignups(db as never, { days: 7 });
-
-		// Synthetic ids follow sorted chapter names: Detroit=1, Washtenaw=2 —
-		// so a chapter keeps the same band identity on every day of the window.
-		expect(days).toEqual([
-			{
-				date: '2026-05-09',
-				total: 142,
-				byChapter: [
-					{ chapterId: 1, chapterName: 'Detroit', count: 100 },
-					{ chapterId: 2, chapterName: 'Washtenaw', count: 42 },
-				],
-			},
-			{
-				date: '2026-05-10',
-				total: 55,
-				byChapter: [{ chapterId: 1, chapterName: 'Detroit', count: 55 }],
-			},
-		]);
-	});
-
-	it('anchors the window to the latest data date, not today', async () => {
-		const db = makeDb();
-		db._pushSelect(maxDateRows('2026-05-10')); // latest data date
-		db._pushSelect([]);
-		await loadDoorKnockSignups(db as never, { days: 7 });
-		// Window ends on the latest data date (2026-05-10), days=7 → start
-		// 2026-05-04. The probe has no where(), so the data query's predicate is
-		// the only one captured.
-		expect(safeStringify(db._whereArgs()[0])).toContain('2026-05-04');
-	});
-
-	it('returns [] when the table is empty (no latest date)', async () => {
-		const db = makeDb();
-		db._pushSelect(maxDateRows(null));
-		expect(await loadDoorKnockSignups(db as never, { days: 30 })).toEqual([]);
-	});
-});
+// The doors series moved to van/doors-store.ts with Story 9 — it now reads the
+// turf checkout ledger, and its tests run against a real database there.
 
 describe('getDashboardSignups', () => {
 	it('groups Solidarity snapshot rows by date and sums total', async () => {

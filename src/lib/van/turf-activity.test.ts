@@ -101,6 +101,7 @@ describe('activityEvents', () => {
 		['expired', 'expired'],
 		['blocked', 'blocked'],
 		['retired', 'retired'],
+		['walked-out', 'walked-out'],
 		['admin', 'given-back'],
 	])('maps releaseReason %s to %s', (reason, kind) => {
 		const events = activityEvents(
@@ -218,10 +219,16 @@ describe('counts', () => {
 
 	// The split that keeps the page honest: a release nobody chose must not
 	// inflate the number an organizer reads as "volunteers handing turf back".
-	it('does not fold blocked or retired into given-back', () => {
-		const counts = { ...emptyCounts(), 'given-back': 1, blocked: 2, retired: 3 };
+	it('does not fold blocked, retired or walked-out into given-back', () => {
+		const counts = {
+			...emptyCounts(),
+			'given-back': 1,
+			blocked: 2,
+			retired: 3,
+			'walked-out': 4,
+		};
 		expect(counts['given-back']).toBe(1);
-		expect(totalEvents(counts)).toBe(6);
+		expect(totalEvents(counts)).toBe(10);
 	});
 });
 
@@ -233,6 +240,7 @@ describe('activityLabel', () => {
 		['expired', 'Expired'],
 		['blocked', 'Released (blocked)'],
 		['retired', 'Released (turf retired)'],
+		['walked-out', 'Released (no doors left)'],
 	] as const)('labels %s', (kind, label) => {
 		expect(activityLabel(kind)).toBe(label);
 	});

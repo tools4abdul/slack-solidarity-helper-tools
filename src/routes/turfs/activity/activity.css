@@ -215,7 +215,8 @@ tr:hover td {
 
 .badge-expired,
 .badge-blocked,
-.badge-retired {
+.badge-retired,
+.badge-walked-out {
 	background: color-mix(in srgb, var(--color-text-faint) 18%, transparent);
 	color: var(--color-text-muted);
 }

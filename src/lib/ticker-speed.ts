@@ -1,4 +1,4 @@
-// Shared bounds for the door-knock ticker's scroll speed, in LED columns per
+// Shared bounds for the doors ticker's scroll speed, in LED columns per
 // second. Lives outside $lib/server so the settings editor and the ticker
 // component can both import it without dragging drizzle into the client
 // bundle — same arrangement as growth-ranking.ts and DEFAULT_RANKING_ALPHA.

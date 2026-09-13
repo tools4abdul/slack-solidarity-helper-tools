@@ -119,8 +119,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		suspects,
 		// Distinguishes "every completion checked out fine" from "no completion
 		// has been checked yet" — opposite messages that must not share an empty
-		// state. Today it is always false: Story 5.6 fills confirmedDoorDelta and
-		// is still blocked on the VAN key.
+		// state. It stays false until a post-completion refresh actually lands
+		// (see door-delta-store.ts), which on a key without refresh access is
+		// forever — so the empty state has to keep saying "not checked" rather
+		// than "all clear".
 		deltaChecked: anyDeltaMeasured(completionRows),
 		completionsExamined: completionRows.length,
 	};

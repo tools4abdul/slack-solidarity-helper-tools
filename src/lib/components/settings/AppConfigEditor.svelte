@@ -5,7 +5,7 @@
 	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
 	import LedBoard from '$lib/components/dashboard/LedBoard.svelte';
 	import DoorTicker from '$lib/components/dashboard/DoorTicker.svelte';
-	import type { TickerEntry } from '$lib/server/door-knock-ticker';
+	import type { TickerEntry } from '$lib/server/van/doors-store';
 	import SettingsRow from './SettingsRow.svelte';
 	import { APP_CONFIG_ROW_IDS } from './sections.js';
 	import AutocompletePicker from './AutocompletePicker.svelte';
@@ -269,11 +269,13 @@
 	// Stand-ins so the slider still previews before the first canvasser
 	// snapshot lands. Same shape the dashboard renders.
 	const SAMPLE_TICKER: TickerEntry[] = [
-		{ canvasser: 'Maria Torres', doors: 412, chapter: 'Wayne', rank: 1 },
-		{ canvasser: 'James Rowe', doors: 388, chapter: 'Washtenaw', rank: 2 },
-		{ canvasser: 'Aisha Bell', doors: 351, chapter: 'Wayne', rank: 3 },
-		{ canvasser: 'Kai Nguyen', doors: 231, chapter: 'Ingham', rank: 4 },
-		{ canvasser: 'Ruth Feld', doors: 198, chapter: 'Oakland', rank: 5 },
+		{ canvasser: 'Maria Torres', doors: 412, turfs: 4, chapter: 'Wayne', rank: 1 },
+		{ canvasser: 'James Rowe', doors: 388, turfs: 3, chapter: 'Washtenaw', rank: 2 },
+		{ canvasser: 'Aisha Bell', doors: 351, turfs: 3, chapter: 'Wayne', rank: 3 },
+		{ canvasser: 'Kai Nguyen', doors: 231, turfs: 2, chapter: 'Ingham', rank: 4 },
+		// Finished this evening; VAN recounts overnight, so their doors are not
+		// in yet and the cell shows turfs instead.
+		{ canvasser: 'Ruth Feld', doors: 0, turfs: 2, chapter: 'Oakland', rank: 5 },
 	];
 	const previewTicker = $derived(tickerEntries.length > 0 ? tickerEntries : SAMPLE_TICKER);
 

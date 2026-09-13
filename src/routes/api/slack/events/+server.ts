@@ -8,15 +8,11 @@ import { loadSettings } from '$lib/server/settings.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { renderWelcomeDm } from '$lib/welcome-dm.js';
-import { doorKnockCanvasWatcher } from '$lib/server/door-knock-env.js';
-
-// Watches the door-knocking channel's "Conversation Codes" canvas via Slack
-// file_change events (requires the file_change bot event subscription) and
-// caches new codes' conversation ids the moment they appear — so codes swapped
-// out later the same day still get their doors counted by the nightly
-// snapshot. Null unless the configured door-knock provider needs one (only
-// Openfield does) — see doorKnockCanvasWatcher.
-const canvasWatcher = doorKnockCanvasWatcher();
+// This route used to also watch the door-knocking channel's "Conversation
+// Codes" canvas for Openfield, caching new codes as they appeared. Openfield is
+// retired (plan.md Story 9) and nothing reads canvases any more, so file_change
+// events are now ignored. The `file_change` bot event subscription can be
+// removed from the Slack app.
 
 // ---------------------------------------------------------------------------
 // Slack signature verification
@@ -50,20 +46,6 @@ export const POST: RequestHandler = async ({ request }) => {
 		handleTeamJoin(payload.event.user).catch((err) => {
 			console.error(
 				'[slack-events] team_join handler failed:',
-				err instanceof Error ? err.message : err,
-			);
-		});
-	}
-
-	if (
-		payload.type === 'event_callback' &&
-		payload.event?.type === 'file_change' &&
-		payload.event.file_id &&
-		canvasWatcher
-	) {
-		canvasWatcher.handleFileChange(payload.event.file_id).catch((err) => {
-			console.error(
-				'[slack-events] file_change handler failed:',
 				err instanceof Error ? err.message : err,
 			);
 		});

@@ -12,6 +12,11 @@ const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockSweep = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
 const mockDrift = vi.hoisted(() => vi.fn());
+const mockSettle = vi.hoisted(() => vi.fn());
+const mockReconcile = vi.hoisted(() => vi.fn());
+const mockRefreshSweep = vi.hoisted(() => vi.fn());
+const mockDoorDeltas = vi.hoisted(() => vi.fn());
+const mockDoorsHealth = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
@@ -20,7 +25,11 @@ vi.mock('$lib/server/slack.js', () => ({
 	alertFor: mockAlertFor,
 }));
 vi.mock('$lib/server/settings.js', () => ({
-	loadSettings: async () => ({ slackTrackingChannelId: 'C_TRACK', slackTurfChannelId: 'C_TURF' }),
+	loadSettings: async () => ({
+		slackTrackingChannelId: 'C_TRACK',
+		slackTurfChannelId: 'C_TURF',
+		vanTurfClaimTtlHours: 48,
+	}),
 	loadVanChapterFolders: async () => [
 		{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
 	],
@@ -40,6 +49,13 @@ vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
 vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
 vi.mock('$lib/server/van/drift-alert-store.js', () => ({ sendDriftAlerts: mockDrift }));
+vi.mock('$lib/server/van/refresh.js', () => ({
+	settleRefreshes: mockSettle,
+	runRefreshSweep: mockRefreshSweep,
+}));
+vi.mock('$lib/server/van/reconcile-store.js', () => ({ reconcileClaims: mockReconcile }));
+vi.mock('$lib/server/van/door-delta-store.js', () => ({ stampDoorDeltas: mockDoorDeltas }));
+vi.mock('$lib/server/van/doors-store.js', () => ({ doorsHealthWarning: mockDoorsHealth }));
 vi.mock('$lib/server/env.js', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
@@ -55,7 +71,31 @@ const result = {
 	turfsUnretired: 0,
 	geometryQueued: 3,
 	claimsReleased: 0,
+	regionsRead: [{ folderId: 2731, mapRegionId: 10, dateRefreshed: '2026-09-12T04:00:00.000Z' }],
 	degraded: [],
+	warnings: [],
+};
+
+const reconcileResult = {
+	listNumbersChanged: 0,
+	numbersAdopted: 0,
+	walkedOut: 0,
+	retiredReleased: 0,
+	recutReplaced: 0,
+	recutGone: 0,
+	recutStale: 0,
+	dmFailed: 0,
+	missingListNumber: 0,
+};
+
+const doorDeltaResult = { measured: 0, unsynced: 0, doorsCleared: 0, dmFailed: 0 };
+
+const refreshResult = {
+	nightlyFolders: [],
+	regionsRefreshed: 0,
+	regionsDeferred: 0,
+	failed: 0,
+	staleCleared: 0,
 	warnings: [],
 };
 
@@ -87,6 +127,11 @@ describe('POST /api/internal/van-sync', () => {
 		mockVanClient.mockReturnValue({ ok: true, client: {} });
 		mockAcquire.mockResolvedValue('lock-token');
 		mockRunCatalogSync.mockResolvedValue(result);
+		mockSettle.mockResolvedValue(0);
+		mockReconcile.mockResolvedValue(reconcileResult);
+		mockRefreshSweep.mockResolvedValue(refreshResult);
+		mockDoorDeltas.mockResolvedValue(doorDeltaResult);
+		mockDoorsHealth.mockResolvedValue(null);
 		mockExportJobTypeId.mockReturnValue(5);
 		mockRunGeometryQueue.mockResolvedValue(geometryResult);
 		mockSweep.mockResolvedValue(0);
@@ -172,6 +217,11 @@ describe('POST /api/internal/van-sync', () => {
 			expiryWarningsSent: 0,
 			expiryWarningsFailed: 0,
 			drift: driftResult,
+			refreshesSettled: 0,
+			reconciled: reconcileResult,
+			doorDeltas: doorDeltaResult,
+			doorsWarning: null,
+			refresh: refreshResult,
 		});
 		expect(mockRunCatalogSync).toHaveBeenCalledWith(
 			{},
@@ -206,6 +256,109 @@ describe('POST /api/internal/van-sync', () => {
 		// Before geometry too: geometry is the half the time budget cuts short, and
 		// an unannounced collision costs more than a missing hull.
 		expect(order).toEqual(['catalog', 'drift', 'geometry']);
+	});
+
+	it('confirms in-flight refreshes against the regions the catalog just read', async () => {
+		// The catalog read is the only place VAN's dateRefreshed appears, so the
+		// confirmation rides on it rather than costing a second call.
+		await POST(event());
+		expect(mockSettle).toHaveBeenCalledWith({}, result.regionsRead);
+	});
+
+	it('reconciles claims after the catalog and before the drift report', async () => {
+		const order: string[] = [];
+		mockRunCatalogSync.mockImplementation(async () => {
+			order.push('catalog');
+			return result;
+		});
+		mockSettle.mockImplementation(async () => {
+			order.push('settle');
+			return 0;
+		});
+		mockReconcile.mockImplementation(async () => {
+			order.push('reconcile');
+			return reconcileResult;
+		});
+		mockDoorDeltas.mockImplementation(async () => {
+			order.push('deltas');
+			return doorDeltaResult;
+		});
+		mockDrift.mockImplementation(async () => {
+			order.push('drift');
+			return driftResult;
+		});
+		mockRefreshSweep.mockImplementation(async () => {
+			order.push('refresh');
+			return refreshResult;
+		});
+		await POST(event());
+		// Reconciliation repairs claims a re-cut just released, and the delta
+		// check must not measure those as completions; drift reads the ledger, so
+		// it has to see both. The sweep goes last because its effect lands on a
+		// future tick.
+		expect(order).toEqual(['catalog', 'settle', 'reconcile', 'deltas', 'drift', 'refresh']);
+	});
+
+	it('reports what the sync-back check found', async () => {
+		mockDoorDeltas.mockResolvedValue({
+			measured: 4,
+			unsynced: 1,
+			doorsCleared: 212,
+			dmFailed: 0,
+		});
+		const body = await (await POST(event())).json();
+		expect(body).toMatchObject({ doorDeltas: { measured: 4, unsynced: 1, doorsCleared: 212 } });
+	});
+
+	it('reconciles with the configured claim TTL, so a moved claim gets a normal window', async () => {
+		await POST(event());
+		expect(mockReconcile).toHaveBeenCalledWith(
+			{},
+			{ now: mockSweep.mock.calls[0]![1], appUrl: 'https://app.example', ttlHours: 48 },
+		);
+	});
+
+	it('bounds the refresh sweep so it cannot eat the request', async () => {
+		await POST(event());
+		const { timeBudgetMs } = mockRefreshSweep.mock.calls[0]![2];
+		expect(timeBudgetMs).toBeGreaterThan(0);
+		expect(timeBudgetMs).toBeLessThanOrEqual(30 * 1000);
+	});
+
+	it('posts the turf-cutting health warning with the other notices', async () => {
+		// Story 9.4: if regions are cut without a "not yet contacted" filter,
+		// every doors number on the dashboard reads zero and looks like a bug in
+		// this app. This is the only place that difference becomes visible.
+		mockDoorsHealth.mockResolvedValue('5 completed turfs in a row cleared zero doors.');
+		await POST(event());
+		expect(mockPostMessage.mock.calls[0]![0].text as string).toContain('cleared zero doors');
+	});
+
+	it('survives a failed health check', async () => {
+		mockDoorsHealth.mockRejectedValue(new Error('database is locked'));
+		const res = await POST(event());
+		expect(res.status).toBe(200);
+	});
+
+	it('posts refresh warnings to the turf channel with the rest', async () => {
+		mockRefreshSweep.mockResolvedValue({
+			...refreshResult,
+			warnings: ['Nightly refresh of folder 2731 failed: FORBIDDEN'],
+		});
+		await POST(event());
+		expect(mockPostMessage.mock.calls[0]![0].text as string).toContain(
+			'Nightly refresh of folder 2731 failed',
+		);
+	});
+
+	it('reports what the reconciliation and the sweep did', async () => {
+		mockReconcile.mockResolvedValue({ ...reconcileResult, listNumbersChanged: 2, walkedOut: 1 });
+		mockRefreshSweep.mockResolvedValue({ ...refreshResult, regionsRefreshed: 3 });
+		const body = await (await POST(event())).json();
+		expect(body).toMatchObject({
+			reconciled: { listNumbersChanged: 2, walkedOut: 1 },
+			refresh: { regionsRefreshed: 3 },
+		});
 	});
 
 	it('posts drift to the turf channel, against the housekeeping clock', async () => {

@@ -4,6 +4,7 @@ import { loadChapterTurfs } from './turf-query.js';
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
 		mapRouteId: 100,
+		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Ann Arbor',
@@ -72,7 +73,8 @@ describe('loadChapterTurfs', () => {
 	it('queries the viewer’s own claims only when asked to keep their turf', async () => {
 		const without = makeDb([[turfRow()], []]);
 		await loadChapterTurfs(without.db, { chapterId: 71, viewer: VIEWER });
-		expect(without.queryCount()).toBe(2);
+		// Turf rows, then claims, then the regions VAN is re-cutting.
+		expect(without.queryCount()).toBe(3);
 
 		const withHeld = makeDb([[{ mapRouteId: 100 }], [turfRow()], [claimRow()]]);
 		await loadChapterTurfs(withHeld.db, {
@@ -80,7 +82,8 @@ describe('loadChapterTurfs', () => {
 			viewer: VIEWER,
 			includeHeldByViewer: true,
 		});
-		expect(withHeld.queryCount()).toBe(3);
+		// One more than without: the viewer's own claims are read first.
+		expect(withHeld.queryCount()).toBe(4);
 	});
 
 	// A turf left out of a payload should never be serialised at all, not

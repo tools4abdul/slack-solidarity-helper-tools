@@ -14,9 +14,15 @@ export interface VanFolder {
 	name: string;
 }
 
-/** One walkable turf inside a Map Region. `mapRouteId` is stable across
- *  refreshes — a refresh re-runs the underlying saved list, it does not
- *  renumber routes. */
+/** One walkable turf inside a Map Region.
+ *
+ *  `mapRouteId` is NOT stable across a refresh. Verified live on 2026-09-08
+ *  (plan.md Story 4.6): refreshing a region retired routes 56456/56457 and
+ *  returned 56502/56503 with new saved lists. A route id names a CUT of a
+ *  piece of ground, not the ground, so nothing may hold one across a refresh
+ *  window and expect it to resolve — see van/refresh-reconcile.ts, which pairs
+ *  a dead route to its replacement by region and name because there is no id
+ *  in common to pair on. */
 export interface VanMapRoute {
 	mapRouteId: number;
 	name: string | null;

@@ -14,7 +14,7 @@ import {
 	type VanBlockedUserEntry,
 } from '$lib/server/settings.js';
 import { loadThemeTokensJson } from '$lib/server/theme.js';
-import { loadDoorKnockTicker, type TickerEntry } from '$lib/server/door-knock-ticker.js';
+import { loadDoorsTicker, type TickerEntry } from '$lib/server/van/doors-store.js';
 import {
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
@@ -176,12 +176,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// Best-effort: an empty ticker just means the preview uses sample names.
 	let tickerEntries: TickerEntry[] = [];
 	try {
-		tickerEntries = (await loadDoorKnockTicker(db)).entries;
+		tickerEntries = (await loadDoorsTicker(db)).entries;
 	} catch (err) {
-		console.error(
-			'[settings] door-knock ticker load failed:',
-			err instanceof Error ? err.message : err,
-		);
+		console.error('[settings] doors ticker load failed:', err instanceof Error ? err.message : err);
 	}
 
 	// VAN turf-checkout settings and the stored theme, in one parallel batch.

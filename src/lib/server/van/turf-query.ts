@@ -21,6 +21,7 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
+import { refreshingRegionIds } from './refresh.js';
 import type { ClaimOptions, ClaimSnapshot } from '../../van/checkout.js';
 import type { BoundingBox, LatLng } from '../../van/geometry.js';
 import { selectNearest, TURFS_PER_PAYLOAD, withinBounds } from '../../van/turf-paging.js';
@@ -122,10 +123,18 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		selected.map((r) => r.mapRouteId),
 	);
 
+	// One small read for the whole payload rather than a lookup per row. The
+	// table holds one row per region and only in-flight ones are returned, so
+	// this is usually empty and never more than a handful — and an empty page
+	// skips it entirely, like the claim query above.
+	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<number>();
+
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.
 		// Nothing here should ever be spread from a raw row instead.
-		turfs: selected.map((row) => toTurfView(row, claims, viewer, now, claimOptions)),
+		turfs: selected.map((row) =>
+			toTurfView(row, claims, viewer, now, { ...claimOptions, refreshingRegions }),
+		),
 		total: rows.length,
 		omitted,
 	};
