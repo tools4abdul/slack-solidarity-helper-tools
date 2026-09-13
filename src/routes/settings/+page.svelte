@@ -170,6 +170,12 @@
 					allowedIds={[...data.settings.allowedSlackUserIds]}
 					selfId={data.selfSlackUserId}
 				/>
+				<AllowedUsersEditor
+					kind="moderators"
+					users={data.slackUsers.items}
+					allowedIds={[...data.settings.moderatorSlackUserIds]}
+					selfId={data.selfSlackUserId}
+				/>
 			{/if}
 		</section>
 

@@ -82,18 +82,20 @@
 						<p class="member-linkline">
 							Linked to Solidarity by {member.link.linkedByName}
 							{#if member.link.linkedAt}· {noteWhen(member.link.linkedAt)}{/if}
-							<button
-								type="button"
-								class="member-unlink"
-								onclick={async () => {
-									await fetch('/api/members/link', {
-										method: 'POST',
-										headers: { 'Content-Type': 'application/json' },
-										body: JSON.stringify({ action: 'unlink', slackUserId: member.slack.id }),
-									});
-									location.reload();
-								}}>Unlink</button
-							>
+							{#if data.canLink}
+								<button
+									type="button"
+									class="member-unlink"
+									onclick={async () => {
+										await fetch('/api/members/link', {
+											method: 'POST',
+											headers: { 'Content-Type': 'application/json' },
+											body: JSON.stringify({ action: 'unlink', slackUserId: member.slack.id }),
+										});
+										location.reload();
+									}}>Unlink</button
+								>
+							{/if}
 						</p>
 					{/if}
 				</section>
@@ -105,8 +107,14 @@
 						Solidarity couldn't be reached, so this member's activity and account match are
 						unavailable. Their notes below are unaffected.
 					</p>
-				{:else if member.link.reason === 'no-slack-email' || member.link.reason === 'no-solidarity-match'}
+				{:else if data.canLink && (member.link.reason === 'no-slack-email' || member.link.reason === 'no-solidarity-match')}
 					<SolidarityAccountLinker slackUserId={member.slack.id} slackEmail={member.slack.email} />
+				{:else if member.link.reason === 'no-slack-email' || member.link.reason === 'no-solidarity-match'}
+					<!-- A moderator's view: same fact, without the controls to fix it. -->
+					<p class="member-notice">
+						This member isn't matched to a Solidarity account, so there's no activity to show. Their
+						notes below are unaffected.
+					</p>
 				{/if}
 
 				{#if member.link.solidarityUserId !== null}

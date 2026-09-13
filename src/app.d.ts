@@ -3,7 +3,13 @@
 declare global {
 	namespace App {
 		interface Locals {
-			session: { slackUserId: string; slackUserName: string; isAdmin: boolean } | null;
+			session: {
+				slackUserId: string;
+				slackUserName: string;
+				isAdmin: boolean;
+				/** Absent on sessions that predate moderators — read as false. */
+				isModerator?: boolean;
+			} | null;
 		}
 	}
 }

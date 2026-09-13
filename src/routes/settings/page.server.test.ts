@@ -44,6 +44,7 @@ const settingsFixture = {
 	chapterChannelMap: [],
 	coalitionChannelMap: [],
 	allowedSlackUserIds: new Set<string>(),
+	moderatorSlackUserIds: new Set<string>(),
 	reportExcludedChapterIds: new Set<number>(),
 	zipExcludedChapterIds: new Set<number>(),
 	slackTrackingChannelId: 'C_TRACK',
@@ -131,6 +132,14 @@ describe('US1: admin gate', () => {
 	it('redirects 302 to / for a non-admin authenticated session', async () => {
 		const event = makeEvent({ isAdmin: false });
 		// SvelteKit's redirect() throws an object with `status` and `location`.
+		await expect(load(event)).rejects.toMatchObject({ status: 302, location: '/' });
+		expect(loadSettings).not.toHaveBeenCalled();
+	});
+
+	it('redirects a moderator — they get the Slack commands, not settings', async () => {
+		const event = makeEvent({
+			session: { slackUserId: 'U2', slackUserName: 'Mo', isAdmin: false, isModerator: true },
+		});
 		await expect(load(event)).rejects.toMatchObject({ status: 302, location: '/' });
 		expect(loadSettings).not.toHaveBeenCalled();
 	});

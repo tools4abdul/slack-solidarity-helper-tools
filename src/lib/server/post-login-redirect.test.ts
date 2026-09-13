@@ -74,6 +74,20 @@ describe('resolvePostLoginRedirect', () => {
 		expect(resolvePostLoginRedirect('/pending', { isAdmin: false })).toBe('/');
 	});
 
+	it('returns a moderator to the member page, and only that admin page', () => {
+		const moderator = { isAdmin: false, isModerator: true };
+		expect(resolvePostLoginRedirect('/members?user=U123', moderator)).toBe('/members?user=U123');
+		expect(resolvePostLoginRedirect('/members', moderator)).toBe('/members');
+		expect(resolvePostLoginRedirect('/settings', moderator)).toBe('/');
+		expect(resolvePostLoginRedirect('/pending', moderator)).toBe('/');
+	});
+
+	it('does not treat a lookalike path as the member page', () => {
+		const moderator = { isAdmin: false, isModerator: true };
+		expect(resolvePostLoginRedirect('/membership', moderator)).toBe('/membership');
+		expect(resolvePostLoginRedirect('/members', { isAdmin: false })).toBe('/');
+	});
+
 	it('returns a non-admin page to everyone who asked for it', () => {
 		expect(resolvePostLoginRedirect('/?days=30', { isAdmin: false })).toBe('/?days=30');
 	});

@@ -126,25 +126,32 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	// superuser is admitted without consulting the list — even when reading it
 	// fails — so a mis-edited or emptied allowed_slack_users table can never
 	// lock every admin out of /pending and /settings.
+	//
+	// Moderators come from the same read. An admin is never also flagged a
+	// moderator: isModerator only ever widens access for someone who is not an
+	// admin, so it is kept meaningful as "moderator and nothing more".
 	const isSuperuser = SLACK_SUPERUSER_ID !== '' && userId === SLACK_SUPERUSER_ID;
 	let isAdmin = isSuperuser;
+	let isModerator = false;
 	if (!isAdmin) {
 		try {
-			isAdmin = (await loadSettings(db)).allowedSlackUserIds.has(userId);
+			const { allowedSlackUserIds, moderatorSlackUserIds } = await loadSettings(db);
+			isAdmin = allowedSlackUserIds.has(userId);
+			isModerator = !isAdmin && moderatorSlackUserIds.has(userId);
 		} catch (err) {
 			console.error(
-				'[auth] loadSettings failed — denying admin to non-superuser:',
+				'[auth] loadSettings failed — denying admin and moderator to non-superuser:',
 				err instanceof Error ? err.message : err,
 			);
 		}
 	}
 
-	// Keep the user token only for admins, and only for as long as they stay
-	// admins — the info commands are admin-only, so storing anyone else's would be
-	// holding a credential the app has no use for. A non-admin's row is dropped
-	// rather than left behind, which also cleans up after someone is removed
-	// from the allowed list and logs in again.
-	if (isAdmin) {
+	// Keep the user token only for admins and moderators, and only for as long
+	// as they stay one — the info commands are theirs alone, so storing anyone
+	// else's would be holding a credential the app has no use for. Anyone
+	// else's row is dropped rather than left behind, which also cleans up after
+	// someone is removed from both lists and logs in again.
+	if (isAdmin || isModerator) {
 		try {
 			await saveUserToken(db, {
 				slackUserId: userId,
@@ -177,7 +184,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	const sid = crypto.randomUUID();
 	await sessionStore.set(
 		sid,
-		{ slackUserId: userId, slackUserName: userName, isAdmin },
+		{ slackUserId: userId, slackUserName: userName, isAdmin, isModerator },
 		SESSION_MAX_AGE,
 	);
 
@@ -190,11 +197,12 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	});
 
 	console.log(
-		`[auth] login: ${userName} (${userId}) admin=${isAdmin}${isSuperuser ? ' (superuser)' : ''}`,
+		`[auth] login: ${userName} (${userId}) admin=${isAdmin}` +
+			`${isModerator ? ' moderator=true' : ''}${isSuperuser ? ' (superuser)' : ''}`,
 	);
 	// Back to the page they asked for — or the dashboard, when they asked for
 	// nothing or for something this session may not see.
-	redirect(302, resolvePostLoginRedirect(requestedPath, { isAdmin }));
+	redirect(302, resolvePostLoginRedirect(requestedPath, { isAdmin, isModerator }));
 };
 
 /**

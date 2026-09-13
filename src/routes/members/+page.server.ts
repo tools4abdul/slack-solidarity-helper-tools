@@ -22,6 +22,10 @@ import {
 export interface MembersPageData {
 	pageTitle: 'Volunteer lookup';
 	selectedSlackUserId: string | null;
+	/** Whether to show the link/unlink controls. False for moderators, who may
+	 *  read this page but not change whose Solidarity account is whose; the
+	 *  api/members/* routes refuse them regardless. */
+	canLink: boolean;
 	/** Streamed: the shell and the search box render immediately while the
 	 *  Solidarity round trips resolve. */
 	member: Promise<MemberDetail | null> | null;
@@ -74,7 +78,8 @@ const deps: MemberLookupDeps = {
 export const load: PageServerLoad = ({ locals, url }) => {
 	// Re-checked here as well as in the layout: layout and page loads run
 	// concurrently, so the layout's redirect cannot be relied on to gate this.
-	if (!locals.session?.isAdmin) {
+	const session = locals.session;
+	if (!session || (!session.isAdmin && !session.isModerator)) {
 		redirect(302, '/');
 	}
 
@@ -83,6 +88,7 @@ export const load: PageServerLoad = ({ locals, url }) => {
 	return {
 		pageTitle: 'Volunteer lookup',
 		selectedSlackUserId,
+		canLink: session.isAdmin,
 		// Returned unawaited so SvelteKit streams it.
 		member: selectedSlackUserId ? resolveMember(deps, selectedSlackUserId) : null,
 	} satisfies MembersPageData;

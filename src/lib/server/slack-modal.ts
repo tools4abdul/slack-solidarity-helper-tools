@@ -155,7 +155,9 @@ export function buildNoteModal(prefill: NotePrefill, opts: NoteModalOptions): No
 			max_length: MAX_BODY_LENGTH,
 			...(prefill.body ? { initial_value: prefill.body } : {}),
 		},
-		hint: text('Visible to admins on the member lookup page, and quoted in the warning DM.'),
+		hint: text(
+			'Visible to admins and moderators on the member lookup page, and quoted in the warning DM.',
+		),
 	});
 
 	blocks.push({

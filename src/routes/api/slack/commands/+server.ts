@@ -4,26 +4,31 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { APP_URL } from '$lib/server/env.js';
-import { loadSettings, findInfoCommand } from '$lib/server/settings.js';
+import { loadSettings, findInfoCommand, listInfoCommands } from '$lib/server/settings.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
-import { isSlackAdmin, NOT_AUTHORIZED_TEXT } from '$lib/server/slack-admin.js';
+import { canUseSlackCommands, NOT_AUTHORIZED_TEXT } from '$lib/server/slack-admin.js';
 import { buildNoteModal, parseCommandTarget } from '$lib/server/slack-modal.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { loadUserToken, type TokenLookupFailure } from '$lib/server/user-tokens.js';
-import { normalizeCommandName, renderInfoMessage } from '$lib/info-command.js';
-import { respondToSlack } from '$lib/server/slack-response-url.js';
+import { normalizeCommandName, renderCommandList, renderInfoMessage } from '$lib/info-command.js';
+import { postToResponseUrl, respondToSlack } from '$lib/server/slack-response-url.js';
 import { turfListMessage } from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
-// Slash commands. Three kinds:
+// Slash commands. Four kinds:
 //
 //   /member-note          — opens the note/warning modal (see slack-modal.ts)
 //   /turfs                — nearest available turf, claimable in place
 //                           (see van/turf-slack.ts)
+//   /list-commands        — every info command and its message, shown only to
+//                           the person who ran it
 //   anything else         — looked up in `info_commands`, the admin-defined
 //                           blurbs, and posted **as the person who typed it**
 //
-// /turfs is the ONLY command here open to non-admins, and deliberately so: it
+// Everything but /turfs is for admins and moderators (see slack-admin.ts);
+// moderators exist precisely to use these commands without the web admin.
+//
+// /turfs is the ONLY command here open to everyone, and deliberately so: it
 // serves the same data the /turfs web page serves, and that page is open to any
 // signed-in workspace member minus the turf blocklist. A Slack workspace member
 // is the same bar as a Slack-OAuth session, so this grants nothing new. Its
@@ -59,6 +64,10 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	if (command === '/turfs') {
 		return handleTurfs({ slackUserId, channelId, commandText, responseUrl });
+	}
+
+	if (command === '/list-commands') {
+		return handleListCommands(slackUserId, responseUrl);
 	}
 
 	return handleInfoCommand({ command, slackUserId, channelId });
@@ -120,7 +129,7 @@ async function handleMemberNote(args: {
 }): Promise<Response> {
 	const { slackUserId, triggerId, channelId, commandText } = args;
 
-	if (!(await isSlackAdmin(slackUserId))) {
+	if (!(await canUseSlackCommands(slackUserId))) {
 		// 200 with an ephemeral body — only the person who typed it sees this.
 		return ephemeral(NOT_AUTHORIZED_TEXT);
 	}
@@ -156,6 +165,65 @@ async function handleMemberNote(args: {
 }
 
 // ---------------------------------------------------------------------------
+// /list-commands
+// ---------------------------------------------------------------------------
+
+/**
+ * Admins and moderators only, like the commands it lists: anyone else could
+ * not run any of them, so the list would only be a menu of things that refuse
+ * them.
+ *
+ * The reply is ephemeral — the response body, or response_url — never
+ * postMessage, so it needs neither a stored authorization nor the bot's
+ * membership in the channel, and nobody else in the channel sees it.
+ */
+async function handleListCommands(
+	slackUserId: string,
+	responseUrl: string | null,
+): Promise<Response> {
+	if (!(await canUseSlackCommands(slackUserId))) {
+		return ephemeral(NOT_AUTHORIZED_TEXT);
+	}
+
+	let entries;
+	try {
+		entries = await listInfoCommands(db);
+	} catch (err) {
+		console.error(`${LOG} /list-commands lookup failed:`, errMessage(err));
+		return ephemeral('Could not load the command list. Please try again.');
+	}
+
+	// Skip the channel list when there is nothing to resolve links in.
+	const nameToId = entries.length > 0 ? await channelNameToId('list-commands') : new Map();
+	const messages = renderCommandList(entries, nameToId);
+
+	// The usual case: the whole list fits in one message, sent as the body.
+	// (No response_url is a request Slack never actually sends; the first
+	// message is still better than nothing.)
+	if (messages.length === 1 || !responseUrl) return ephemeral(messages[0]!);
+
+	// Too long for one message, so it goes out as several — all of them through
+	// response_url, awaited one after another. Putting the first in the body
+	// instead would race the follow-ups, and the list could arrive out of order.
+	//
+	// Slack accepts five posts per response_url. At 39k characters a message and
+	// 3k at most per blurb, that is well over sixty maximum-length commands; if a
+	// list ever outgrows it, the post Slack refuses is logged and the rest stop.
+	void (async () => {
+		for (const [i, message] of messages.entries()) {
+			const ok = await postToResponseUrl(responseUrl, { text: message }, { logTag: LOG });
+			if (!ok) {
+				console.error(`${LOG} /list-commands stopped at message ${i + 1} of ${messages.length}`);
+				return;
+			}
+		}
+	})();
+
+	// Empty 200 — the messages above are the reply.
+	return text('', { status: 200 });
+}
+
+// ---------------------------------------------------------------------------
 // Admin-defined info commands
 // ---------------------------------------------------------------------------
 
@@ -183,10 +251,10 @@ async function handleInfoCommand(args: {
 		return ephemeral('Unrecognized command.');
 	}
 
-	// Same gate as /member-note. It is also the only gate that can work today:
-	// a token is stored only for admins (see auth/slack/callback), so a
-	// non-admin has nothing to post with.
-	if (!(await isSlackAdmin(slackUserId))) {
+	// Same gate as /member-note. It is also the only gate that can work: a
+	// token is stored only for admins and moderators (see auth/slack/callback),
+	// so anyone else has nothing to post with.
+	if (!(await canUseSlackCommands(slackUserId))) {
 		return ephemeral(NOT_AUTHORIZED_TEXT);
 	}
 

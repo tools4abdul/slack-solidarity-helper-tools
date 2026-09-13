@@ -5,6 +5,7 @@ import { POST } from './+server.js';
 const mockViewsOpen = vi.hoisted(() => vi.fn());
 const mockLoadSettings = vi.hoisted(() => vi.fn());
 const mockFindInfoCommand = vi.hoisted(() => vi.fn());
+const mockListInfoCommands = vi.hoisted(() => vi.fn());
 const mockLoadUserToken = vi.hoisted(() => vi.fn());
 const mockChannelNameToId = vi.hoisted(() => vi.fn());
 // Captures the token each per-request WebClient is constructed with, which is
@@ -13,11 +14,13 @@ const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockWebClientCtor = vi.hoisted(() => vi.fn());
 const mockTurfListMessage = vi.hoisted(() => vi.fn());
 const mockRespondToSlack = vi.hoisted(() => vi.fn());
+const mockPostToResponseUrl = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/slack', () => ({ slack: { views: { open: mockViewsOpen } } }));
 vi.mock('$lib/server/settings', () => ({
 	loadSettings: mockLoadSettings,
 	findInfoCommand: mockFindInfoCommand,
+	listInfoCommands: mockListInfoCommands,
 }));
 vi.mock('$lib/server/user-tokens', () => ({ loadUserToken: mockLoadUserToken }));
 vi.mock('$lib/server/slack-channel-names', () => ({ channelNameToId: mockChannelNameToId }));
@@ -30,7 +33,10 @@ vi.mock('@slack/web-api', () => ({
 	},
 }));
 vi.mock('$lib/server/van/turf-slack', () => ({ turfListMessage: mockTurfListMessage }));
-vi.mock('$lib/server/slack-response-url', () => ({ respondToSlack: mockRespondToSlack }));
+vi.mock('$lib/server/slack-response-url', () => ({
+	respondToSlack: mockRespondToSlack,
+	postToResponseUrl: mockPostToResponseUrl,
+}));
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/env', () => ({
 	SLACK_SIGNING_SECRET: 'test-signing-secret',
@@ -72,14 +78,17 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mockLoadSettings.mockResolvedValue({
 		allowedSlackUserIds: new Set(['U_ADMIN']),
+		moderatorSlackUserIds: new Set(['U_MOD']),
 		warningDmMessage: 'This is your {{nth}} warning.',
 	});
 	mockViewsOpen.mockResolvedValue({ ok: true });
 	mockFindInfoCommand.mockResolvedValue(null);
+	mockListInfoCommands.mockResolvedValue([]);
 	mockLoadUserToken.mockResolvedValue({ ok: true, token: 'xoxp-user-token' });
 	mockChannelNameToId.mockResolvedValue(new Map([['phone-bank', 'C_PHONE']]));
 	mockPostMessage.mockResolvedValue({ ok: true });
 	mockTurfListMessage.mockResolvedValue({ text: 'Turf in Washtenaw County', blocks: [] });
+	mockPostToResponseUrl.mockResolvedValue(true);
 });
 
 /** The /turfs reply is posted after the handler has returned, so tests have
@@ -124,6 +133,11 @@ describe('POST /api/slack/commands — authorization', () => {
 		expect(mockViewsOpen).toHaveBeenCalledTimes(1);
 	});
 
+	it('allows a moderator', async () => {
+		await call(signedCommand({ user_id: 'U_MOD' }));
+		expect(mockViewsOpen).toHaveBeenCalledTimes(1);
+	});
+
 	// The superuser id comes from the environment, so a DB outage must not lock
 	// the workspace owner out of moderation tooling.
 	it('passes the superuser through the admin check when loadSettings throws', async () => {
@@ -142,6 +156,7 @@ describe('POST /api/slack/commands — authorization', () => {
 	it('opens the modal for the superuser when the allowlist simply omits them', async () => {
 		mockLoadSettings.mockResolvedValue({
 			allowedSlackUserIds: new Set<string>(),
+			moderatorSlackUserIds: new Set<string>(),
 			warningDmMessage: '',
 		});
 
@@ -265,6 +280,13 @@ describe('POST /api/slack/commands — info commands', () => {
 		expect(mockFindInfoCommand).toHaveBeenCalledWith(expect.anything(), '/info-phone');
 	});
 
+	it('posts for a moderator, with their own token', async () => {
+		await infoCall({ user_id: 'U_MOD' });
+
+		expect(mockLoadUserToken).toHaveBeenCalledWith(expect.anything(), 'U_MOD');
+		expect(mockPostMessage).toHaveBeenCalledTimes(1);
+	});
+
 	it('refuses a non-admin without posting', async () => {
 		const res = await infoCall({ user_id: 'U_RANDOM' });
 
@@ -340,6 +362,132 @@ describe('POST /api/slack/commands — info commands', () => {
 	});
 });
 
+describe('POST /api/slack/commands — /list-commands', () => {
+	const listCall = (fields: Record<string, string> = {}) =>
+		call(signedCommand({ command: '/list-commands', user_id: 'U_ADMIN', ...fields }));
+
+	beforeEach(() => {
+		mockListInfoCommands.mockResolvedValue([
+			{ command: '/info-canvass', message: 'Knock doors: #canvass' },
+			INFO_ROW,
+		]);
+	});
+
+	it('replies ephemerally with every command and its rendered message', async () => {
+		const res = await listCall();
+
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.response_type).toBe('ephemeral');
+		expect(body.text).toContain('*/info-canvass*\n>Knock doors: #canvass');
+		expect(body.text).toContain('*/info-phone*\n>Sign up here: <#C_PHONE>');
+	});
+
+	// Ephemeral is the whole point: the list goes back in the response body,
+	// never through postMessage, so no one else in the channel sees it.
+	it('posts nothing into the channel and needs no user token', async () => {
+		await listCall();
+
+		expect(mockPostMessage).not.toHaveBeenCalled();
+		expect(mockLoadUserToken).not.toHaveBeenCalled();
+	});
+
+	it('is not treated as an info command lookup', async () => {
+		await listCall();
+		expect(mockFindInfoCommand).not.toHaveBeenCalled();
+	});
+
+	it('answers a moderator', async () => {
+		const body = await (await listCall({ user_id: 'U_MOD' })).json();
+		expect(body.text).toContain('*/info-phone*');
+	});
+
+	it('refuses a non-admin without reading the list', async () => {
+		const res = await listCall({ user_id: 'U_RANDOM' });
+
+		expect((await res.json()).text).toContain('not authorized');
+		expect(mockListInfoCommands).not.toHaveBeenCalled();
+	});
+
+	it('says so when no commands exist, without fetching the channel list', async () => {
+		mockListInfoCommands.mockResolvedValue([]);
+
+		const text = ((await (await listCall()).json()) as { text: string }).text;
+
+		expect(text).toBe('No info commands have been set up yet.');
+		expect(mockChannelNameToId).not.toHaveBeenCalled();
+	});
+
+	it('answers a short list in the response body, without response_url', async () => {
+		await listCall({ response_url: 'https://hooks.slack.test/list' });
+		await flush();
+		expect(mockPostToResponseUrl).not.toHaveBeenCalled();
+	});
+
+	describe('a list too long for one message', () => {
+		beforeEach(() => {
+			mockListInfoCommands.mockResolvedValue(
+				Array.from({ length: 30 }, (_, i) => ({
+					command: `/cmd-${String(i).padStart(2, '0')}`,
+					message: 'x'.repeat(3000),
+				})),
+			);
+		});
+
+		// All of them through response_url, one after another: a first message in
+		// the body could be overtaken by the follow-ups and land below them.
+		it('posts every part through response_url, in order, and acks empty', async () => {
+			const res = await listCall({ response_url: 'https://hooks.slack.test/list' });
+			await flush();
+
+			expect(await res.text()).toBe('');
+			const posted = mockPostToResponseUrl.mock.calls.map((c) => {
+				expect(c[0]).toBe('https://hooks.slack.test/list');
+				return c[1].text as string;
+			});
+			expect(posted.length).toBeGreaterThan(1);
+			expect(posted[0]).toMatch(/^30 info commands:/);
+			expect(posted.join('\n\n').match(/^\*\/cmd-\d+\*$/gm)).toHaveLength(30);
+		});
+
+		it('waits for each part before sending the next', async () => {
+			let release!: (ok: boolean) => void;
+			mockPostToResponseUrl.mockImplementationOnce(
+				() => new Promise<boolean>((resolve) => (release = resolve)),
+			);
+
+			await listCall({ response_url: 'https://hooks.slack.test/list' });
+			await flush();
+			expect(mockPostToResponseUrl).toHaveBeenCalledTimes(1);
+
+			release(true);
+			await flush();
+			expect(mockPostToResponseUrl.mock.calls.length).toBeGreaterThan(1);
+		});
+
+		it('stops, and logs, when Slack refuses a part', async () => {
+			const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+			mockPostToResponseUrl.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+			await listCall({ response_url: 'https://hooks.slack.test/list' });
+			await flush();
+
+			expect(mockPostToResponseUrl).toHaveBeenCalledTimes(2);
+			expect(error).toHaveBeenCalledWith(expect.stringContaining('stopped at message 2'));
+		});
+	});
+
+	it('reports a lookup failure ephemerally', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockListInfoCommands.mockRejectedValue(new Error('db down'));
+
+		const body = await (await listCall()).json();
+
+		expect(body.response_type).toBe('ephemeral');
+		expect(body.text).toContain('Could not load the command list');
+	});
+});
+
 describe('POST /api/slack/commands — /turfs', () => {
 	const turfs = (fields: Record<string, string> = {}) =>
 		signedCommand({
@@ -388,7 +536,10 @@ describe('POST /api/slack/commands — /turfs', () => {
 	// apply live in turf-slack.ts. The route must not add an admin check of its
 	// own, or the feature serves nobody it was built for.
 	it('does not gate on the admin allowlist', async () => {
-		mockLoadSettings.mockResolvedValue({ allowedSlackUserIds: new Set(['U_ADMIN']) });
+		mockLoadSettings.mockResolvedValue({
+			allowedSlackUserIds: new Set(['U_ADMIN']),
+			moderatorSlackUserIds: new Set(['U_MOD']),
+		});
 		await call(turfs({ user_id: 'U_RANDOM' }));
 		await flush();
 		expect(mockTurfListMessage).toHaveBeenCalled();

@@ -46,6 +46,16 @@ describe('auth', () => {
 		const res = await call({ action: 'link' }, { ...adminSession, isAdmin: false });
 		expect(res.status).toBe(403);
 	});
+
+	// Moderators may read /members but not change whose account is whose; the
+	// page hides the controls, and this is the guard that actually holds.
+	it('403s for a moderator', async () => {
+		const res = await call(
+			{ action: 'unlink', slackUserId: 'U_TARGET' },
+			{ ...adminSession, isAdmin: false, isModerator: true },
+		);
+		expect(res.status).toBe(403);
+	});
 });
 
 describe('validation', () => {

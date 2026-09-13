@@ -111,6 +111,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mockLoadSettings.mockResolvedValue({
 		allowedSlackUserIds: new Set(['U_ADMIN']),
+		moderatorSlackUserIds: new Set(['U_MOD']),
 		warningDmMessage: 'This is your {{nth}} warning.',
 		slackMemberNoteChannelId: 'C_ADMIN_LOG',
 	});
@@ -219,6 +220,11 @@ describe('log_member_note shortcut', () => {
 		expect(link.element.initial_value).toBeUndefined();
 	});
 
+	it('opens the modal for a moderator', async () => {
+		await call(signedPayload(shortcut({ user: { id: 'U_MOD' } })));
+		expect(mockViewsOpen).toHaveBeenCalledTimes(1);
+	});
+
 	it('refuses a non-admin via response_url and opens nothing', async () => {
 		await call(signedPayload(shortcut({ user: { id: 'U_RANDOM' } })));
 		await flush();
@@ -259,6 +265,15 @@ describe('view_member_record shortcut', () => {
 		const posted = JSON.parse((init as { body: string }).body);
 		expect(posted.text).toContain("Couldn't identify");
 		expect(posted.blocks).toBeUndefined();
+	});
+
+	it('gives a moderator the link too', async () => {
+		await call(signedPayload(shortcut({ user: { id: 'U_MOD' } })));
+		await flush();
+
+		const init = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1];
+		const posted = JSON.parse((init as { body: string }).body);
+		expect(posted.blocks[0].accessory.url).toBe('https://app.example.test/members?user=U_TARGET');
 	});
 
 	it('refuses a non-admin', async () => {
@@ -419,6 +434,16 @@ describe('view_submission', () => {
 		expect(mockInsertNote).not.toHaveBeenCalled();
 	});
 
+	it('saves a moderator’s note under their own name', async () => {
+		const res = await call(signedPayload(submissionPayload({ user: { id: 'U_MOD' } })));
+
+		expect(await res.json()).toEqual({});
+		expect(mockInsertNote).toHaveBeenCalledWith(
+			{},
+			expect.objectContaining({ authorSlackUserId: 'U_MOD' }),
+		);
+	});
+
 	it('rejects a submission from someone no longer an admin', async () => {
 		const res = await call(signedPayload(submissionPayload({ user: { id: 'U_RANDOM' } })));
 
@@ -462,6 +487,7 @@ describe('view_submission', () => {
 		mockInsertNote.mockResolvedValue({ id: 9, warningNumber: 1 });
 		mockLoadSettings.mockResolvedValue({
 			allowedSlackUserIds: new Set(['U_ADMIN']),
+			moderatorSlackUserIds: new Set(['U_MOD']),
 			warningDmMessage: 'Configured in settings: {{nth}} warning.',
 		});
 
@@ -645,6 +671,7 @@ describe('admin tracking channel', () => {
 	it('posts nothing when no channel is configured', async () => {
 		mockLoadSettings.mockResolvedValue({
 			allowedSlackUserIds: new Set(['U_ADMIN']),
+			moderatorSlackUserIds: new Set(['U_MOD']),
 			warningDmMessage: '',
 			slackMemberNoteChannelId: '',
 		});

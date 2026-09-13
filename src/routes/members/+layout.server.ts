@@ -21,7 +21,10 @@ export interface MembersLayoutData {
 }
 
 export const load: LayoutServerLoad = async ({ locals }) => {
-	if (!locals.session?.isAdmin) {
+	// Moderators too: this is where the Slack "View member record" shortcut
+	// sends them. They read it; the account-linking controls stay admin-only
+	// (see canLink in +page.server.ts, and api/members/*).
+	if (!locals.session?.isAdmin && !locals.session?.isModerator) {
 		redirect(302, '/');
 	}
 

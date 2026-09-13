@@ -13,15 +13,36 @@
 	}
 
 	interface Props {
+		/** Which list this edits. Admins and moderators are the same shape — a
+		 *  set of Slack users — kept in separate tables behind separate
+		 *  endpoints. */
+		kind?: 'admins' | 'moderators';
 		users: UserOption[];
-		/** Current admin allowlist ids from loadSettings. */
+		/** Current ids for this list, from loadSettings. */
 		allowedIds: string[];
-		/** The signed-in admin's own Slack id — their chip is locked so they
-		 *  can't attempt to remove themselves (the endpoint enforces it too). */
+		/** The signed-in admin's own Slack id — on the admin list their chip is
+		 *  locked so they can't attempt to remove themselves (the endpoint
+		 *  enforces it too). Irrelevant to the moderator list. */
 		selfId: string;
 	}
 
-	let { users, allowedIds, selfId }: Props = $props();
+	let { kind = 'admins', users, allowedIds, selfId }: Props = $props();
+
+	const config = $derived(
+		kind === 'admins'
+			? {
+					label: 'Admins',
+					endpoint: '/api/settings/allowed-users',
+					placeholder: 'Add an admin…',
+					locked: [selfId],
+				}
+			: {
+					label: 'Moderators',
+					endpoint: '/api/settings/moderators',
+					placeholder: 'Add a moderator…',
+					locked: [],
+				},
+	);
 
 	// Local mirror of the allowlist, updated optimistically per op and reverted
 	// if the save fails. Chip labels resolve against the live user list; an id
@@ -82,13 +103,13 @@
 	async function runOp(op: Op): Promise<void> {
 		// Belt-and-braces alongside the locked chip: never even attempt a
 		// self-removal (the endpoint would 400 it anyway).
-		if (op.action === 'remove' && op.userId === selfId) return;
+		if (op.action === 'remove' && config.locked.includes(op.userId)) return;
 		const changed = applyLocal(op);
 		status = 'saving';
 		error = null;
 		inflight++;
 		try {
-			const res = await fetch('/api/settings/allowed-users', {
+			const res = await fetch(config.endpoint, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(op),
@@ -118,21 +139,29 @@
 </script>
 
 <div class="allowed-users-editor">
-	<SettingsRow label="Admins" {status} {error} onRetry={lastFailedOp ? retry : undefined}>
+	<SettingsRow label={config.label} {status} {error} onRetry={lastFailedOp ? retry : undefined}>
 		<MultiSelectAutocomplete
 			items={userItems}
 			values={allowed}
 			onAdd={(id) => void runOp({ action: 'add', userId: id })}
 			onRemove={(id) => void runOp({ action: 'remove', userId: id })}
-			placeholder="Add an admin…"
+			placeholder={config.placeholder}
 			showSublabel={true}
 			minChars={3}
-			lockedValues={[selfId]}
+			lockedValues={config.locked}
 			lockedReason="You can’t remove yourself"
 		/>
 		<p class="allowed-users-note">
-			Admins can access /pending and /settings. Changes take effect at the person’s next sign-in.
-			The <code>SLACK_SUPERUSER_ID</code> user always has access, and you can’t remove yourself.
+			{#if kind === 'admins'}
+				Admins can access /pending and /settings. Changes take effect at the person’s next sign-in.
+				The <code>SLACK_SUPERUSER_ID</code> user always has access, and you can’t remove yourself.
+			{:else}
+				Moderators can use the Slack commands — <code>/member-note</code>, the info commands,
+				<code>/list-commands</code>, and both message shortcuts — and read the member lookup page,
+				but can’t link accounts or open any other admin page. In Slack, changes apply immediately;
+				on the web, at the person’s next sign-in. Info commands post as the person running them, so
+				each moderator must sign in to this site once before those work.
+			{/if}
 		</p>
 	</SettingsRow>
 </div>

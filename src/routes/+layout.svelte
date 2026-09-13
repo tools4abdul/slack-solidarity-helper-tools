@@ -48,6 +48,10 @@
 	// Blocked users still see it — access.ts redirects them to an explanation,
 	// which is friendlier than a link that silently is not there.
 	const showTurfLink = $derived(signedIn && !data.isAdmin);
+
+	// Moderators' one page besides turf checkout, as a plain link for the same
+	// reason: two links read better than a two-item menu.
+	const showMemberLink = $derived(signedIn && !data.isAdmin && data.isModerator);
 </script>
 
 <!-- One <title> for the whole app. Individual pages used to set their own and
@@ -82,6 +86,13 @@
 		<div class="user-info">
 			<ThemeToggle mode={data.themeMode} />
 			{#if signedIn}
+				{#if showMemberLink}
+					<a
+						class="header-link"
+						href={resolve('/members')}
+						aria-current={page.url.pathname === '/members' ? 'page' : undefined}>Member lookup</a
+					>
+				{/if}
 				{#if showTurfLink}
 					<a
 						class="header-link"

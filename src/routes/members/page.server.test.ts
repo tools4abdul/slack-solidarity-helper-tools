@@ -23,6 +23,12 @@ vi.mock('$lib/server/member-notes', () => ({ listNotes: vi.fn() }));
 vi.mock('$lib/server/env', () => ({ SOLIDARITY_API_TOKEN: 'tok' }));
 
 const adminSession = { slackUserId: 'U_ADMIN', slackUserName: 'Admin', isAdmin: true };
+const moderatorSession = {
+	slackUserId: 'U_MOD',
+	slackUserName: 'Mo',
+	isAdmin: false,
+	isModerator: true,
+};
 
 function event(session: unknown, user?: string) {
 	return {
@@ -77,6 +83,18 @@ describe('page load', () => {
 	it('sets the page title', () => {
 		expect((load(event(adminSession)) as { pageTitle: string }).pageTitle).toBe('Volunteer lookup');
 	});
+
+	// The Slack "View member record" shortcut links moderators here.
+	it('lets a moderator look a member up, without the linking controls', () => {
+		const data = load(event(moderatorSession, 'U0TARGET1')) as { canLink: boolean };
+
+		expect(mockResolveMember).toHaveBeenCalledWith(expect.anything(), 'U0TARGET1');
+		expect(data.canLink).toBe(false);
+	});
+
+	it('gives an admin the linking controls', () => {
+		expect((load(event(adminSession)) as { canLink: boolean }).canLink).toBe(true);
+	});
 });
 
 describe('layout load', () => {
@@ -85,6 +103,11 @@ describe('layout load', () => {
 		['a non-admin', { ...adminSession, isAdmin: false }],
 	])('redirects %s', async (_label, session) => {
 		await expect(layoutLoad(event(session))).rejects.toBeDefined();
+	});
+
+	it('admits a moderator', async () => {
+		const data = (await layoutLoad(event(moderatorSession))) as MembersLayoutData;
+		expect(data.slackUsers).toHaveLength(1);
 	});
 
 	it('maps Slack users into picker items', async () => {
