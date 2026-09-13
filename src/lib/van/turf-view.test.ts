@@ -16,6 +16,7 @@ const HULL = JSON.stringify([
 function row(over: Partial<TurfRowInput> = {}): TurfRowInput {
 	return {
 		mapRouteId: 100,
+		mapRegionId: 10,
 		chapterId: 71,
 		name: 'Turf 01',
 		regionName: 'Cambridge North',
@@ -189,6 +190,25 @@ describe('toTurfView — freshness and claimability', () => {
 	it('never reports negative staleness on clock skew', () => {
 		const future = row({ lastRefreshedAt: '2026-08-22T18:00:00.000Z' });
 		expect(toTurfView(future, [], VOLUNTEER, NOW).refreshedMinutesAgo).toBe(0);
+	});
+
+	it('marks turf whose region VAN is re-cutting, without making it unclaimable', () => {
+		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
+			refreshingRegions: new Set([10]),
+		});
+		expect(view.updating).toBe(true);
+		// Story 4.5: an "updating" turf is still turf you can take. Blocking
+		// during a refresh would take the page down on the mornings it is
+		// busiest, and would protect only the people who happened to be
+		// claiming inside the window.
+		expect(view.claimable).toBe(true);
+	});
+
+	it('omits the updating flag entirely for every other region', () => {
+		const view = toTurfView(row(), [], VOLUNTEER, NOW, {
+			refreshingRegions: new Set([999]),
+		});
+		expect('updating' in view).toBe(false);
 	});
 
 	it('is claimable when available with a list number and doors left', () => {

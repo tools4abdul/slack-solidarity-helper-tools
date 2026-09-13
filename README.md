@@ -39,6 +39,7 @@ only page outside the auth guard.
 3. A "View by chapter →" link on each card goes to `/dashboard/solidarity` or `/dashboard/slack`, which stacks bars per chapter with a top-10 + "Other" rollup
 4. Chapters listed in `REPORT_EXCLUDED_CHAPTER_IDS` are omitted from both charts and from the weekly growth report
 5. Data comes from local tables — `solidarity_daily_snapshots` (written nightly by `/api/internal/solidarity-snapshot`) and `slack_joins` (written in real time by the `team_join` handler)
+6. Below them sits the canvassing half: a doors-cleared chart, the county canvassing leaderboard, and an LED sign carrying the countdown and the day's personal standings — all from the VAN turf checkout ledger (see [Canvassing numbers](#canvassing-numbers-doors-cleared))
 
 ### Weekly growth report
 
@@ -132,7 +133,6 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
    - `users:read` — to list workspace members, and to read the display name at login
    - `users:read.email` — to read member email addresses
    - `channels:read`, `groups:read` — to list channels for the settings pickers and `#channel` links
-   - `files:read` — to read the door-knocking channel's Conversation Codes canvas
    - `commands` — for the `/member-note` slash command and the message shortcuts
 
    If you are adding `commands` to an existing app, **reinstall the app** afterwards and re-copy the bot token if it changes.
@@ -248,11 +248,6 @@ INTERNAL_CRON_SECRET=long-random-string           # required for /api/internal/*
 APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
-DOOR_KNOCK_PROVIDER=openfield                         # optional; which canvassing tool supplies the numbers
-OPENFIELD_BASE_URL=https://yourcampaign.openfield.ai  # optional; enables the door-knock snapshot
-OPENFIELD_USERNAME=service-account-username           # a dedicated Openfield volunteer account
-OPENFIELD_PASSWORD=service-account-password
-DOOR_KNOCK_CHANNEL_ID=C012AB3CD                       # channel whose "Conversation Codes" canvas lists codes
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
@@ -264,9 +259,9 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 
 The one exception is `/api/internal/van-export-callback`, which VAN calls. VAN **requires** a `webhookUrl` on every export job, stores it, and echoes it back on every later read of that job — so the URL it holds carries a per-turf HMAC (`?turf=&token=`) keyed by `INTERNAL_CRON_SECRET` rather than the secret itself. A leak of one of those tokens buys a queue drain for one turf and nothing else; the secret would have opened all seven internal endpoints. Rotating `INTERNAL_CRON_SECRET` invalidates outstanding tokens, so in-flight export jobs fall back to being collected by the next scheduled `van-sync` run.
 
-The `OPENFIELD_*`/`DOOR_KNOCK_*` vars enable the nightly door-knock snapshot (`/api/internal/door-knock-snapshot`), which records each turf's doors-knocked total for the day. The dashboard's "Doors knocked" chart appears once the first snapshot lands.
+**Openfield is retired, and so is the provider seam it sat behind.** `DOOR_KNOCK_PROVIDER`, `OPENFIELD_BASE_URL`/`_USERNAME`/`_PASSWORD` and `DOOR_KNOCK_CHANNEL_ID` are no longer read by anything, and the nightly snapshot, its workflow, its on-demand refresh endpoint and the Slack canvas watcher are gone with it. Deployments can delete those secrets, and the Slack app no longer needs the `files:read` scope or the `file_change` event subscription.
 
-`DOOR_KNOCK_PROVIDER` picks which canvassing tool the numbers come from; it defaults to `openfield`, so an existing deployment needs no new variable. The Openfield provider reads conversation codes from the door-knocking channel's "Conversation Codes" canvas (requires the `files:read` bot scope), logs into Openfield with the service account, and pulls each code's leaderboard. Everything tool-specific lives behind the `DoorKnockProvider` interface in `src/lib/server/door-knock-provider.ts` — adding another canvassing tool (MiniVAN, say) means implementing `dateFor` + `collect` under `src/lib/server/door-knock/<tool>/` and registering it in `src/lib/server/door-knock-env.ts`; the snapshot writer, the refresh throttle, the schema, and the charts are unaffected.
+The dashboard's canvassing numbers now come from the VAN turf checkout ledger — see [Canvassing numbers](#canvassing-numbers-doors-cleared) below.
 
 ### 6. Run the server
 
@@ -510,6 +505,28 @@ Signup-trend dashboard. The whole site (and any future route) is gated by a root
 - Range preset (7/30/90 days) lives in `?days=` so reloads and shared links preserve the selection. Invalid or out-of-range values snap to the nearest preset.
 - Each card has a visually-hidden `<table>` with the same data so screen readers can read out per-day values.
 
+### Canvassing numbers: doors cleared
+
+Everything the dashboard says about canvassing comes from one place: the turf checkout ledger (`van_turf_checkouts`). A volunteer claims a turf, walks it, marks it done, and VAN's next recount of that region says how many doors left it (`confirmed_door_delta`, see [sync-back verification](#sync-back-verification-did-the-doors-actually-move)). Summing those is the whole metric.
+
+**The words changed with the source, and the difference matters.**
+
+| Metric                         | Where it comes from                                    | Honest reading                                                                                                                                                  |
+| ------------------------------ | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Doors cleared**              | `confirmed_door_delta` summed over completed checkouts | Doors that left a turf after it was walked — **not** doors knocked. A not-home door stays on the list, so an unanswered knock leaves no trace VAN will show us. |
+| **Turfs completed**            | the ledger                                             | Exact, and known the instant the volunteer taps the button.                                                                                                     |
+| **Canvassers out**             | the ledger                                             | Distinct volunteers who completed turf in the window.                                                                                                           |
+| ~~Attempts~~, ~~contact rate~~ | —                                                      | Gone, not zero-filled. VAN cannot express either, and putting doors-cleared in both columns would render a permanent 100% contact rate.                         |
+
+Four things worth knowing before reading the board:
+
+- **Two clocks.** Turfs completed and canvassers out are instant; doors cleared arrive when VAN re-cuts the region, usually that night. Every surface that totals doors says how many turfs are still awaiting the recount rather than quietly counting them as zero.
+- **It only sees turf claimed through this app.** Turf an organizer assigns by hand in VAN never passes through a checkout row and is invisible here. The trade buys numbers that reconcile: the chapter totals, the per-person ticker and the chart are all the same rows counted three ways.
+- **Days are campaign-local.** A canvass that finished at 9 pm ET on Saturday counts as Saturday, not as Sunday UTC.
+- **The series starts at the cutover.** Openfield's history is still in the database and no longer on any chart: it counted doors _knocked_ in a different timezone, so a week-over-week comparison across the boundary would divide one metric by another. The first VAN week shows raw volume with the percentage suppressed, and the board says so.
+
+The risk to watch is the turf-cutting rule: a map region must be cut with a **"not yet contacted" filter**, or `doorCount` never shrinks, every delta is zero, and the board reads as a campaign that knocked nothing. The sync posts a warning to the turf channel when a run of completions clears nothing, naming both possible causes (see `unmovedDoorsWarning`).
+
 ### `GET /api/dashboard/signups`
 
 The same data the dashboard pages render, as JSON. Requires an active session (no admin gate).
@@ -601,6 +618,52 @@ Whatever time is left in the request budget after the catalog then goes to drain
 **The chapter → folder mapping is an input, not something the sync discovers.** A chapter with no folder mapped has no turf, and the first sync is a no-op until an admin fills it in. Run `npm run van:check` to list the folder ids the key can see.
 
 **Retirement is scoped to folders that actually synced.** A folder that errors — a 403 on an ungranted tier, a VAN outage — is skipped, and its turf is left exactly as it was. Retiring turf the sync merely failed to look at would release live checkouts under volunteers already standing on the doorstep. When a route genuinely disappears it is stamped `retiredAt` (never deleted, so a live checkout still renders) and any active claim on it is released with `releaseReason = 'retired'`.
+
+#### Doors remaining: the refresh cycle
+
+**VAN owns the answer to "which doors are left", and a refresh is how we ask.** A Map Region refresh re-runs the region against current data; doors that have been contacted fall out of its routes and `doorCount` shrinks. Nothing in this app computes remaining doors — it asks, waits, and reads the new number.
+
+Two paths, on purpose:
+
+- **Nightly**, one call per folder (`POST /folders/{id}/mapRegions/refresh`), between 01:00 and 05:00 campaign time. Overnight because a refresh replaces a region's routes, and doing that at 14:00 on a Saturday costs a volunteer the block they are standing on.
+- **On demand**, one call per region (`POST /folders/{id}/mapRegions/{id}/refresh`), when a volunteer marks turf complete. **Deferred while anyone else still holds turf in that region** — the want is recorded and sent once they are done, and the nightly sweep covers it either way.
+
+Neither exceeds **one refresh per region per hour**, including failures: a region VAN keeps rejecting is retried hourly, not on all 37 ticks of the day. State lives in `van_region_refreshes`.
+
+**A refresh is asynchronous and VAN never says it finished.** The POST returns immediately; the evidence is that the region's `dateRefreshed` has moved, which shows up on a later catalog read. Until then the region is "in flight" and its turf renders with an _Updating_ chip — still claimable. A key that never populates `dateRefreshed` (the demo key does not) clears the flag on a six-hour timeout instead.
+
+**The volunteer page is never blocked during a refresh**, and that is a deliberate rejection of the obvious fix. Blocking would protect only people who would have claimed inside the refresh window, while the stale-number exposure spans the whole claim — someone who claimed ten minutes earlier has exactly the same problem. The reconciliation below covers the whole claim instead.
+
+#### Reconciliation: keeping live claims honest
+
+After every catalog read, each live claim is compared against what VAN now says (`src/lib/server/van/reconcile-store.ts`):
+
+| What changed            | What happens                                                                                                                                                                                                                                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The printed list number | DM the holder the new one; the turf stays theirs. `van_turf_checkouts.issued_list_number` records what they were given, and is what the comparison is against.                                                                                                                                                          |
+| Doors dropped to zero   | Release the claim, DM to say the turf is walked out. Zero, not "nearly zero" — 95% cleared describes someone about to finish, and taking their turf then is exactly wrong.                                                                                                                                              |
+| VAN re-cut the turf     | The route is retired and the claim released (atomically, in the catalog write). The reconciliation pairs the dead route to its replacement **by region and name**, moves the claim onto it, and DMs the new list number. If the pairing is ambiguous or the replacement is already taken, the DM says the turf is gone. |
+
+**Route ids do not survive a refresh.** Verified against the live API: refreshing a region retired routes 56456/56457 and returned 56502/56503 with new saved lists. A `mapRouteId` names a _cut_ of a piece of ground, not the ground — which is why pairing falls back to region plus name, and why nothing may hold a route id across a refresh window.
+
+**A turf whose printed list disappears is deliberately not a DM.** The volunteer already has the number and MiniVAN already has their doors, and there is no stamp that would keep such a message from repeating on every tick. It is counted in the sync's `missingListNumber` instead.
+
+#### Sync-back verification: did the doors actually move?
+
+**Nothing this app builds writes canvass results.** MiniVAN sends them to VAN natively when the volunteer taps Sync, so our job is verification, not transport — and the verification is one subtraction.
+
+A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region. Once VAN's own `dateRefreshed` for that turf moves past the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
+
+- **The count dropped.** The knocks are in VAN. Nothing is sent.
+- **It did not move.** Almost always the results are still on a phone. The volunteer gets one DM asking them to open MiniVAN and tap Sync, and the completion shows up under **Suspect completions** on `/turfs/organizer`.
+
+The details that keep it honest:
+
+- **The baseline is claim time, not completion time.** A nightly refresh can land mid-walk; measuring from completion would credit the volunteer with nothing for everything they synced before it.
+- **A delta is only ever written with evidence behind it.** No refresh since the completion means no stamp — the check simply runs again next tick. After a week it gives up and the delta stays NULL. `NULL` means "not checked" and `0` means "checked, nothing moved", and the organizer view says something different for each; a NULL is never rendered as a zero.
+- **A turf that grew clamps to zero** rather than reporting negative doors cleared.
+- **One nudge per completion, ever.** The stamp is the idempotency key, and it is written before the DM is sent: a measurement that waited on Slack would leave completions permanently unchecked whenever an account is deactivated.
+- **The DM asks rather than accuses.** A flat count usually means an unsynced phone, but not always, so the message says what was seen, what it usually means, and what to check — and says outright that nothing is wrong if they already synced.
 
 #### Ledger housekeeping: expiry sweep and warning DMs
 

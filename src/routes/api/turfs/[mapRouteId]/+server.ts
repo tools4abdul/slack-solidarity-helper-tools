@@ -99,8 +99,10 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		kind: action === 'complete' ? 'complete' : 'release',
 	});
 	if (!result.ok) return json({ error: result.message }, { status: result.status });
-	// Story 5.6 hangs off completion: refresh the turf's map region, then stamp
-	// confirmedDoorDelta. A zero delta means MiniVAN was never synced. That
-	// needs van/refresh.ts (Story 4), which the demo key cannot exercise.
+	// Story 5.6 hangs off completion, and finishes elsewhere: `endClaim` records
+	// a refresh request for this turf's region, the sweep sends it, and once
+	// VAN's re-cut lands the door-delta check stamps `confirmedDoorDelta` and
+	// nudges the volunteer if nothing moved. Nothing to do here — the whole
+	// point is that the volunteer's request does not wait on VAN.
 	return json({ ok: true });
 };

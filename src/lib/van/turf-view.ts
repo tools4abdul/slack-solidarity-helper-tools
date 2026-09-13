@@ -31,6 +31,7 @@ import { visibleTurfState, type VolunteerStatus } from './turf-status.js';
  *  can grow without widening what the browser can be shown. */
 export interface TurfRowInput {
 	mapRouteId: number;
+	mapRegionId: number;
 	chapterId: number;
 	name: string;
 	regionName: string;
@@ -96,6 +97,22 @@ export interface TurfView {
 	 */
 	claimBlockedReason?: string;
 	/**
+	 * True when VAN is re-cutting the region this turf is in.
+	 *
+	 * A soft, per-turf state, and deliberately not a block. Story 4.5 rejects
+	 * freezing the page during a refresh: the instinct protects only the people
+	 * who would have claimed during the window, while the stale-number exposure
+	 * spans the whole claim — and an on-demand refresh fires on completion, so a
+	 * Saturday morning of volunteers finishing turf would keep the page dark
+	 * exactly when it is busiest. The turf stays claimable; this says only that
+	 * its door count is about to move.
+	 *
+	 * Omitted rather than false when it does not apply, like `retired` below:
+	 * a refresh touches one region at a time and every other row should not pay
+	 * a key name for it.
+	 */
+	updating?: true;
+	/**
 	 * True when VAN no longer has this route — an organizer re-cut the area.
 	 *
 	 * Retired turf is normally filtered out of the payload entirely. It reaches
@@ -111,6 +128,13 @@ export interface TurfView {
 	 */
 	retired?: true;
 }
+
+/** Claim rules, plus the one piece of state that is about the turf rather than
+ *  about the viewer: which regions VAN is currently re-cutting. */
+export type TurfViewOptions = ClaimOptions & {
+	/** Map region ids with a refresh in flight. See `TurfView.updating`. */
+	refreshingRegions?: ReadonlySet<number>;
+};
 
 /** A turf that can actually be drawn. */
 export type MappableTurf = TurfView & { centre: LatLng; bounds: BoundingBox };
@@ -187,7 +211,7 @@ export function toTurfView(
 	claims: readonly ClaimSnapshot[],
 	viewer: { slackUserId: string; isAdmin: boolean },
 	now: Date,
-	options: ClaimOptions = {},
+	options: TurfViewOptions = {},
 ): TurfView {
 	const snapshot = {
 		mapRouteId: row.mapRouteId,
@@ -232,6 +256,7 @@ export function toTurfView(
 		...(decision.ok || visible.status !== 'available'
 			? {}
 			: { claimBlockedReason: decision.message }),
+		...(options.refreshingRegions?.has(row.mapRegionId) ? { updating: true as const } : {}),
 		...(row.retiredAt ? { retired: true as const } : {}),
 	};
 }

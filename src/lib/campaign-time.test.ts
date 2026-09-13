@@ -4,6 +4,7 @@ import {
 	campaignDayKey,
 	campaignDayLabel,
 	campaignTimeLabel,
+	campaignWeekStart,
 } from './campaign-time.js';
 
 describe('campaignDayKey', () => {
@@ -70,10 +71,34 @@ describe('campaignTimeLabel', () => {
 	});
 });
 
+describe('campaignWeekStart', () => {
+	it('returns the Monday of the campaign-local week', () => {
+		// Thursday 2026-09-10 → Monday 2026-09-07.
+		expect(campaignWeekStart(new Date('2026-09-10T18:00:00.000Z')).toISOString()).toBe(
+			'2026-09-07T00:00:00.000Z',
+		);
+	});
+
+	it('still says last Monday late on a Sunday evening, when UTC has rolled over', () => {
+		// 01:30Z Monday is 21:30 Sunday in Detroit. The trap this function exists
+		// for: a UTC week boundary would jump the board a week ahead into an
+		// empty window while the Slack board still showed the real one.
+		expect(campaignWeekStart(new Date('2026-09-14T01:30:00.000Z')).toISOString()).toBe(
+			'2026-09-07T00:00:00.000Z',
+		);
+	});
+
+	it('treats Monday itself as the start of its own week', () => {
+		expect(campaignWeekStart(new Date('2026-09-07T14:00:00.000Z')).toISOString()).toBe(
+			'2026-09-07T00:00:00.000Z',
+		);
+	});
+});
+
 describe('CAMPAIGN_TIME_ZONE', () => {
 	// Pinned so a change is a deliberate edit rather than a drifting default —
-	// door-knock-leaderboard.ts and door-knock-projection.ts assume the same one.
-	it('is the campaign clock the door-knock modules already assume', () => {
+	// van/doors-leaderboard.ts and doors-projection.ts assume the same one.
+	it('is the campaign clock the canvassing modules already assume', () => {
 		expect(CAMPAIGN_TIME_ZONE).toBe('America/Detroit');
 	});
 });

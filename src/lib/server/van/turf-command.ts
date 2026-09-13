@@ -22,6 +22,7 @@
 import { formatDistance, haversineMeters, type LatLng } from '../../van/geometry.js';
 import { escapeMrkdwn } from '../slack-mrkdwn.js';
 import { statusLabel } from '../../van/turf-status.js';
+import { describeAge, oldestRefreshMinutes } from '../../van/turf-freshness.js';
 import type { TurfView } from '../../van/turf-view.js';
 import { normalizeZip } from './zip-centroid.js';
 
@@ -258,7 +259,7 @@ export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
 		}
 	}
 
-	const staleness = oldestRefresh(turfs);
+	const staleness = oldestRefreshMinutes(turfs);
 	if (staleness !== null) {
 		// Story 4.3: never imply live data. A volunteer who walks a turf on stale
 		// counts finds knocked doors and stops trusting the tool.
@@ -354,24 +355,6 @@ function startOverBlock(chapterId: number, location: LatLng | null): Block {
 function distanceTo(turf: TurfView, location: LatLng | null): number | null {
 	if (!location || !turf.centre) return null;
 	return haversineMeters(location, turf.centre);
-}
-
-/** The most stale refresh across the page — the honest one to quote, since a
- *  volunteer reads one number and applies it to the whole list. */
-function oldestRefresh(turfs: readonly TurfView[]): number | null {
-	let oldest: number | null = null;
-	for (const turf of turfs) {
-		if (turf.refreshedMinutesAgo === null) continue;
-		if (oldest === null || turf.refreshedMinutesAgo > oldest) oldest = turf.refreshedMinutesAgo;
-	}
-	return oldest;
-}
-
-function describeAge(minutes: number): string {
-	if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
-	const hours = Math.round(minutes / 60);
-	if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
-	return `${Math.round(hours / 24)} days ago`;
 }
 
 export interface ClaimedInput {

@@ -172,4 +172,64 @@ describe('endClaim', () => {
 		const all = await rows();
 		expect(all[0]).toMatchObject({ released_at: null });
 	});
+
+	it('asks for a refresh of the region a completed turf sits in', async () => {
+		// Story 4.2's on-demand path. A completion is the one moment we know
+		// VAN's door counts are wrong: the volunteer just knocked doors that are
+		// still on the list.
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+
+		const result = await endClaim(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_FIRST',
+			now: NOW,
+			kind: 'complete',
+		});
+
+		expect(result).toMatchObject({ ok: true });
+		const res = await client.execute(
+			'SELECT folder_id, map_region_id, requested_at, last_request_at, in_flight_since FROM van_region_refreshes',
+		);
+		expect(res.rows).toEqual([
+			{
+				folder_id: 1,
+				map_region_id: 1,
+				requested_at: NOW.toISOString(),
+				// A want, not a call: the sweep decides when to send it, and may
+				// defer while other volunteers are still out in that region.
+				last_request_at: null,
+				in_flight_since: null,
+			},
+		]);
+	});
+
+	it('does not ask for a refresh when turf is simply handed back', async () => {
+		// Nothing was knocked, so nothing about VAN's counts has changed.
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+		await endClaim(db, { mapRouteId: 100, slackUserId: 'U_FIRST', now: NOW, kind: 'release' });
+		const res = await client.execute('SELECT count(*) AS n FROM van_region_refreshes');
+		expect(res.rows[0].n).toBe(0);
+	});
+});
+
+describe('claimTurf — what the volunteer was told', () => {
+	it('records the list number it issued, for the reconciliation to compare against', async () => {
+		const result = await claimTurf(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_FIRST',
+			slackUserName: 'Dana',
+			now: NOW,
+		});
+
+		expect(result).toMatchObject({ ok: true, printedListNumber: 'L-100' });
+		const res = await client.execute(
+			'SELECT issued_list_number, claim_door_count FROM van_turf_checkouts',
+		);
+		// van_turfs.printed_list_number is what VAN says today; this is what the
+		// volunteer has in their hand. Story 4.5 is the comparison of the two.
+		expect(res.rows[0].issued_list_number).toBe('L-100');
+		// And the baseline Story 5.6 measures the completion against. van_turfs
+		// holds one door count and it moves, so it has to be captured here.
+		expect(res.rows[0].claim_door_count).toBe(250);
+	});
 });

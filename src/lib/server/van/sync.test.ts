@@ -14,6 +14,13 @@ function makeDb(existing: unknown[] = [], deletedRows: unknown[] = [{ mapRouteId
 	 *  retirement clears the geometry queue and not something else. */
 	const deletedFrom: unknown[] = [];
 	const db = {
+		// The retirement group is applied as one libsql batch (see sync.ts), so
+		// the stub has to accept one. Drizzle hands `batch` un-awaited builders
+		// and returns their results in order; here the builders are already
+		// thenables that recorded what they were asked to do when they were
+		// built, so awaiting them in order reproduces both the writes and the
+		// per-statement `.returning()` rows the caller counts.
+		batch: async (statements: PromiseLike<unknown>[]) => Promise.all(statements),
 		delete: (table: unknown) => {
 			deletedFrom.push(table);
 			return {

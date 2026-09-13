@@ -4,6 +4,8 @@
 	import LedBoard from '$lib/components/dashboard/LedBoard.svelte';
 	import ChartCard from '$lib/components/dashboard/ChartCard.svelte';
 	import SlackLeaderboard from '$lib/components/dashboard/SlackLeaderboard.svelte';
+	import DoorTicker from '$lib/components/dashboard/DoorTicker.svelte';
+	import DoorsLeaderboard from '$lib/components/dashboard/DoorsLeaderboard.svelte';
 	import {
 		buildOverviewFrame,
 		buildDetailFrame,
@@ -13,13 +15,11 @@
 	import type { DaySignups } from '$lib/server/dashboard-signups.js';
 	import type { PageData } from './$types';
 
-	// Door-knock reporting is off the dashboard until the VAN door stats are
-	// fully available: the doors chart, the doors leaderboard, the LED
-	// ticker's scrolling day leaders, and the countdown's projected-doors line
-	// are all unrendered here, but every piece they need is still in the tree
-	// — DoorTicker.svelte, DoorsLeaderboard.svelte, CountdownBanner's
-	// `projectedDoors` prop, and the door-knock server modules. Re-hooking is
-	// a matter of pointing those at the VAN feed and putting the markup back.
+	// The four door-knock surfaces — the chart, the county leaderboard, the LED
+	// ticker and the countdown's projection — are all back, reading the VAN
+	// turf checkout ledger rather than Openfield's nightly snapshot (plan.md
+	// Story 9). The metric changed with the source: these are doors CLEARED
+	// (doors that left a turf after it was walked), not doors knocked.
 
 	let { data }: { data: PageData } = $props();
 
@@ -36,11 +36,13 @@
 
 	let solidarityMode = $state<ChartMode>('overview');
 	let slackMode = $state<ChartMode>('overview');
+	let doorsMode = $state<ChartMode>('detail');
 
 	function buildState(
 		source: { ok: true; days: DaySignups[] } | { ok: false; error: string },
 		mode: ChartMode,
 		label: string,
+		options: { totalOverlay?: boolean } = {},
 	): CardState {
 		if (!source.ok) return { kind: 'error', message: source.error };
 		// Always build the detail frame: even in overview mode its band list
@@ -52,23 +54,41 @@
 			kind: 'ready',
 			frame,
 			// The dark daily-total marker shows the deduped member count above
-			// the stacked bands.
-			showTotalOverlay: mode === 'detail',
+			// the stacked bands — meaningless for doors, where the total is just
+			// the sum of the bands.
+			showTotalOverlay: (options.totalOverlay ?? true) && mode === 'detail',
 			legendBands: detailFrame.bands,
 		};
 	}
 
 	const solidarityState = $derived(buildState(data.solidarity, solidarityMode, 'Solidarity'));
 	const slackState = $derived(buildState(data.slack, slackMode, 'Slack'));
+	const doorsState = $derived(buildState(data.doors, doorsMode, 'Doors', { totalOverlay: false }));
+
+	// The doors card appears once anything has been walked (or on a load
+	// error), rather than sitting empty through the weeks before the first
+	// canvass — same rule the Openfield card used.
+	const showDoors = $derived(data.doors.ok === false || doorsState.kind !== 'empty');
 </script>
 
 <main>
-	<!-- The LED sign, currently carrying the countdown alone; the scrolling
-	     day-leader ticker rejoins it with the VAN door stats. -->
-	{#if data.countdown}
+	<!-- One LED sign carrying the countdown and the day's personal standings.
+	     Either half can be absent — an unconfigured countdown no longer hides
+	     the ticker, and vice versa. -->
+	{#if data.countdown || data.doorsTicker.entries.length > 0}
 		<div class="countdown-row">
 			<LedBoard ratio={data.ticker.ratio} fit={data.ticker.fit}>
-				<CountdownBanner label={data.countdown.label} endAt={data.countdown.endAt} />
+				{#if data.countdown}
+					<CountdownBanner
+						label={data.countdown.label}
+						endAt={data.countdown.endAt}
+						projectedDoors={data.countdown.projectedDoors}
+					/>
+				{/if}
+				<DoorTicker
+					entries={data.doorsTicker.entries}
+					columnsPerSecond={data.tickerColumnsPerSecond}
+				/>
 			</LedBoard>
 		</div>
 	{/if}
@@ -83,6 +103,18 @@
 		<ChartCard title="Slack signups" cardState={slackState} bind:mode={slackMode} />
 		<SlackLeaderboard leaderboard={data.leaderboard} />
 	</div>
+
+	{#if showDoors}
+		<div class="doors-row">
+			<ChartCard
+				title="Doors cleared"
+				cardState={doorsState}
+				bind:mode={doorsMode}
+				showMultiChapterNote={false}
+			/>
+			<DoorsLeaderboard leaderboard={data.doorsLeaderboard} />
+		</div>
+	{/if}
 </main>
 
 <style>
@@ -101,11 +133,15 @@
 		justify-content: flex-end;
 		margin-bottom: 1.5rem;
 	}
-	.slack-row {
+	.slack-row,
+	.doors-row {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) 320px;
 		gap: 1.5rem;
 		align-items: start;
+	}
+	.doors-row {
+		margin-top: 1.5rem;
 	}
 	@media (max-width: 960px) {
 		.slack-row {

@@ -160,6 +160,13 @@
 	.leaderboard__total :global(strong) {
 		color: var(--color-text);
 	}
+	/* Same treatment as a note in the per-row metrics: a caveat on the number
+	   above it rather than another number. Used by the doors board for the
+	   turfs whose doors VAN has not counted yet. */
+	.leaderboard__total :global(.leaderboard__note) {
+		font-style: italic;
+		color: var(--color-text-faint);
+	}
 	.leaderboard__empty,
 	.leaderboard__error {
 		color: var(--color-text-muted);

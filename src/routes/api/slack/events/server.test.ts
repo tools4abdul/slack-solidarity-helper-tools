@@ -14,14 +14,7 @@ const mockInsertValues = vi.hoisted(() =>
 );
 const mockInsert = vi.hoisted(() => vi.fn(() => ({ values: mockInsertValues })));
 const mockLoadSettings = vi.hoisted(() => vi.fn());
-const mockHandleFileChange = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
-
 vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
-// Whether a watcher exists at all is door-knock-env's decision (only the
-// Openfield provider needs one) — this route just forwards to whatever it gets.
-vi.mock('$lib/server/door-knock-env', () => ({
-	doorKnockCanvasWatcher: vi.fn(() => ({ handleFileChange: mockHandleFileChange })),
-}));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
 vi.mock('$lib/server/autocomplete-sources', () => ({
 	getSlackChannels: vi.fn(async () => ({ items: [], fetchedAt: 0 })),
@@ -152,21 +145,18 @@ describe('POST /api/slack/events', () => {
 		expect(mockConversationsInvite).not.toHaveBeenCalled();
 	});
 
-	it('delegates file_change events to the canvas watcher', async () => {
+	it('ignores file_change events, which nothing watches any more', async () => {
+		// The Openfield canvas watcher lived here and retired with it (Story 9).
+		// Kept as a test rather than deleted outright: Slack will go on sending
+		// these while the event subscription exists, and they must stay a quiet
+		// 200 rather than an unhandled branch.
 		const body = JSON.stringify({
 			type: 'event_callback',
 			event: { type: 'file_change', file_id: 'F0B3E3SNU01' },
 		});
 		const res = await POST({ request: makeSignedRequest(body) } as never);
 		expect(res.status).toBe(200);
-		expect(mockHandleFileChange).toHaveBeenCalledWith('F0B3E3SNU01');
-	});
-
-	it('ignores file_change events without a file_id', async () => {
-		const body = JSON.stringify({ type: 'event_callback', event: { type: 'file_change' } });
-		const res = await POST({ request: makeSignedRequest(body) } as never);
-		expect(res.status).toBe(200);
-		expect(mockHandleFileChange).not.toHaveBeenCalled();
+		expect(mockConversationsInvite).not.toHaveBeenCalled();
 	});
 
 	it('invites user to county channel and sends DM on team_join', async () => {

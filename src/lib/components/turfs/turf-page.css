@@ -626,6 +626,33 @@ main {
 	color: var(--color-text);
 }
 
+/* "Updating" is a footnote on a row that already carries a status chip, so it
+   is the one chip that does NOT get a tint: two filled pills side by side read
+   as two competing statuses, and this one is subordinate to whichever status
+   sits next to it. An outline in the faint text colour says "extra
+   information" without claiming the row. */
+.badge-updating {
+	background: transparent;
+	border: 1px solid var(--color-border);
+	color: var(--color-text-muted);
+	font-weight: 600;
+}
+
+/* The age of a door count, sitting under the count itself. Smaller and muted:
+   the number is the answer, the age is the caveat on it. */
+.detail-age {
+	display: block;
+	font-size: var(--font-size-xs);
+	font-weight: 400;
+	color: var(--color-text-muted);
+}
+
+.detail-note {
+	margin: 0 0 10px;
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
 /* --- The expanded half of a selected row --------------------------------- */
 
 .row-detail {

@@ -1,0 +1,1 @@
+ALTER TABLE `van_turf_checkouts` ADD `claim_door_count` integer;

@@ -149,22 +149,11 @@ export const ATTENDEE_SYNC_AMBIGUOUS_MIN_SAMPLE = intEnv('ATTENDEE_SYNC_AMBIGUOU
 // Callers pass it as ?key=<value>.
 export const INTERNAL_CRON_SECRET = get('INTERNAL_CRON_SECRET');
 
-// Which canvassing tool supplies the door-knock numbers (see
-// door-knock-env.ts). Empty means "openfield", so existing deployments need no
-// new variable.
-export const DOOR_KNOCK_PROVIDER = get('DOOR_KNOCK_PROVIDER').trim().toLowerCase();
-
-// Openfield door-knocking integration (all four required for the nightly
-// door-knock snapshot; the endpoint 500s with a clear message when unset).
-// OPENFIELD_BASE_URL e.g. https://your-org.openfield.ai (no trailing /).
-// The username/password belong to a dedicated service account — the snapshot
-// logs in like a volunteer to read per-conversation leaderboards.
-// DOOR_KNOCK_CHANNEL_ID is the Slack channel whose "Conversation Codes"
-// canvas tab lists the active codes (e.g. #door-knocking).
-export const OPENFIELD_BASE_URL = get('OPENFIELD_BASE_URL').replace(/\/+$/, '');
-export const OPENFIELD_USERNAME = get('OPENFIELD_USERNAME');
-export const OPENFIELD_PASSWORD = get('OPENFIELD_PASSWORD');
-export const DOOR_KNOCK_CHANNEL_ID = get('DOOR_KNOCK_CHANNEL_ID');
+// Door-knock numbers used to come from Openfield, via DOOR_KNOCK_PROVIDER,
+// OPENFIELD_BASE_URL/USERNAME/PASSWORD and DOOR_KNOCK_CHANNEL_ID. All five are
+// gone: the canvassing board is now built from the VAN turf checkout ledger
+// (plan.md Story 9), so there is no second canvassing tool to configure and no
+// service account to keep alive. Deployments can drop those secrets.
 
 // NGP VAN / VoteBuilder turf checkout (see src/lib/server/van-env.ts and
 // specs/010-van-turf-checkout/plan.md). All optional: the app must boot and

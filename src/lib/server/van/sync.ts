@@ -41,6 +41,14 @@ export interface CatalogSyncResult {
 	 *  silent: it is the only signal that geometry work was abandoned, as
 	 *  distinct from having failed. */
 	geometryQueueDropped: number;
+	/** Every region this run actually read, with VAN's own `dateRefreshed`.
+	 *
+	 *  The confirmation half of the refresh cycle (Story 4.1): a refresh is
+	 *  asynchronous and VAN never says it finished, so the evidence is that a
+	 *  region's dateRefreshed has moved on a LATER read. Reported from here
+	 *  rather than re-fetched because this is the read — asking again would be
+	 *  a second call for an answer we already have. */
+	regionsRead: Array<{ folderId: number; mapRegionId: number; dateRefreshed: string | null }>;
 	/** True when /minivanExports or /printedLists were unavailable — the sync
 	 *  still ran, with less cross-checking. */
 	degraded: string[];
@@ -101,6 +109,7 @@ export async function runCatalogSync(
 			// Nothing is mapped, so nothing was read and nothing can be retired —
 			// this branch never reaches the queue sweep.
 			geometryQueueDropped: 0,
+			regionsRead: [],
 			degraded,
 			warnings: [
 				'No chapters are mapped to VAN folders — add them under Settings → Chapter → VAN folders.',
@@ -182,6 +191,14 @@ export async function runCatalogSync(
 	const existing = await db.select().from(vanTurfs);
 	const plan = planCatalogSync({ folders, printedLists, existing, minivanExports, now });
 
+	const regionsRead = folders.flatMap((folder) =>
+		folder.regions.map((region) => ({
+			folderId: folder.folderId,
+			mapRegionId: region.mapRegionId,
+			dateRefreshed: region.dateRefreshed ?? null,
+		})),
+	);
+
 	if (options.dryRun) {
 		return {
 			foldersSynced: folders.length,
@@ -194,6 +211,7 @@ export async function runCatalogSync(
 			// A dry run cannot know how many queue rows exist without reading them,
 			// and the retirement count already shows the blast radius.
 			geometryQueueDropped: 0,
+			regionsRead,
 			degraded,
 			warnings: [...warnings, ...plan.warnings],
 			plan,
@@ -207,33 +225,26 @@ export async function runCatalogSync(
 			.onConflictDoUpdate({ target: vanTurfs.mapRouteId, set: row });
 	}
 
-	// Batched: un-mapping a folder retires every turf in it at once, and one
-	// inArray() of that size exceeds SQLite's bound-parameter cap.
-	for (const batch of chunked(plan.retirements)) {
-		await db
-			.update(vanTurfs)
-			.set({ retiredAt: now.toISOString() })
-			.where(inArray(vanTurfs.mapRouteId, batch));
-	}
-
-	// Retirement releases live claims: a volunteer holding turf that no longer
-	// exists in VAN has a list number that will not load in MiniVAN, and
-	// leaving the claim in place hides that from both of them.
-	let claimsReleased = 0;
-	for (const batch of chunked(plan.retirements)) {
-		const released = await db
-			.update(vanTurfCheckouts)
-			.set({ releasedAt: now.toISOString(), releaseReason: 'retired' })
-			.where(
-				and(
-					inArray(vanTurfCheckouts.mapRouteId, batch),
-					isNull(vanTurfCheckouts.releasedAt),
-					isNull(vanTurfCheckouts.completedAt),
-				),
-			)
-			.returning({ id: vanTurfCheckouts.id });
-		claimsReleased += released.length;
-	}
+	// The retirement group, written as ONE atomic batch.
+	//
+	// Three writes belong together — stamp `retiredAt`, release the claims on
+	// those routes, drop their queued geometry — and Story 4.5.3 is about what a
+	// reader sees while they are in flight. Applied separately, there is a
+	// window where a turf is retired but a volunteer is still recorded as
+	// holding it (the drift report reads that pair and would call it a
+	// collision), and a longer one where a claim is released while its turf
+	// still looks live, which is a turf two people can hold. libsql runs a batch
+	// as an implicit transaction, so a reader sees all of it or none of it.
+	//
+	// The upserts above are deliberately NOT in the batch. There are hundreds of
+	// them on a real catalog, and the exposure they carry is a page that shows
+	// some turfs' new door counts alongside others' old ones — which the UI
+	// already labels with the timestamp those counts came from. Atomicity there
+	// would cost a multi-megabyte statement to fix a cosmetic problem.
+	//
+	// Chunking is still per statement, not per batch: the parameter cap applies
+	// to one inArray(), and a batch of several capped statements is fine.
+	const retiredAt = now.toISOString();
 
 	// Retirement also abandons any geometry work still queued for that turf.
 	//
@@ -266,13 +277,48 @@ export async function runCatalogSync(
 				.map((row) => row.mapRouteId),
 		]),
 	];
-	let geometryQueueDropped = 0;
-	for (const batch of chunked(retiredRouteIds)) {
-		const dropped = await db
+
+	const retireStatements = chunked(plan.retirements).map((batch) =>
+		db.update(vanTurfs).set({ retiredAt }).where(inArray(vanTurfs.mapRouteId, batch)),
+	);
+
+	// Retirement releases live claims: a volunteer holding turf that no longer
+	// exists in VAN has a list number that will not load in MiniVAN, and leaving
+	// the claim in place hides that from both of them. The volunteer is told by
+	// reconcile-store.ts on this same run, which pairs the dead route to
+	// whatever VAN cut in its place.
+	const releaseStatements = chunked(plan.retirements).map((batch) =>
+		db
+			.update(vanTurfCheckouts)
+			.set({ releasedAt: retiredAt, releaseReason: 'retired' })
+			.where(
+				and(
+					inArray(vanTurfCheckouts.mapRouteId, batch),
+					isNull(vanTurfCheckouts.releasedAt),
+					isNull(vanTurfCheckouts.completedAt),
+				),
+			)
+			.returning({ id: vanTurfCheckouts.id }),
+	);
+
+	const dropStatements = chunked(retiredRouteIds).map((batch) =>
+		db
 			.delete(vanGeometryQueue)
 			.where(inArray(vanGeometryQueue.mapRouteId, batch))
-			.returning({ mapRouteId: vanGeometryQueue.mapRouteId });
-		geometryQueueDropped += dropped.length;
+			.returning({ mapRouteId: vanGeometryQueue.mapRouteId }),
+	);
+
+	let claimsReleased = 0;
+	let geometryQueueDropped = 0;
+	const statements = [...retireStatements, ...releaseStatements, ...dropStatements];
+	if (statements.length > 0) {
+		const results = (await db.batch(
+			statements as unknown as Parameters<typeof db.batch>[0],
+		)) as unknown as unknown[][];
+		const releaseFrom = retireStatements.length;
+		const dropFrom = releaseFrom + releaseStatements.length;
+		for (let i = releaseFrom; i < dropFrom; i++) claimsReleased += results[i]?.length ?? 0;
+		for (let i = dropFrom; i < results.length; i++) geometryQueueDropped += results[i]?.length ?? 0;
 	}
 
 	// plan.unretirements needs no write of its own — the upsert above already
@@ -353,6 +399,7 @@ export async function runCatalogSync(
 		geometryQueued: plan.geometryQueue.length,
 		claimsReleased,
 		geometryQueueDropped,
+		regionsRead,
 		degraded,
 		warnings: [...warnings, ...plan.warnings],
 		plan,

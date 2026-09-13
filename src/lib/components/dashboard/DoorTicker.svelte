@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { TickerEntry } from '$lib/server/door-knock-ticker.js';
+	import type { TickerEntry } from '$lib/server/van/doors-store.js';
 	import { DEFAULT_TICKER_COLUMNS_PER_SECOND } from '$lib/ticker-speed.js';
 
 	interface Props {
@@ -80,9 +80,14 @@
 				<span class="cell__name">{entry.canvasser}</span>
 				<!-- No separators between count, unit and region: colour does that
 				     job, and a punctuation glyph would just eat LED columns. -->
+				<!-- Doors when VAN has counted them, turfs when it has not. The two
+				     clocks again: a completion is known instantly and its doors are
+				     not, so someone who finished half an hour ago would otherwise
+				     scroll past as a zero. -->
 				<span class="cell__doors"
-					><span class="cell__count">{entry.doors.toLocaleString('en-US')}</span><span
-						class="cell__unit">doors</span
+					><span class="cell__count"
+						>{(entry.doors > 0 ? entry.doors : entry.turfs).toLocaleString('en-US')}</span
+					><span class="cell__unit">{entry.doors > 0 ? 'doors' : 'turfs'}</span
 					>{#if entry.chapter}<span class="cell__region">{entry.chapter}</span>{/if}</span
 				>
 			</div>
@@ -90,7 +95,7 @@
 	{/snippet}
 
 	<div class="ticker" style={trackStyle} aria-hidden="true">
-		<p class="ticker__header">Most doors knocked today:</p>
+		<p class="ticker__header">Most doors cleared today:</p>
 		<div class="ticker__track">
 			<!-- Only the first copy is measured; the second exists to cover the
 			     seam and is identical by construction. -->
@@ -99,10 +104,14 @@
 		</div>
 	</div>
 
-	<ol class="ticker__sr" aria-label="Most doors knocked today">
+	<ol class="ticker__sr" aria-label="Most doors cleared today">
 		{#each entries as entry (entry.canvasser)}
 			<li>
-				{entry.canvasser}: {entry.doors} doors knocked{entry.chapter ? ` in ${entry.chapter}` : ''}
+				{entry.canvasser}: {entry.doors > 0
+					? `${entry.doors} doors cleared`
+					: `${entry.turfs} ${entry.turfs === 1 ? 'turf' : 'turfs'} walked, doors not counted yet`}{entry.chapter
+					? ` in ${entry.chapter}`
+					: ''}
 			</li>
 		{/each}
 	</ol>

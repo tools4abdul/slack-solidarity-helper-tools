@@ -20,7 +20,7 @@
 
 /** How a turf checkout changed. */
 export type ActivityKind =
-	'claimed' | 'completed' | 'given-back' | 'expired' | 'blocked' | 'retired';
+	'claimed' | 'completed' | 'given-back' | 'expired' | 'blocked' | 'retired' | 'walked-out';
 
 /** The joined `van_turf_checkouts` + `van_turfs` columns this module reads.
  *  Narrow on purpose: neither table's row type can widen what the page shows
@@ -127,6 +127,13 @@ function endKind(releaseReason: string | null): ActivityKind {
 			return 'blocked';
 		case 'retired':
 			return 'retired';
+		// Story 4.5's reconciliation: VAN refreshed the region and the turf came
+		// back with no doors in it, so the app checked it back in. Kept apart
+		// from 'given-back' for the reason in this file's header — the volunteer
+		// did not hand it back, and an organizer reading the history should not
+		// see them as having dropped it.
+		case 'walked-out':
+			return 'walked-out';
 		// 'volunteer', 'admin', and anything a later migration adds read as a
 		// deliberate hand-back rather than throwing: an unknown reason should
 		// still appear in the history, since a missing row is the one outcome
@@ -205,12 +212,15 @@ export function activityLabel(kind: ActivityKind): string {
 			return 'Released (blocked)';
 		case 'retired':
 			return 'Released (turf retired)';
+		case 'walked-out':
+			return 'Released (no doors left)';
 	}
 }
 
-/** Order the summary reads in: the two that mean work happened, then the four
- *  ways a claim ends without it — the one the volunteer chose, then the three
- *  nobody chose. */
+/** Order the summary reads in: the two that mean work happened, then the ways a
+ *  claim ends without it — the one the volunteer chose, then the four nobody
+ *  chose. 'walked-out' sits with those last four because the app ended the
+ *  claim, even though the outcome is a good one. */
 export const ACTIVITY_KINDS: readonly ActivityKind[] = [
 	'claimed',
 	'completed',
@@ -218,12 +228,21 @@ export const ACTIVITY_KINDS: readonly ActivityKind[] = [
 	'expired',
 	'blocked',
 	'retired',
+	'walked-out',
 ];
 
 export type ActivityCounts = Record<ActivityKind, number>;
 
 export function emptyCounts(): ActivityCounts {
-	return { claimed: 0, completed: 0, 'given-back': 0, expired: 0, blocked: 0, retired: 0 };
+	return {
+		claimed: 0,
+		completed: 0,
+		'given-back': 0,
+		expired: 0,
+		blocked: 0,
+		retired: 0,
+		'walked-out': 0,
+	};
 }
 
 /** Total events across every kind — the "of M" in the page's "showing N of M". */

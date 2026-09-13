@@ -1,51 +1,36 @@
-// Projects the doors that will be knocked between now and the countdown
+// Projects the doors that will be cleared between now and the countdown
 // deadline: the recent daily pace extrapolated over the knock-time remaining.
-// This is the incremental figure the banner promises ("~N more doors knocked
-// between today and when the timer hits 0"), so it deliberately does NOT
-// include the doors already knocked to date.
+// This is the incremental figure the banner promises ("~N more doors between
+// today and when the timer hits 0"), so it deliberately does NOT include the
+// doors already cleared.
 //
-// Pace = mean of the last PROJECTION_WINDOW_DAYS snapshot dates (or as many
-// as exist). Dates come from door_knock_daily, which records a row per code
-// even on zero-door days, so quiet days correctly drag the pace down —
-// but days the snapshot didn't run at all are simply absent and don't.
+// Pace = mean of the last PROJECTION_WINDOW_DAYS days that had any completions.
+// Days with no completions at all are absent rather than zero, so a week off
+// does not drag the pace to nothing — which is the right behaviour for a
+// campaign that canvasses at weekends, and the opposite of what the Openfield
+// version did (it recorded a row per code every night, so quiet days counted).
+// Worth knowing when reading the number: it is a pace per ACTIVE day.
 //
-// Same import discipline as the other read-side modules: no $env/$lib
-// imports, db injected.
+// The day totals it reads now come from the checkout ledger (doors-store.ts);
+// this file is only the arithmetic, and takes them as an argument.
 
-import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { asc, sum } from 'drizzle-orm';
-import { doorKnockDaily } from './schema.js';
-
-export const PROJECTION_WINDOW_DAYS = 7;
-
-export interface DoorKnockDayTotal {
+/** One campaign day's doors cleared. */
+export interface DoorsDayTotal {
 	date: string;
 	total: number;
 }
 
-/** All-time per-date door totals, ascending by date. */
-export async function loadDoorKnockDayTotals(
-	db: LibSQLDatabase<Record<string, unknown>>,
-): Promise<DoorKnockDayTotal[]> {
-	// SUM() comes back as a string (drizzle types it that way, and libsql can
-	// hand back either), hence the Number() on the way out.
-	const rows = await db
-		.select({ date: doorKnockDaily.date, total: sum(doorKnockDaily.attempts) })
-		.from(doorKnockDaily)
-		.groupBy(doorKnockDaily.date)
-		.orderBy(asc(doorKnockDaily.date));
-	return rows.map((r) => ({ date: r.date, total: Number(r.total) }));
-}
+export const PROJECTION_WINDOW_DAYS = 7;
 
 /** The recent pace times the (fractional) canvassing days until `endAtMs` —
  *  i.e. the *additional* doors expected between `nowMs` and the deadline, NOT
- *  including the doors already knocked. The pace is per CANVASSING day (the
- *  snapshot rows are whole-day totals), so the remaining time counts only
+ *  including the doors already cleared. The pace is per CANVASSING day (each
+ *  total is a whole day's completions), so the remaining time counts only
  *  door-knocking hours (8 am – 9 pm America/Detroit) rather than assuming 24/7
  *  knocking. Null when there's no data to extrapolate from or the deadline is
  *  invalid/already passed. */
 export function projectDoorsAtDeadline(
-	dayTotals: DoorKnockDayTotal[],
+	dayTotals: DoorsDayTotal[],
 	endAtMs: number,
 	nowMs: number,
 ): number | null {

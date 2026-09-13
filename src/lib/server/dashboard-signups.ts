@@ -7,8 +7,8 @@
 // and standalone scripts.
 
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
-import { and, asc, gte, max, notInArray, sql, sum, type SQL } from 'drizzle-orm';
-import { doorKnockDaily, solidarityDailySnapshots } from './schema.js';
+import { and, asc, gte, notInArray, sql, type SQL } from 'drizzle-orm';
+import { solidarityDailySnapshots } from './schema.js';
 import { loadChapterNames } from './chapter-names.js';
 import { DISTINCT_TOTAL_SENTINEL } from './solidarity-snapshot.js';
 
@@ -73,13 +73,6 @@ async function latestSlackDate(
 	const rows = (await db.all(
 		sql`SELECT MAX(DATE(joined_at)) AS max FROM slack_joins WHERE joined_at IS NOT NULL`,
 	)) as Array<{ max: string | null }>;
-	return rows[0]?.max ?? null;
-}
-
-async function latestDoorKnockDate(
-	db: LibSQLDatabase<Record<string, unknown>>,
-): Promise<string | null> {
-	const rows = await db.select({ max: max(doorKnockDaily.date) }).from(doorKnockDaily);
 	return rows[0]?.max ?? null;
 }
 
@@ -269,50 +262,6 @@ async function loadSlack(
  *  buildDetailFrame. Door-knock chapter names have no Solidarity ids, so bands get
  *  stable synthetic ids (index into the window's sorted chapter names) —
  *  excludedChapterIds deliberately does not apply here. */
-export async function loadDoorKnockSignups(
-	db: LibSQLDatabase<Record<string, unknown>>,
-	options: { days: number },
-): Promise<DaySignups[]> {
-	const endDate = await latestDoorKnockDate(db);
-	if (endDate === null) return [];
-	const startDate = windowStartDate(endDate, options.days);
-	// Chapters can span several codes (metro city codes + a county code), so
-	// aggregate to (date, chapter) in SQL.
-	const rows = await db
-		.select({
-			date: doorKnockDaily.date,
-			chapterName: doorKnockDaily.chapterName,
-			attempts: sum(doorKnockDaily.attempts),
-		})
-		.from(doorKnockDaily)
-		.where(gte(doorKnockDaily.date, startDate))
-		.groupBy(doorKnockDaily.date, doorKnockDaily.chapterName)
-		.orderBy(asc(doorKnockDaily.date));
-
-	const chapterIds = new Map<string, number>(
-		[...new Set(rows.map((r) => r.chapterName))].sort().map((name, i) => [name, i + 1]),
-	);
-
-	const byDate = new Map<string, DaySignups>();
-	for (const r of rows) {
-		let day = byDate.get(r.date);
-		if (!day) {
-			day = { date: r.date, total: 0, byChapter: [] };
-			byDate.set(r.date, day);
-		}
-		day.byChapter.push({
-			chapterId: chapterIds.get(r.chapterName)!,
-			chapterName: r.chapterName,
-			count: Number(r.attempts),
-		});
-		day.total += Number(r.attempts);
-	}
-
-	const result = [...byDate.values()];
-	for (const d of result) d.byChapter.sort(sortByChapter);
-	result.sort((a, b) => a.date.localeCompare(b.date));
-	return result;
-}
 
 export async function getDashboardSignups(
 	db: LibSQLDatabase<Record<string, unknown>>,

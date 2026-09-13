@@ -163,13 +163,27 @@ export const channelWelcomeFlags = sqliteTable('channel_welcome_flags', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// ---------------------------------------------------------------------------
+// Openfield-era door-knock tables: DORMANT, and deliberately still declared.
+//
+// Openfield was retired with plan.md Story 9 — the canvassing board now reads
+// the VAN turf checkout ledger (van/doors-store.ts), and nothing writes or
+// reads the five tables below any more. They stay in the schema because the
+// tables still exist in the database and hold the campaign's door-knock
+// history; deleting the declarations would have drizzle-kit generate a DROP
+// TABLE and take that history with it.
+//
+// Their numbers are NOT comparable with the new board's. These count doors
+// KNOCKED (attempts, including not-homes) as reported by Openfield, stamped in
+// Openfield's own Pacific rollover zone. The VAN board counts doors CLEARED, in
+// campaign-local days. Anything that reads both is measuring two different
+// things — see plan.md 9.9 for why the series starts fresh instead.
+// ---------------------------------------------------------------------------
+
 // One row per (date, turf code): the turf's total door-knock attempts/contacts
-// for that day, captured by the nightly snapshot from whichever door-knock
-// provider is configured (see door-knock-provider.ts). `code` and
-// `chapter_name` mean whatever that provider says they mean — for Openfield, a
-// conversation code and the chapter the "Conversation Codes" Slack canvas
-// attributed it to at snapshot time. The date is likewise stamped in the
-// provider's rollover zone, NOT necessarily the campaign's.
+// for that day, captured by the nightly snapshot. `code` was an Openfield
+// conversation code and `chapter_name` the chapter its "Conversation Codes"
+// Slack canvas attributed it to at snapshot time.
 export const doorKnockDaily = sqliteTable(
 	'door_knock_daily',
 	{
@@ -720,9 +734,18 @@ export const vanChapterFolders = sqliteTable(
 	(table) => [primaryKey({ columns: [table.chapterId, table.folderId] })],
 );
 
-// One row per VAN Map Route. `mapRouteId` is VAN's own identifier and is
-// stable across refreshes — a refresh re-runs the route's saved list, it does
-// not renumber routes.
+// One row per VAN Map Route.
+//
+// `mapRouteId` is VAN's own identifier and it is NOT stable across a refresh —
+// this comment used to claim it was, and the plan's Story 4.6 was written to
+// settle the question. Verified against the live API on 2026-09-08: refreshing
+// region 508413 retired routes 56456/56457 and returned 56502/56503 in their
+// place, each with a new savedListId; a second re-cut produced 56507/56508/56509.
+// So a route id identifies a CUT of a piece of ground, not the ground. A
+// refresh therefore reads as "every route in this region vanished and new ones
+// appeared", the catalog sync retires the old rows, and van/refresh-reconcile.ts
+// is what pairs a volunteer's dead claim to its replacement — by region and
+// name, because there is no id in common to pair on.
 export const vanTurfs = sqliteTable(
 	'van_turfs',
 	{
@@ -800,11 +823,52 @@ export const vanTurfCheckouts = sqliteTable(
 		expiresAt: text('expires_at').notNull(),
 		releasedAt: text('released_at'),
 		completedAt: text('completed_at'),
-		/** 'volunteer' | 'expired' | 'admin' | 'retired' | 'blocked' */
+		/** 'volunteer' | 'expired' | 'admin' | 'retired' | 'blocked' | 'walked-out'
+		 *
+		 *  'walked-out' is the reconciliation's: VAN refreshed the region and the
+		 *  turf came back with no doors left in it, so there is nothing for the
+		 *  holder to knock. See van/refresh-reconcile.ts. */
 		releaseReason: text('release_reason'),
+		/** VAN's door count for this turf at the moment it was claimed.
+		 *
+		 *  The baseline half of `confirmedDoorDelta`. Recorded per claim rather
+		 *  than read from van_turfs later because van_turfs holds one number that
+		 *  moves — by the time a completion is checked, the count the volunteer
+		 *  started against is gone.
+		 *
+		 *  Claim-time rather than completion-time on purpose: a nightly refresh
+		 *  can land mid-walk, and measuring from completion would credit that
+		 *  volunteer with nothing for everything they synced before it. NULL on
+		 *  rows claimed before this column existed, which reads as "cannot be
+		 *  measured" rather than as zero. */
+		claimDoorCount: integer('claim_door_count'),
 		/** Doors that left the turf between claim and the post-completion
 		 *  refresh. Zero means the volunteer probably never synced MiniVAN. */
 		confirmedDoorDelta: integer('confirmed_door_delta'),
+		/** The MiniVAN list number this volunteer was actually given.
+		 *
+		 *  Not a duplicate of van_turfs.printed_list_number: that column is what
+		 *  VAN says TODAY, this one is what the holder was told, and the
+		 *  reconciliation in Story 4.5 is precisely the comparison of the two. A
+		 *  refresh can regenerate a printed list under a claim that is hours old,
+		 *  and without a record of what we issued there is no way to notice —
+		 *  the volunteer would walk up to a MiniVAN list that no longer loads.
+		 *
+		 *  NULL on rows claimed before this column existed, and on any claim
+		 *  whose DM has not landed yet. A null is read as "we have not told them
+		 *  anything to correct" and is adopted silently rather than announced:
+		 *  the alternative is one DM per outstanding claim on the deploy that
+		 *  adds the column, all of them saying the number did not change. */
+		issuedListNumber: text('issued_list_number'),
+		/** When the holder was told their turf had been re-cut out from under
+		 *  them, and what happened to their claim.
+		 *
+		 *  The idempotency key for that DM, in the shape of expiryWarnedAt above
+		 *  and for the same reason: the reconciliation runs on every sync tick,
+		 *  and a released claim stays released forever, so without a stamp the
+		 *  volunteer is told about the same re-cut 37 times a day. Stamped only
+		 *  after Slack accepted the message. */
+		recutNotifiedAt: text('recut_notified_at'),
 		/** When the T-6h expiry warning DM was successfully sent.
 		 *
 		 *  The idempotency key for that DM, and the reason it is a column rather
@@ -855,6 +919,50 @@ export const vanGeometryQueue = sqliteTable(
 	(table) => [index('van_geometry_queue_status').on(table.status)],
 );
 
+// One row per Map Region we have ever asked VAN to re-cut.
+//
+// VAN owns the answer to "which doors are left" — a refresh re-runs the region
+// against current data and contacted doors fall out of its routes (plan.md §2
+// Constraint C). This table is the bookkeeping around that call, and it exists
+// because the call is asynchronous, rate-worthy, and occasionally deferred:
+// nothing in VAN's response says a refresh finished, so the evidence has to be
+// stored and compared against on a later read.
+//
+// Keyed by folder AND region because that is what the endpoint takes: VAN
+// exposes POST /folders/{id}/mapRegions/refresh (the whole folder) and
+// POST /folders/{id}/mapRegions/{id}/refresh (one region). A region id alone is
+// not addressable.
+export const vanRegionRefreshes = sqliteTable(
+	'van_region_refreshes',
+	{
+		folderId: integer('folder_id').notNull(),
+		mapRegionId: integer('map_region_id').notNull(),
+		/** An on-demand refresh is wanted and has not been sent yet. Set when a
+		 *  volunteer completes turf in this region; cleared when the POST goes
+		 *  out. Non-null with a stale timestamp is the deferral (Story 4.5.2) —
+		 *  a region with other live claims waits rather than being re-cut under
+		 *  the people walking it. */
+		requestedAt: text('requested_at'),
+		/** When we last POSTed a refresh for this region, by either path. The
+		 *  once-an-hour throttle reads this and nothing else. */
+		lastRequestAt: text('last_request_at'),
+		/** 'nightly' | 'completion' — which path sent that last request. */
+		lastRequestKind: text('last_request_kind'),
+		/** Set when a POST is accepted, cleared when VAN's own dateRefreshed
+		 *  moves past it (or when it times out). While this is set the turf page
+		 *  marks the region's turf as updating — a soft per-turf state that stays
+		 *  claimable, rather than the page-wide block Story 4.5 rejects. */
+		inFlightSince: text('in_flight_since'),
+		/** Last failed POST. The sweep also reports failures as sync warnings,
+		 *  which reach the turf channel, but those scroll away — this is what an
+		 *  operator can still read a week later when asking why one region's
+		 *  counts stopped moving. */
+		lastError: text('last_error'),
+		lastErrorAt: text('last_error_at'),
+	},
+	(table) => [primaryKey({ columns: [table.folderId, table.mapRegionId] })],
+);
+
 // What the last catalog sync could actually see, so a read can tell "VAN says
 // nothing is distributed" apart from "we could not ask VAN".
 //
@@ -896,6 +1004,8 @@ export type NewVanTurfRow = typeof vanTurfs.$inferInsert;
 
 export type VanTurfCheckoutRow = typeof vanTurfCheckouts.$inferSelect;
 export type NewVanTurfCheckoutRow = typeof vanTurfCheckouts.$inferInsert;
+
+export type VanRegionRefreshRow = typeof vanRegionRefreshes.$inferSelect;
 
 export type VanBlockedUserRow = typeof vanBlockedUsers.$inferSelect;
 export type NewVanBlockedUserRow = typeof vanBlockedUsers.$inferInsert;

@@ -31,7 +31,7 @@ type Db = ReturnType<typeof drizzle>;
 /** Reasons that mean the claim was ended by something other than the
  *  volunteer. Mirrors `endKind` in turf-activity.ts — the two must agree, or
  *  the summary counts and the list below them tell different stories. */
-const INVOLUNTARY_REASONS = ['expired', 'blocked', 'retired'] as const;
+const INVOLUNTARY_REASONS = ['expired', 'blocked', 'retired', 'walked-out'] as const;
 
 export interface ActivityQuery {
 	/** Null means every chapter. Admin-only page, so an unscoped read is the
@@ -95,6 +95,7 @@ export async function loadActivityCounts(db: Db, query: ActivityQuery): Promise<
 			expired: countWhen(sql`${released} and ${vanTurfCheckouts.releaseReason} = 'expired'`),
 			blocked: countWhen(sql`${released} and ${vanTurfCheckouts.releaseReason} = 'blocked'`),
 			retired: countWhen(sql`${released} and ${vanTurfCheckouts.releaseReason} = 'retired'`),
+			walkedOut: countWhen(sql`${released} and ${vanTurfCheckouts.releaseReason} = 'walked-out'`),
 		})
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
@@ -109,6 +110,7 @@ export async function loadActivityCounts(db: Db, query: ActivityQuery): Promise<
 		expired: Number(row?.expired ?? 0),
 		blocked: Number(row?.blocked ?? 0),
 		retired: Number(row?.retired ?? 0),
+		'walked-out': Number(row?.walkedOut ?? 0),
 	};
 }
 

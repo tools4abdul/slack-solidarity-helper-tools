@@ -123,6 +123,10 @@ interface TurfSeed {
 	heldBy: string | null;
 	expiresInHours: number | null;
 	refreshedMinutesAgo: number;
+	/** VAN is re-cutting this turf's region right now. Set on one demo turf so
+	 *  organizers previewing the flow see the state and can ask about it — it
+	 *  is a chip on a still-claimable row, not a lock (Story 4.5.4). */
+	updating?: true;
 	seed: number;
 }
 
@@ -160,7 +164,10 @@ const SEEDS: TurfSeed[] = [
 		status: 'available',
 		heldBy: null,
 		expiresInHours: null,
-		refreshedMinutesAgo: 42,
+		// Freshly re-cut in VAN: its door count is about to move, and it is
+		// still claimable while that happens.
+		refreshedMinutesAgo: 3,
+		updating: true,
 		seed: 1002,
 	},
 	{
@@ -560,6 +567,7 @@ function buildTurf(seed: TurfSeed, viewer: { isAdmin: boolean }): DemoTurf {
 		...(decision.ok || visible.status !== 'available'
 			? {}
 			: { claimBlockedReason: decision.message }),
+		...(seed.updating ? { updating: true as const } : {}),
 	};
 }
 
