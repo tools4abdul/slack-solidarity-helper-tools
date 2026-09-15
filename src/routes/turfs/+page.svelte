@@ -474,23 +474,40 @@
 						someone else gets sent to the same doors.
 					</p>
 
+					<!-- Both buttons hand the turf back. They differ in what the
+					     ledger records, and the volunteer is the only one who knows
+					     which happened, so each says what it credits and what it
+					     costs rather than leaving the choice to a verb. -->
 					<div class="card-actions">
-						<button
-							type="button"
-							class="claim-btn"
-							disabled={busy[turf.mapRouteId]}
-							onclick={() => act(turf, 'complete')}
-						>
-							I've finished this turf
-						</button>
-						<button
-							type="button"
-							class="ghost-btn"
-							disabled={busy[turf.mapRouteId]}
-							onclick={() => act(turf, 'release')}
-						>
-							Give this turf back
-						</button>
+						<div class="action-choice">
+							<button
+								type="button"
+								class="claim-btn"
+								disabled={busy[turf.mapRouteId]}
+								aria-describedby="walked-hint-{turf.mapRouteId}"
+								onclick={() => act(turf, 'complete')}
+							>
+								I walked this turf
+							</button>
+							<p class="action-hint" id="walked-hint-{turf.mapRouteId}">
+								Credits your doors and asks VAN to re-cut the area. Sync MiniVAN first, or it counts
+								as zero doors.
+							</p>
+						</div>
+						<div class="action-choice">
+							<button
+								type="button"
+								class="ghost-btn"
+								disabled={busy[turf.mapRouteId]}
+								aria-describedby="unwalked-hint-{turf.mapRouteId}"
+								onclick={() => act(turf, 'release')}
+							>
+								Give it back unwalked
+							</button>
+							<p class="action-hint" id="unwalked-hint-{turf.mapRouteId}">
+								Returns the turf to the list for someone else. Nothing is credited to you.
+							</p>
+						</div>
 					</div>
 				</article>
 			</section>

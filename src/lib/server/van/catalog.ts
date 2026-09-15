@@ -121,6 +121,13 @@ function distributionIndex(exports: VanMinivanExport[]): Map<string, string> {
 	return index;
 }
 
+/** First five names, then a count of the rest — a warning names the turf an
+ *  organizer has to go and fix, not every turf in the folder. */
+function sampleNames(names: readonly string[]): string {
+	const sample = names.slice(0, 5).join(', ');
+	return names.length > 5 ? `${sample}, +${names.length - 5} more` : sample;
+}
+
 /**
  * Diff VAN's current catalog against what we have stored.
  *
@@ -139,6 +146,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 
 	const upserts: NewVanTurfRow[] = [];
 	const missingListNumbers: string[] = [];
+	const listNumberDisagreements: string[] = [];
 	const unretirements: number[] = [];
 	const geometryQueue: Array<{ mapRouteId: number; savedListId: number }> = [];
 	const seen = new Set<number>();
@@ -154,17 +162,15 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				// The Map Region response is authoritative for the list number;
 				// /printedLists only fills a gap. When both exist and disagree,
 				// someone regenerated the list — take VAN's route-level answer
-				// and say so, rather than silently handing out a stale number.
+				// and flag the turf, rather than silently handing out a stale
+				// number. The numbers themselves stay out of the warning: it is
+				// posted to a channel, and a list number is the credential that
+				// pulls a turf's doors down in MiniVAN.
 				const routeNumber = route.printedList?.number?.trim() || null;
 				const backfill = listIndex.get(`${folder.folderId}:${nameKey(route.name)}`) ?? null;
-				let printedListNumber = routeNumber ?? backfill;
-				if (routeNumber && backfill && routeNumber !== backfill) {
-					warnings.push(
-						`Turf "${route.name}" has printed list ${routeNumber} on its route but ` +
-							`${backfill} in /printedLists — using ${routeNumber}.`,
-					);
-					printedListNumber = routeNumber;
-				}
+				const printedListNumber = routeNumber ?? backfill;
+				const listNumberDisagrees =
+					routeNumber !== null && backfill !== null && routeNumber !== backfill;
 
 				const routeSize = route.routeSize ?? 0;
 				const hullSourceRouteSize = prior?.hullSourceRouteSize ?? null;
@@ -223,16 +229,23 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				// Collected rather than warned per-turf: a folder cut but not yet
 				// printed would otherwise post one Slack line per route.
 				if (!printedListNumber) missingListNumbers.push(row.name);
+				if (listNumberDisagrees) listNumberDisagreements.push(row.name);
 			}
 		}
 	}
 
 	if (missingListNumbers.length > 0) {
-		const sample = missingListNumbers.slice(0, 5).join(', ');
-		const more = missingListNumbers.length > 5 ? `, +${missingListNumbers.length - 5} more` : '';
 		warnings.push(
 			`${missingListNumbers.length} turf(s) have no MiniVAN list number and are not claimable ` +
-				`until someone generates their printed lists in VAN: ${sample}${more}.`,
+				`until someone generates their printed lists in VAN: ${sampleNames(missingListNumbers)}.`,
+		);
+	}
+
+	if (listNumberDisagreements.length > 0) {
+		warnings.push(
+			`${listNumberDisagreements.length} turf(s) have a different MiniVAN list number on the ` +
+				`route than in /printedLists — the route's number is the one being issued. Check the ` +
+				`printed list in VAN if that is the wrong one: ${sampleNames(listNumberDisagreements)}.`,
 		);
 	}
 

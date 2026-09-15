@@ -1,18 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
-const mockEnsureSeeded = vi.hoisted(() => vi.fn());
 const mockSaveUser = vi.hoisted(() => vi.fn());
 const mockDeleteUser = vi.hoisted(() => vi.fn());
 const mockValidateUser = vi.hoisted(() => vi.fn());
-const mockGetSlackUsers = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/slack', () => ({ slack: {} }));
 vi.mock('$lib/server/env', () => ({ SLACK_SUPERUSER_ID: 'USUPER' }));
-vi.mock('$lib/server/autocomplete-sources', () => ({ getSlackUsers: mockGetSlackUsers }));
 vi.mock('$lib/server/settings', () => ({
-	ensureAllowedUsersSeeded: mockEnsureSeeded,
 	saveAllowedUser: mockSaveUser,
 	deleteAllowedUser: mockDeleteUser,
 }));
@@ -44,15 +40,9 @@ function makeEvent(
 describe('POST /api/settings/allowed-users', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockEnsureSeeded.mockResolvedValue(undefined);
 		mockSaveUser.mockResolvedValue(undefined);
-		mockDeleteUser.mockResolvedValue(undefined);
+		mockDeleteUser.mockResolvedValue('deleted');
 		mockValidateUser.mockResolvedValue({ ok: true, displayName: 'Dana' });
-		mockGetSlackUsers.mockResolvedValue({
-			items: [{ id: 'UDANA', name: 'Dana', realName: 'Dana D.' }],
-			stale: false,
-			fetchedAt: 0,
-		});
 	});
 
 	it('returns 401 when not authenticated', async () => {
@@ -82,20 +72,16 @@ describe('POST /api/settings/allowed-users', () => {
 		expect(mockDeleteUser).not.toHaveBeenCalled();
 	});
 
-	it('add: validates, seeds with display names, then saves the validated name', async () => {
+	it('add: validates, then saves the validated name', async () => {
 		const res = await POST(makeEvent(authed, { action: 'add', userId: 'UDANA' }) as never);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 
 		expect(mockValidateUser).toHaveBeenCalledWith(expect.anything(), 'UDANA');
-		expect(mockEnsureSeeded).toHaveBeenCalledWith(expect.anything(), new Map([['UDANA', 'Dana']]));
 		expect(mockSaveUser).toHaveBeenCalledWith(
 			expect.anything(),
 			{ slackUserId: 'UDANA', displayName: 'Dana' },
 			{ id: 'U123', name: 'Alice' },
-		);
-		expect(mockEnsureSeeded.mock.invocationCallOrder[0]).toBeLessThan(
-			mockSaveUser.mock.invocationCallOrder[0]!,
 		);
 	});
 
@@ -108,7 +94,6 @@ describe('POST /api/settings/allowed-users', () => {
 		const res = await POST(makeEvent(authed, { action: 'add', userId: 'UNOPE' }) as never);
 		expect(res.status).toBe(400);
 		expect(mockSaveUser).not.toHaveBeenCalled();
-		expect(mockEnsureSeeded).not.toHaveBeenCalled();
 	});
 
 	it('add: 503 when the user list is transiently unavailable', async () => {
@@ -118,15 +103,7 @@ describe('POST /api/settings/allowed-users', () => {
 		expect(mockSaveUser).not.toHaveBeenCalled();
 	});
 
-	it('add: a getSlackUsers failure only costs the seed names, not the write', async () => {
-		mockGetSlackUsers.mockRejectedValue(new Error('slack down'));
-		const res = await POST(makeEvent(authed, { action: 'add', userId: 'UDANA' }) as never);
-		expect(res.status).toBe(200);
-		expect(mockEnsureSeeded).toHaveBeenCalledWith(expect.anything(), undefined);
-		expect(mockSaveUser).toHaveBeenCalledTimes(1);
-	});
-
-	it('remove: seeds then deletes without live-list validation', async () => {
+	it('remove: deletes without live-list validation', async () => {
 		const res = await POST(makeEvent(authed, { action: 'remove', userId: 'UDANA' }) as never);
 		expect(res.status).toBe(200);
 		expect(mockValidateUser).not.toHaveBeenCalled();
@@ -134,9 +111,7 @@ describe('POST /api/settings/allowed-users', () => {
 			id: 'U123',
 			name: 'Alice',
 		});
-		expect(mockEnsureSeeded.mock.invocationCallOrder[0]).toBeLessThan(
-			mockDeleteUser.mock.invocationCallOrder[0]!,
-		);
+		expect(mockValidateUser).not.toHaveBeenCalled();
 	});
 
 	it('remove: refuses to remove your own id', async () => {
@@ -155,6 +130,20 @@ describe('POST /api/settings/allowed-users', () => {
 			id: 'USUPER',
 			name: 'Root',
 		});
+	});
+
+	it('remove: 409 when the store refuses to remove the last admin', async () => {
+		mockDeleteUser.mockResolvedValue('last-admin');
+		const res = await POST(makeEvent(authed, { action: 'remove', userId: 'UDANA' }) as never);
+		expect(res.status).toBe(409);
+		expect((await res.json()).error).toMatch(/only admin/);
+	});
+
+	it('remove: a row that was already gone still reports success', async () => {
+		mockDeleteUser.mockResolvedValue('not-found');
+		const res = await POST(makeEvent(authed, { action: 'remove', userId: 'UGONE' }) as never);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ ok: true });
 	});
 
 	it('returns 400 for a non-JSON body', async () => {

@@ -20,10 +20,25 @@ const MAX_RETRIES = 5;
 const MAX_RETRY_AFTER_SECONDS = 60;
 const DEFAULT_RETRY_AFTER_SECONDS = 30;
 
-function parseRetryAfter(raw: string | null): number {
-	const parsed = parseInt(raw ?? '', 10);
-	if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_RETRY_AFTER_SECONDS;
-	return Math.min(parsed, MAX_RETRY_AFTER_SECONDS);
+/**
+ * How long to wait before retrying a 429, in seconds.
+ *
+ * A server that names a delay is authoritative — it knows when its own window
+ * reopens — so `Retry-After` is honored as sent, capped only against an upstream
+ * returning something absurd. Escalation applies to the delay we *invent* when
+ * no header is sent: a second blind retry at the same interval is a guess that
+ * has already been shown wrong, so each one waits double the last.
+ *
+ * The ceiling keeps an exhausted budget inside a few minutes, which matters
+ * because this helper also backs the settings-page autocomplete, where an admin
+ * is holding a request open.
+ *
+ * `attempt` is 1 for the first retry.
+ */
+function backoffSeconds(header: string | null, attempt: number): number {
+	const named = parseInt(header ?? '', 10);
+	if (Number.isFinite(named) && named >= 0) return Math.min(named, MAX_RETRY_AFTER_SECONDS);
+	return Math.min(DEFAULT_RETRY_AFTER_SECONDS * 2 ** (attempt - 1), MAX_RETRY_AFTER_SECONDS);
 }
 
 /** Tracks retries used against a MAX_RETRIES budget. Pass the same object
@@ -54,9 +69,12 @@ export async function fetchWithRetry(
 			);
 		}
 		budget.retriesUsed++;
-		const retryAfter = parseRetryAfter(res.headers.get('Retry-After'));
-		console.warn(`[${logTag}] solidarity rate limited — waiting ${retryAfter}s`);
-		await new Promise((r) => setTimeout(r, retryAfter * 1000));
+		const wait = backoffSeconds(res.headers.get('Retry-After'), budget.retriesUsed);
+		console.warn(
+			`[${logTag}] solidarity rate limited — waiting ${wait}s ` +
+				`(retry ${budget.retriesUsed}/${MAX_RETRIES})`,
+		);
+		await new Promise((r) => setTimeout(r, wait * 1000));
 	}
 }
 

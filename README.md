@@ -214,6 +214,12 @@ For each person who should have access to `/pending`:
 
 - Open their profile in Slack → **...** menu → **Copy member ID**
 
+Admins live in the `allowed_slack_users` table and are edited on `/settings` →
+**Allowed Slack users**. There is no environment variable for the list: a fresh install
+starts with it empty, so set `SLACK_SUPERUSER_ID` to your own member ID before the first
+deploy — it is the only way to reach `/settings` and grant the first admin, and the only
+way back in if the database is unreadable. The last remaining admin cannot be removed.
+
 ### 3. Create a Turso database
 
 1. Sign up at [turso.tech](https://turso.tech) (free tier)
@@ -250,8 +256,7 @@ SLACK_BOT_TOKEN=xoxb-your-token-here
 SLACK_CLIENT_ID=your-client-id
 SLACK_CLIENT_SECRET=your-client-secret
 SLACK_SIGNING_SECRET=your-signing-secret-here
-SLACK_ALLOWED_USER_IDS=U012AB3CD,U012AB3CE        # admin allowlist (fallback/seed for the DB-backed list)
-SLACK_SUPERUSER_ID=U012AB3CD                      # optional; always-admin escape hatch
+SLACK_SUPERUSER_ID=U012AB3CD                      # always-admin escape hatch; the only way to grant the first admin
 SLACK_TRACKING_CHANNEL_ID=C012AB3CD
 SLACK_GROWTH_REPORT_CHANNEL_ID=C012AB3CD          # where the weekly growth report posts
 SLACK_GROWTH_REPORT_RANKING_ALPHA=0.7             # optional; power-law exponent for ranking
@@ -476,7 +481,7 @@ If the same email is submitted again, the existing record is updated with the ne
 
 ### `GET /pending`
 
-Protected by Slack OAuth. Redirects unauthenticated users to Sign in with Slack. Only users in the admin allowlist (the DB-backed `allowed_slack_users` table, falling back to `SLACK_ALLOWED_USER_IDS` while that table is empty) are granted access; the `SLACK_SUPERUSER_ID` user is always granted access regardless of the list. Displays a web page listing volunteers who have requested help but still haven't joined the workspace.
+Protected by Slack OAuth. Redirects unauthenticated users to Sign in with Slack. Only users in the admin allowlist (the DB-backed `allowed_slack_users` table, edited on `/settings`) are granted access; the `SLACK_SUPERUSER_ID` user is always granted access regardless of the list. Displays a web page listing volunteers who have requested help but still haven't joined the workspace.
 
 The underlying JSON is also available at `GET /api/pending`:
 
@@ -524,7 +529,7 @@ Updates the status of a request. Admin-only (`403` for a signed-in non-admin). `
 
 ### `GET /`, `GET /dashboard/solidarity`, `GET /dashboard/slack`
 
-Signup-trend dashboard. The whole site (and any future route) is gated by a root layout guard that redirects unauthenticated visitors to `/auth/slack`; any workspace member who completes OAuth can view the dashboard (no admin gate). `/pending` keeps its own admin allowlist check (DB-backed with `SLACK_ALLOWED_USER_IDS` fallback, plus the `SLACK_SUPERUSER_ID` escape hatch).
+Signup-trend dashboard. The whole site (and any future route) is gated by a root layout guard that redirects unauthenticated visitors to `/auth/slack`; any workspace member who completes OAuth can view the dashboard (no admin gate). `/pending` keeps its own admin allowlist check (the DB-backed `allowed_slack_users` table, plus the `SLACK_SUPERUSER_ID` escape hatch).
 
 - `/` renders two non-interactive overview cards (Solidarity, Slack) showing daily totals.
 - `/dashboard/solidarity` and `/dashboard/slack` render stacked-by-chapter bars with the top 10 chapters named and the rest rolled into an "Other" band. The Slack page also overlays a per-day distinct-user total marker (a member who joined multiple chapters in one day is counted in each band but only once in the daily total).
@@ -927,7 +932,7 @@ fly secrets set \
   SLACK_CLIENT_ID=... \
   SLACK_CLIENT_SECRET=... \
   SLACK_SIGNING_SECRET=... \
-  SLACK_ALLOWED_USER_IDS=U012AB3CD \
+  SLACK_SUPERUSER_ID=U012AB3CD \
   SLACK_TRACKING_CHANNEL_ID=C012AB3CD \
   SLACK_GROWTH_REPORT_CHANNEL_ID=C012AB3CD \
   REPORT_EXCLUDED_CHAPTER_IDS=1008 \

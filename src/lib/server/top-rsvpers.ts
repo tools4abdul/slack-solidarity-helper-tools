@@ -22,7 +22,7 @@
 //   * A member in more than one chapter lands in the single chapter where most
 //     of their RSVPs went, so each person appears on exactly one chapter's list.
 
-import { fetchPaginated, fetchWithRetry } from './solidarity-paginate.js';
+import { fetchPaginated } from './solidarity-paginate.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -525,27 +525,18 @@ async function fetchEvents(token: string): Promise<RawEvent[]> {
 }
 
 /** RSVPs on one session. `session_id` is the only event_rsvps filter verified
- *  against the live API — see the note at the top of this file. */
+ *  against the live API — see the note at the top of this file.
+ *
+ *  Unpaced: the caller sleeps PACE_MS between sessions, and one session's RSVPs
+ *  are rarely more than a page or two. */
 async function fetchSessionRsvps(token: string, sessionId: number): Promise<RawRsvp[]> {
-	const all: RawRsvp[] = [];
-	const budget = { retriesUsed: 0 };
-	for (let offset = 0; offset < 5000; offset += 100) {
-		const res = await fetchWithRetry(
-			`https://api.solidarity.tech/v1/event_rsvps?session_id=${sessionId}&full_user_payload=false&_limit=100&_offset=${offset}`,
-			{ headers: { Authorization: `Bearer ${token}` } },
-			`rsvp list for session ${sessionId}`,
-			'top-rsvpers',
-			budget,
-		);
-		if (!res.ok) {
-			throw new Error(`Solidarity event_rsvps returned ${res.status} for session ${sessionId}`);
-		}
-		const body = (await res.json()) as { data?: RawRsvp[] };
-		const rows = body.data ?? [];
-		all.push(...rows);
-		if (rows.length < 100) break;
-	}
-	return all;
+	return fetchPaginated<RawRsvp>(
+		token,
+		'/v1/event_rsvps',
+		`rsvp list for session ${sessionId}`,
+		`&session_id=${sessionId}&full_user_payload=false`,
+		'top-rsvpers',
+	);
 }
 
 export interface TopRsvpersResult {

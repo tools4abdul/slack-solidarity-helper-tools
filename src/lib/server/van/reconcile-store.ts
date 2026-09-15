@@ -266,9 +266,10 @@ export async function reconcileClaims(db: Db, options: ReconcileOptions): Promis
 						.set({ issuedListNumber: action.listNumber })
 						.where(eq(vanTurfCheckouts.id, action.checkoutId));
 					result.listNumbersChanged += 1;
-					console.log(
-						`${LOG} list number changed: checkout=${action.checkoutId} number=${action.listNumber}`,
-					);
+					// The checkout id identifies the row; the list number itself is
+					// the credential that pulls doors down in MiniVAN and never
+					// belongs in a retained log.
+					console.log(`${LOG} list number changed: checkout=${action.checkoutId}`);
 					break;
 				}
 

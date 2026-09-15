@@ -140,7 +140,12 @@ describe('planCatalogSync', () => {
 				],
 			});
 			expect(plan.upserts[0]!.printedListNumber).toBe('35536745-88712');
-			expect(plan.warnings.join(' ')).toMatch(/35536745-88712.*99999999-00000|99999999-00000/);
+			const warning = plan.warnings.join(' ');
+			expect(warning).toContain('City of Cambridge Turf 01');
+			// The warning is posted to a Slack channel, so neither number may
+			// appear in it — a MiniVAN list number is the credential.
+			expect(warning).not.toContain('35536745-88712');
+			expect(warning).not.toContain('99999999-00000');
 		});
 
 		it('does not borrow another folder’s identically named turf', () => {

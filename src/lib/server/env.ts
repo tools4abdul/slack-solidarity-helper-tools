@@ -43,16 +43,13 @@ export const SLACK_BOT_TOKEN = get('SLACK_BOT_TOKEN');
 export const SLACK_CLIENT_ID = get('SLACK_CLIENT_ID');
 export const SLACK_CLIENT_SECRET = get('SLACK_CLIENT_SECRET');
 export const SLACK_SIGNING_SECRET = get('SLACK_SIGNING_SECRET');
-export const SLACK_ALLOWED_USER_IDS = new Set(
-	get('SLACK_ALLOWED_USER_IDS')
-		.split(',')
-		.map((id) => id.trim())
-		.filter(Boolean),
-);
 // Slack user id that is ALWAYS granted admin, regardless of the DB-backed
-// allowed_slack_users list (or its SLACK_ALLOWED_USER_IDS fallback) — even
-// when that list is empty or unreadable. Escape hatch so a mis-edited allowed
-// list can never lock every admin out of /pending and /settings.
+// allowed_slack_users list — even when that list is empty or unreadable.
+//
+// Admins live only in that table, edited on /settings. This is the one way in
+// that does not consult it: the bootstrap for a fresh install, where the table
+// starts empty and somebody has to grant the first admin, and the recovery
+// path if a database outage makes the list unreadable.
 export const SLACK_SUPERUSER_ID = get('SLACK_SUPERUSER_ID');
 export const SLACK_TRACKING_CHANNEL_ID = get('SLACK_TRACKING_CHANNEL_ID');
 export const SLACK_GROWTH_REPORT_CHANNEL_ID = get('SLACK_GROWTH_REPORT_CHANNEL_ID');
@@ -220,7 +217,6 @@ const REQUIRED_VARS = [
 	'SLACK_CLIENT_ID',
 	'SLACK_CLIENT_SECRET',
 	'SLACK_SIGNING_SECRET',
-	'SLACK_ALLOWED_USER_IDS',
 	'SLACK_TRACKING_CHANNEL_ID',
 	'TOKEN_ENCRYPTION_KEY',
 	'TURSO_DATABASE_URL',

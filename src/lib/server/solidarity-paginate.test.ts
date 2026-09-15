@@ -55,6 +55,60 @@ describe('fetchWithRetry', () => {
 		expect(res.ok).toBe(false);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
+
+	it('gives up once the budget is spent rather than retrying forever', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		fetchMock.mockResolvedValue(rateLimited());
+
+		await expect(
+			fetchWithRetry('https://example.test', {}, 'thing', 'tag', { retriesUsed: 0 }),
+		).rejects.toThrow(/retry budget exhausted/);
+
+		// One initial call plus MAX_RETRIES.
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+	});
+
+	it('honors a named Retry-After as sent rather than escalating past it', async () => {
+		vi.useFakeTimers();
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const sleepSpy = vi.spyOn(globalThis, 'setTimeout');
+		fetchMock.mockResolvedValue(rateLimited('2'));
+
+		const attempt = fetchWithRetry('https://example.test', {}, 'thing', 'tag', {
+			retriesUsed: 0,
+		});
+		const settled = expect(attempt).rejects.toThrow(/retry budget exhausted/);
+		await vi.runAllTimersAsync();
+		await settled;
+
+		expect(sleepSpy.mock.calls.map((c) => c[1])).toEqual([2000, 2000, 2000, 2000, 2000]);
+		vi.useRealTimers();
+	});
+
+	it('escalates the invented delay when no Retry-After is sent, capped in minutes', async () => {
+		vi.useFakeTimers();
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const sleepSpy = vi.spyOn(globalThis, 'setTimeout');
+		// No Retry-After header: the escalation is the only thing setting the wait.
+		fetchMock.mockResolvedValue({
+			ok: false,
+			status: 429,
+			headers: new Headers(),
+			json: async () => ({}),
+			text: async () => 'rate limited',
+		} as unknown as Response);
+
+		const attempt = fetchWithRetry('https://example.test', {}, 'thing', 'tag', {
+			retriesUsed: 0,
+		});
+		const settled = expect(attempt).rejects.toThrow(/retry budget exhausted/);
+		await vi.runAllTimersAsync();
+		await settled;
+
+		const waits = sleepSpy.mock.calls.map((c) => c[1]);
+		expect(waits).toEqual([30_000, 60_000, 60_000, 60_000, 60_000]);
+		vi.useRealTimers();
+	});
 });
 
 describe('fetchPaginated', () => {

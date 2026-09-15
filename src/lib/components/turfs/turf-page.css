@@ -254,9 +254,36 @@ main {
 	color: var(--color-text);
 }
 
+/* Equal columns, so neither ending is the small print of the other — the
+   choice between them is the volunteer's to make on the facts. */
 .card-actions {
-	display: flex;
-	gap: 10px;
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px 16px;
+	align-items: start;
+}
+
+@media (max-width: 560px) {
+	.card-actions {
+		grid-template-columns: 1fr;
+	}
+}
+
+.action-hint {
+	margin: 8px 0 0;
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+	line-height: 1.5;
+}
+
+/* The two endings sit as a matched pair, so the secondary one fills its
+   column and stands as tall as the primary. Elsewhere .ghost-btn is a small
+   inline control and keeps its own size. */
+.card-actions .ghost-btn {
+	width: 100%;
+	padding: 12px 24px;
+	font-size: var(--font-size-lg);
+	font-weight: 600;
 }
 
 .ghost-btn {
