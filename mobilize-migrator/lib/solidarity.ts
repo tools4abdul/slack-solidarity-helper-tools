@@ -6,6 +6,7 @@
 // can become several Mobilize events.
 
 import { requireEnv } from './env.js';
+import { fetchPaginated } from '../../src/lib/server/solidarity-paginate.js';
 
 export interface SolidarityLocationData {
 	full_address?: string | null;
@@ -60,37 +61,17 @@ export function hasTag(event: Pick<SolidarityEvent, 'tags'>, tag: string): boole
 	return (event.tags ?? []).some((t) => t.trim().toLowerCase() === tag);
 }
 
-const PAGE_LIMIT = 100;
-// Events come back newest-first, so upcoming ones cluster at the start; this is
-// a safety cap, not an expected depth.
-const MAX_PAGES = 60;
-
 /**
  * `apiToken` is passed explicitly by the server (which reads $env) and falls
  * back to the .env.local loader for the standalone CLI scripts — the same
- * dual-use pattern as src/lib/server/solidarity-paginate.ts.
+ * dual-use pattern as src/lib/server/solidarity-paginate.ts, whose paginator
+ * this delegates to for the bounded 429 retry. This is the first read of both
+ * Mobilize jobs, so a rate limit it could not give up on would strand the job
+ * holding its lock.
  */
 export async function fetchAllEvents(apiToken?: string): Promise<SolidarityEvent[]> {
 	const token = apiToken || requireEnv('SOLIDARITY_API_TOKEN', 'set it in .env.local');
-	const all: SolidarityEvent[] = [];
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const url = `https://api.solidarity.tech/v1/events?_limit=${PAGE_LIMIT}&_offset=${page * PAGE_LIMIT}`;
-		const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-		if (res.status === 429) {
-			// Documented limit is 60 requests / 30s; back off and retry this page.
-			await new Promise((r) => setTimeout(r, 5000));
-			page--;
-			continue;
-		}
-		if (!res.ok) {
-			throw new Error(`Solidarity events returned ${res.status}: ${await res.text()}`);
-		}
-		const body = (await res.json()) as { data?: SolidarityEvent[] };
-		const items = body.data ?? [];
-		all.push(...items);
-		if (items.length < PAGE_LIMIT) break;
-	}
-	return all;
+	return fetchPaginated<SolidarityEvent>(token, '/v1/events', 'events', '', 'mobilize-migrator');
 }
 
 export function parseCoordinates(

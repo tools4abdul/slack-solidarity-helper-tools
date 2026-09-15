@@ -3,13 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
-import { getSlackUsers } from '$lib/server/autocomplete-sources.js';
-import {
-	ensureAllowedUsersSeeded,
-	saveAllowedUser,
-	deleteAllowedUser,
-	type Editor,
-} from '$lib/server/settings.js';
+import { saveAllowedUser, deleteAllowedUser, type Editor } from '$lib/server/settings.js';
 import { validateSlackUser } from '$lib/server/settings-validation.js';
 
 // Admin-allowlist writes for the settings page: one add/remove of one Slack
@@ -18,10 +12,12 @@ import { validateSlackUser } from '$lib/server/settings-validation.js';
 // the validated display name; `remove` only shape-validates so a stale entry
 // (deactivated user) can always be deleted.
 //
-// Guardrail: you cannot remove your own id — one accidental chip-click
-// shouldn't cost the clicker their access. The superuser is exempt (they stay
-// admin via SLACK_SUPERUSER_ID no matter what the list says), and a mis-edit
-// by someone else is recoverable through the superuser escape hatch.
+// Two guardrails on removal. You cannot remove your own id — one accidental
+// chip-click shouldn't cost the clicker their access; the superuser is exempt
+// (they stay admin via SLACK_SUPERUSER_ID no matter what the list says). And
+// the last admin cannot be removed at all, enforced in deleteAllowedUser: this
+// table is the only source of admin access, so emptying it would leave nobody
+// able to reach /settings and refill it.
 interface AllowedUsersBody {
 	action?: unknown;
 	userId?: unknown;
@@ -55,23 +51,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		name: locals.session.slackUserName ?? locals.session.slackUserId,
 	};
 
-	// Best-effort display names for the one-time env seed. A Slack outage must
-	// not block the write itself — seed rows just fall back to raw ids.
-	async function seedDisplayNames(): Promise<ReadonlyMap<string, string> | undefined> {
-		try {
-			const { items } = await getSlackUsers(slack);
-			return new Map(items.map((u) => [u.id, u.name]));
-		} catch {
-			return undefined;
-		}
-	}
-
 	if (action === 'add') {
 		const result = await validateSlackUser(slack, userId);
 		if (!result.ok) {
 			return json({ error: result.error }, { status: result.transient ? 503 : 400 });
 		}
-		await ensureAllowedUsersSeeded(db, await seedDisplayNames());
 		await saveAllowedUser(db, { slackUserId: userId, displayName: result.displayName }, editor);
 		return json({ ok: true });
 	}
@@ -82,7 +66,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			{ status: 400 },
 		);
 	}
-	await ensureAllowedUsersSeeded(db, await seedDisplayNames());
-	await deleteAllowedUser(db, userId, editor);
+
+	const removal = await deleteAllowedUser(db, userId, editor);
+	if (removal === 'last-admin') {
+		return json(
+			{
+				error:
+					'You cannot remove the only admin. Add another admin first, ' +
+					'or nobody will be able to reach this page.',
+			},
+			{ status: 409 },
+		);
+	}
+	// 'not-found' is reported as success: the row is gone, which is what the
+	// caller asked for, and a stale chip should not raise an error.
 	return json({ ok: true });
 };

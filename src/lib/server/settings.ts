@@ -25,7 +25,6 @@ import {
 } from './schema.js';
 import {
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
-	SLACK_ALLOWED_USER_IDS,
 	REPORT_EXCLUDED_CHAPTER_IDS,
 	SLACK_TRACKING_CHANNEL_ID,
 	SLACK_GROWTH_REPORT_CHANNEL_ID,
@@ -247,10 +246,11 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		userListId: r.userListId,
 	}));
 
-	const allowedSlackUserIds: Set<string> =
-		allowedRows.length > 0
-			? new Set(allowedRows.map((r) => r.slackUserId))
-			: SLACK_ALLOWED_USER_IDS;
+	// The table is the only source of admin access — no env fallback. An empty
+	// read means nobody is an admin, which is the truth rather than a reason to
+	// reinstate a list from the environment; SLACK_SUPERUSER_ID is the way back
+	// in, and deleteAllowedUser refuses to empty the table in the first place.
+	const allowedSlackUserIds: Set<string> = new Set(allowedRows.map((r) => r.slackUserId));
 
 	const reportExcludedChapterIds: Set<number> =
 		excludedRows.length > 0
@@ -519,43 +519,6 @@ export async function deleteCoalitionEntry(
 	);
 }
 
-/**
- * One-time copy of the env fallback into allowed_slack_users — same rationale
- * and concurrency posture as ensureChapterChannelMapSeeded above: the table
- * shadows SLACK_ALLOWED_USER_IDS entirely once it has any row, so the first
- * interactive edit must inherit the env list instead of silently dropping
- * every admin except the one being edited. `displayNames` (from the cached
- * Slack user list, when available) makes seed rows human-readable; ids without
- * a known name fall back to the raw id.
- */
-export async function ensureAllowedUsersSeeded(
-	db: Database,
-	displayNames?: ReadonlyMap<string, string>,
-): Promise<void> {
-	const existing = await db
-		.select({ slackUserId: allowedSlackUsers.slackUserId })
-		.from(allowedSlackUsers)
-		.limit(1);
-	if (existing.length > 0 || SLACK_ALLOWED_USER_IDS.size === 0) return;
-
-	const lastEditedAt = new Date().toISOString();
-	await db
-		.insert(allowedSlackUsers)
-		.values(
-			[...SLACK_ALLOWED_USER_IDS].map((id) => ({
-				slackUserId: id,
-				displayName: displayNames?.get(id) ?? id,
-				lastEditedBy: SYSTEM_EDITOR.id,
-				lastEditedByName: SYSTEM_EDITOR.name,
-				lastEditedAt,
-			})),
-		)
-		.onConflictDoNothing();
-	console.log(
-		`[settings] seeded allowed_slack_users with ${SLACK_ALLOWED_USER_IDS.size} env entries by ${SYSTEM_EDITOR.id} (${SYSTEM_EDITOR.name})`,
-	);
-}
-
 export async function saveAllowedUser(
 	db: Database,
 	entry: { slackUserId: string; displayName: string },
@@ -586,15 +549,53 @@ export async function saveAllowedUser(
 	);
 }
 
+/** Why a removal did not happen, so the caller can say which. */
+export type DeleteAllowedUserResult = 'deleted' | 'not-found' | 'last-admin';
+
+/**
+ * Remove an admin, refusing to remove the last one.
+ *
+ * allowed_slack_users is the only source of admin access, so an empty table is
+ * a workspace with no one who can reach /settings to refill it — recoverable
+ * only through SLACK_SUPERUSER_ID, which a deployment need not have set. The
+ * count is evaluated inside the DELETE rather than read first, so two admins
+ * removing the other two rows at the same moment cannot both see a safe count
+ * and both proceed.
+ */
 export async function deleteAllowedUser(
 	db: Database,
 	slackUserId: string,
 	editor: Editor,
-): Promise<void> {
-	await db.delete(allowedSlackUsers).where(eq(allowedSlackUsers.slackUserId, slackUserId));
-	console.log(
-		`[settings] deleted allowed_slack_users slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
+): Promise<DeleteAllowedUserResult> {
+	const removed = await db
+		.delete(allowedSlackUsers)
+		.where(
+			and(
+				eq(allowedSlackUsers.slackUserId, slackUserId),
+				sql`(select count(*) from ${allowedSlackUsers}) > 1`,
+			),
+		)
+		.returning({ slackUserId: allowedSlackUsers.slackUserId });
+
+	if (removed.length > 0) {
+		console.log(
+			`[settings] deleted allowed_slack_users slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
+		);
+		return 'deleted';
+	}
+
+	// Nothing was removed: either the guard held, or the row was already gone.
+	// One extra read only on this path, so the caller can tell the admin which.
+	const survivors = await db
+		.select({ slackUserId: allowedSlackUsers.slackUserId })
+		.from(allowedSlackUsers)
+		.where(eq(allowedSlackUsers.slackUserId, slackUserId));
+	if (survivors.length === 0) return 'not-found';
+
+	console.warn(
+		`[settings] refused to remove the last admin slack_user_id=${slackUserId} by ${editor.id} (${editor.name})`,
 	);
+	return 'last-admin';
 }
 
 export async function saveModerator(

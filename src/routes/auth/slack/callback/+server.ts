@@ -121,11 +121,11 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	// chat:write (see the scope comment in ../+server.ts), and it told us
 	// nothing `authed_user.id` doesn't.
 	const userId = tokenData.authed_user.id;
-	// Admin gate reads the DB-backed allowed list via loadSettings (which falls
-	// back to env SLACK_ALLOWED_USER_IDS while the table is empty). The
-	// superuser is admitted without consulting the list — even when reading it
-	// fails — so a mis-edited or emptied allowed_slack_users table can never
-	// lock every admin out of /pending and /settings.
+	// Admin gate reads the DB-backed allowed list via loadSettings; that table
+	// is the only source of admin access. The superuser is admitted without
+	// consulting the list — even when reading it fails — so an unreadable
+	// allowed_slack_users table can never lock every admin out of /pending and
+	// /settings.
 	//
 	// Moderators come from the same read. An admin is never also flagged a
 	// moderator: isModerator only ever widens access for someone who is not an

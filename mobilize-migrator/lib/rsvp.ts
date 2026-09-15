@@ -10,7 +10,7 @@
 // with mobilize.us. Passing a mobilize.us event id would attach RSVPs to an
 // unrelated event.
 
-import { fetchWithRetry } from '../../src/lib/server/solidarity-paginate.js';
+import { fetchPaginated, fetchWithRetry } from '../../src/lib/server/solidarity-paginate.js';
 import type { ParticipationStatus } from './attendees.js';
 
 const API = 'https://api.solidarity.tech/v1';
@@ -62,24 +62,23 @@ export function attendingFor(status: ParticipationStatus): AttendingValue | null
 	}
 }
 
-/** Existing RSVPs on a session, so signups entered directly in Solidarity aren't duplicated. */
+/**
+ * Existing RSVPs on a session, so signups entered directly in Solidarity aren't
+ * duplicated.
+ *
+ * The shared paginator carries ONE retry budget across the whole walk. A budget
+ * built per page instead resets on every offset, which turns a rate limit that
+ * should stop the walk into several times that many retries against an endpoint
+ * already saying no.
+ */
 export async function listSessionRsvps(token: string, sessionId: number): Promise<ExistingRsvp[]> {
-	const all: ExistingRsvp[] = [];
-	for (let offset = 0; offset < 2000; offset += 100) {
-		const res = await fetchWithRetry(
-			`${API}/event_rsvps?session_id=${sessionId}&_limit=100&_offset=${offset}`,
-			{ headers: { Authorization: `Bearer ${token}` } },
-			`rsvp list for session ${sessionId}`,
-			'attendee-sync',
-			{ retriesUsed: 0 },
-		);
-		if (!res.ok) throw new Error(`Solidarity rsvp list returned ${res.status}`);
-		const body = (await res.json()) as { data?: ExistingRsvp[] };
-		const rows = body.data ?? [];
-		all.push(...rows);
-		if (rows.length < 100) break;
-	}
-	return all;
+	return fetchPaginated<ExistingRsvp>(
+		token,
+		'/v1/event_rsvps',
+		`rsvp list for session ${sessionId}`,
+		`&session_id=${sessionId}`,
+		'attendee-sync',
+	);
 }
 
 /**

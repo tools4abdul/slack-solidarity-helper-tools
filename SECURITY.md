@@ -84,8 +84,9 @@ the app is unbreakable.
   outside dev. Sessions live server-side, expire after 8 hours, and are deleted on expiry.
 - **The OAuth `state` nonce** is cookie-bound (`src/lib/server/oauth-state.ts`).
 - **Two tiers.** Any workspace member may see the dashboards and the turf page; everything else
-  is gated on a database-backed admin allowlist, with `SLACK_SUPERUSER_ID` as a break-glass
-  entry and `SLACK_ALLOWED_USER_IDS` as a seed. Non-admins get a bare redirect.
+  is gated on a database-backed admin allowlist (`allowed_slack_users`, edited on `/settings`),
+  with `SLACK_SUPERUSER_ID` as a break-glass entry. The allowlist has no environment fallback,
+  and the last row in it cannot be removed. Non-admins get a bare redirect.
 - **`DEV_SLACK_USER_ID` bypasses OAuth and is a development-only affordance.** It must never be
   set in production.
 
