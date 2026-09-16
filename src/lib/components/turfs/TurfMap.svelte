@@ -6,8 +6,6 @@
 	// + stylesheet + an SSR guard for its window access) would supply all of it,
 	// and the honest accounting of what we gave up is:
 	//
-	//   - fractional zoom. Ours snaps to integer levels, because tiles only
-	//     exist at integer zooms and scaling bitmaps means blur.
 	//   - tile retention during a zoom. Leaflet keeps the old layer underneath
 	//     while the new one loads; we swap and briefly show the graticule.
 	//   - tile prefetch beyond the viewport, so ours pop in at the edges.
@@ -38,12 +36,12 @@
 		MAX_ZOOM,
 		MIN_ZOOM,
 		TILE_ATTRIBUTION,
-		TILE_SIZE,
 		TILE_URL_TEMPLATE,
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
 	import { shadeLabel, turfShade } from '$lib/van/turf-shade.js';
+	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
 	import type { MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
@@ -246,11 +244,51 @@
 	// and finger, and setPointerCapture keeps a gesture alive when the cursor
 	// leaves the svg mid-drag.
 	//
-	// `touch-action: none` in the stylesheet suppresses the browser's own pan
-	// and pinch, which means we owe the user a replacement for BOTH. One finger
-	// pans; two fingers pinch. Volunteers use this standing on a pavement, so
-	// pinch is not a nicety — without it a phone can only zoom via the +/−
-	// buttons.
+	// Above the phone breakpoint the map sits beside the list with page either
+	// side of it, so it can own every gesture over it: `touch-action: none`
+	// suppresses the browser's own pan and pinch, one finger pans, two fingers
+	// pinch, and the wheel zooms.
+	//
+	// At phone width it is full-bleed and most of the screen, so the swipe and
+	// the plain wheel are how the page is read and the map must leave them
+	// alone — a map that swallows them strands the reader on it. What is left
+	// belongs to the map: two fingers pan, a pinch zooms, and Ctrl/⌘ + wheel
+	// zooms. Volunteers use this standing on a pavement, so a gesture the map
+	// declines says so on screen rather than looking broken.
+
+	/** Matches the .map-frame breakpoint in this file's stylesheet: the rule
+	 *  that makes the map full-bleed is the reason the gestures change. */
+	const NARROW_QUERY = '(max-width: 640px)';
+	let narrow = $state(false);
+
+	$effect(() => {
+		const query = window.matchMedia(NARROW_QUERY);
+		const sync = () => (narrow = query.matches);
+		sync();
+		query.addEventListener('change', sync);
+		return () => query.removeEventListener('change', sync);
+	});
+
+	function pageOwnsSwipe(event: PointerEvent): boolean {
+		return !swipePansMap({ narrow, pointerType: event.pointerType });
+	}
+
+	/** A one-line nudge over the map, shown when a gesture was left to the
+	 *  page. Nothing about the map moves in that case, and silence reads as a
+	 *  broken map rather than as a deliberate handover. */
+	let gestureHint = $state<string | null>(null);
+	let hintTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function flashGestureHint(message: string) {
+		gestureHint = message;
+		clearTimeout(hintTimer);
+		hintTimer = setTimeout(() => (gestureHint = null), 2400);
+	}
+
+	$effect(() => () => clearTimeout(hintTimer));
+
+	/** The svg itself, for the one listener that cannot be an attribute. */
+	let svg = $state<SVGSVGElement | undefined>();
 
 	let dragging = $state(false);
 	let dragMoved = false;
@@ -271,6 +309,13 @@
 
 	/** Gesture baseline, captured when the second finger lands. */
 	let pinch: { distance: number; zoom: number } | null = null;
+	/** Where the two fingers were centred at the last move, in client pixels.
+	 *  Two fingers pan by the drift of this point. */
+	let pinchMidpoint = { x: 0, y: 0 };
+
+	function midpointOf(pair: [ActivePointer, ActivePointer]) {
+		return { x: (pair[0].x + pair[1].x) / 2, y: (pair[0].y + pair[1].y) / 2 };
+	}
 
 	function trackPointer(event: PointerEvent) {
 		const existing = activePointers.find((p) => p.id === event.pointerId);
@@ -316,56 +361,104 @@
 			dragging = false;
 			pressedTurfId = null;
 			pinch = { distance: distanceBetween(pair[0], pair[1]), zoom: view.zoom };
+			pinchMidpoint = midpointOf(pair);
 			return;
 		}
 
-		dragging = true;
 		dragMoved = false;
+		// The origin is recorded either way: a swipe the page owns still has to
+		// be measured, to tell it apart from a tap that selects a turf.
+		dragOrigin = { x: event.clientX, y: event.clientY };
 		// Read before any movement: the capture retargets later events to the
 		// svg, so this is the last point at which the shape under the finger is
 		// still the event target.
 		pressedTurfId = turfIdAt(event.target);
-		dragOrigin = { x: event.clientX, y: event.clientY };
+		if (pageOwnsSwipe(event)) return;
+
+		dragging = true;
 	}
+
+	/** Two fingers are the map's gesture at phone width, so take the sequence
+	 *  back from the scroller the moment the second one lands. `touch-action`
+	 *  has no way to say this — it can allow the one-finger pan or forbid it,
+	 *  and the count is the whole distinction here. A second finger arriving
+	 *  mid-scroll is uncancellable, and the page keeps that one. */
+	function onTouchStart(event: TouchEvent) {
+		if (narrow && event.touches.length >= 2 && event.cancelable) event.preventDefault();
+	}
+
+	// Attached by hand rather than as an `ontouchstart` attribute. Svelte
+	// delegates touchstart to the app root and registers it passive, and a
+	// passive listener's preventDefault does nothing — which is the entire
+	// mechanism above.
+	$effect(() => {
+		const el = svg;
+		if (!el) return;
+		el.addEventListener('touchstart', onTouchStart, { passive: false });
+		return () => el.removeEventListener('touchstart', onTouchStart);
+	});
 
 	function onPointerMove(event: PointerEvent) {
 		if (!activePointers.some((p) => p.id === event.pointerId)) return;
 		trackPointer(event);
 
-		const svg = event.currentTarget as SVGSVGElement;
+		const element = event.currentTarget as SVGSVGElement;
 		const pair = pointerPair();
 
 		if (pair && pinch) {
+			const midpoint = midpointOf(pair);
+			// Two fingers pan as well as scale. At phone width this is the only
+			// way to move the map, and at any width a pinch that drifts should
+			// carry the map with it instead of pivoting in place.
+			panBy(midpoint.x - pinchMidpoint.x, midpoint.y - pinchMidpoint.y, element);
+			pinchMidpoint = midpoint;
+			dragMoved = true;
+
 			const distance = distanceBetween(pair[0], pair[1]);
 			if (distance < 20 || pinch.distance < 20) return; // fingers too close to be stable
 
-			// Continuous pinch scale, snapped to the nearest integer zoom.
-			// Tiles only exist at integer zooms, so a fractional zoom would mean
-			// scaling bitmaps and taking the blur; snapping keeps them crisp and
-			// still tracks the gesture closely enough to feel connected.
+			// Straight off the gesture: the fingers' separation IS the scale, and
+			// log2 of it is the zoom. Nothing is rounded, so the map tracks the
+			// pinch continuously rather than jumping a level at a time.
 			const target = pinch.zoom + Math.log2(distance / pinch.distance);
-			const next = Math.round(target);
-			if (next !== view.zoom) {
-				const midpoint = {
-					clientX: (pair[0].x + pair[1].x) / 2,
-					clientY: (pair[0].y + pair[1].y) / 2,
-				};
-				changeZoom(next - view.zoom, toViewBox(midpoint, svg));
-			}
-			dragMoved = true;
+			changeZoom(
+				target - view.zoom,
+				toViewBox({ clientX: midpoint.x, clientY: midpoint.y }, element),
+			);
 			return;
 		}
 
-		if (!dragging) return;
 		const dx = event.clientX - dragOrigin.x;
 		const dy = event.clientY - dragOrigin.y;
-		if (Math.abs(dx) + Math.abs(dy) < 3) return;
-
-		// The svg is scaled to its container, so a client-pixel delta is not a
-		// viewBox-unit delta. Convert through the rendered width.
-		const unitsPerPixel = mapWidth / svg.getBoundingClientRect().width;
-
+		const travelled = Math.abs(dx) + Math.abs(dy);
+		if (travelled < 3) return;
+		// Recorded before the pan, and whether or not there is one: a swipe the
+		// page took is still a swipe, and lifting out of it must not land as a
+		// tap on whatever turf it started over.
 		dragMoved = true;
+
+		if (!dragging) {
+			// A swipe the page is scrolling. Say what does move the map, once
+			// the travel is past anything a fingertip does on a tap. `dragOrigin`
+			// stands still while the page owns the gesture, so this measures the
+			// whole swipe rather than one move's delta.
+			if (travelled > 16 && pageOwnsSwipe(event)) {
+				flashGestureHint('Use two fingers to move the map');
+			}
+			return;
+		}
+
+		panBy(dx, dy, element);
+		dragOrigin = { x: event.clientX, y: event.clientY };
+	}
+
+	/** Shift the centre by a client-pixel delta. The svg is scaled to its
+	 *  container, so a client-pixel delta is not a viewBox-unit delta —
+	 *  converting through the rendered width is what keeps the map pinned to
+	 *  the finger. */
+	function panBy(dx: number, dy: number, element: SVGSVGElement) {
+		if (dx === 0 && dy === 0) return;
+		const unitsPerPixel = mapWidth / element.getBoundingClientRect().width;
 		// Dragging right moves the map right, i.e. the centre moves left.
 		centre = view.unproject({
 			x: mapWidth / 2 - dx * unitsPerPixel,
@@ -373,7 +466,6 @@
 		});
 		zoom = view.zoom;
 		moved = true;
-		dragOrigin = { x: event.clientX, y: event.clientY };
 	}
 
 	function onPointerUp(event: PointerEvent) {
@@ -394,7 +486,7 @@
 		// panning from where it actually is, or the map jumps by the distance
 		// between the two fingers.
 		const [remaining] = activePointers;
-		if (remaining) {
+		if (remaining && !pageOwnsSwipe(event)) {
 			dragging = true;
 			dragOrigin = { x: remaining.x, y: remaining.y };
 		} else {
@@ -432,10 +524,10 @@
 
 		if (event.key === '+' || event.key === '=') {
 			event.preventDefault();
-			changeZoom(1);
+			stepZoom(1);
 		} else if (event.key === '-' || event.key === '_') {
 			event.preventDefault();
-			changeZoom(-1);
+			stepZoom(-1);
 		} else if (event.key === 'Home') {
 			event.preventDefault();
 			resetView();
@@ -448,6 +540,20 @@
 	 *  county overview to a single turf is six or seven zoom levels, and
 	 *  centre-only zoom loses whatever you were aiming at within two of them.
 	 *  Defaults to the middle, which is what the +/− buttons want. */
+	/** One whole level, for the keyboard and the +/− buttons.
+	 *
+	 *  A discrete control has to land somewhere predictable, and from a zoom
+	 *  part-way between levels that means the next whole one — not a whole step
+	 *  from wherever a pinch happened to stop. The epsilon keeps a zoom already
+	 *  sitting on a level (to within floating-point noise) from counting as
+	 *  part-way past it and stepping only a fraction. */
+	function stepZoom(direction: 1 | -1) {
+		const EPSILON = 1e-6;
+		const target =
+			direction > 0 ? Math.floor(view.zoom + EPSILON) + 1 : Math.ceil(view.zoom - EPSILON) - 1;
+		changeZoom(target - view.zoom);
+	}
+
 	function changeZoom(delta: number, anchor = { x: mapWidth / 2, y: mapHeight / 2 }) {
 		const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.zoom + delta));
 		if (nextZoom === view.zoom) return;
@@ -482,18 +588,20 @@
 		};
 	}
 
-	// Trackpads emit a stream of small deltas; one zoom level per event would
-	// fly from a county to a doorstep on a single flick. Accumulate instead.
-	let wheelAccumulator = 0;
-	const WHEEL_STEP = 120;
-
 	function onWheel(event: WheelEvent) {
+		if (!wheelZoomsMap({ narrow, ctrlKey: event.ctrlKey, metaKey: event.metaKey })) {
+			flashGestureHint('Pinch, or hold Ctrl or ⌘ and scroll, to zoom');
+			return;
+		}
 		event.preventDefault();
-		wheelAccumulator += event.deltaY;
-		const steps = Math.trunc(wheelAccumulator / WHEEL_STEP);
-		if (steps === 0) return;
-		wheelAccumulator -= steps * WHEEL_STEP;
-		changeZoom(-steps, toViewBox(event, event.currentTarget as SVGSVGElement));
+		// Applied as it arrives, fractional and all. A trackpad's stream of
+		// small deltas becomes a smooth ramp; a mouse notch is still one level.
+		const delta = wheelZoomDelta({
+			deltaY: event.deltaY,
+			deltaMode: event.deltaMode,
+			height: mapHeight,
+		});
+		if (delta !== 0) changeZoom(delta, toViewBox(event, event.currentTarget as SVGSVGElement));
 	}
 
 	function resetView() {
@@ -568,6 +676,7 @@
 			onpointercancel={onPointerCancel}
 			onwheel={onWheel}
 			onkeydown={onKeyDown}
+			bind:this={svg}
 		>
 			<defs>
 				<!-- Behind the tiles, so a provider outage degrades to a grid with a
@@ -594,8 +703,8 @@
 							href={tileUrl(tile, tiles.urlTemplate)}
 							x={tile.left}
 							y={tile.top}
-							width={TILE_SIZE}
-							height={TILE_SIZE}
+							width={tile.size}
+							height={tile.size}
 							onerror={() => (failedTiles[tile.key] = true)}
 						/>
 					{/each}
@@ -658,8 +767,8 @@
 		</svg>
 
 		<div class="map-controls">
-			<button type="button" onclick={() => changeZoom(1)} aria-label="Zoom in">+</button>
-			<button type="button" onclick={() => changeZoom(-1)} aria-label="Zoom out">−</button>
+			<button type="button" onclick={() => stepZoom(1)} aria-label="Zoom in">+</button>
+			<button type="button" onclick={() => stepZoom(-1)} aria-label="Zoom out">−</button>
 			{#if moved}
 				<button type="button" class="wide" onclick={resetView}>Near me</button>
 			{/if}
@@ -667,6 +776,14 @@
 				<button type="button" class="wide" onclick={() => frameTo(allBounds)}>Show all</button>
 			{/if}
 		</div>
+
+		{#if gestureHint}
+			<!-- aria-hidden: this is a visual answer to a gesture that just did
+			     nothing, and the figcaption already carries the same instruction
+			     in a form a screen reader can reach at any time. Announcing it
+			     would interrupt with news of something that did not happen. -->
+			<p class="gesture-hint" aria-hidden="true">{gestureHint}</p>
+		{/if}
 
 		<p class="attribution">{tiles.attribution}</p>
 
@@ -678,7 +795,13 @@
 	</div>
 
 	<figcaption>
-		Drag to pan, pinch or scroll to zoom. With the map focused, arrow keys pan and
+		{#if narrow}
+			Swipe to scroll the page past the map. Drag with two fingers to pan it, and pinch — or hold
+			<kbd>Ctrl</kbd>/<kbd>⌘</kbd> and scroll — to zoom.
+		{:else}
+			Drag to pan, pinch or scroll to zoom.
+		{/if}
+		With the map focused, arrow keys pan and
 		<kbd>+</kbd>/<kbd>−</kbd> zoom. Turfs too small to draw at this zoom show as dots. Shapes are convex
 		hulls over each turf's doors, so they claim a little more ground than the turf really covers — MiniVAN
 		is the authority on which doors are on your list.
@@ -724,6 +847,50 @@
 			margin-inline: calc(50% - 50vw);
 			border-width: 0 0 1px;
 			border-radius: 0;
+		}
+
+		.turf-map {
+			/* A map this size is the page here, so the browser keeps the
+			   one-finger vertical scroll through it, and the map declines its
+			   own single-pointer pan in pageOwnsSwipe. Two fingers are the
+			   map's, taken back in onTouchStart. pan-y alone rather than
+			   `pan-x pan-y`: this layout has nothing to scroll sideways to. */
+			touch-action: pan-y;
+		}
+	}
+
+	/* Centred, which is the one part of the map with nothing else in it: the
+	   +/− controls are in the top corner, the scale bar and the attribution
+	   run along the bottom. Pointer-transparent — it appears mid-gesture and
+	   must not become the thing the next finger lands on. */
+	.gesture-hint {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		transform: translate(-50%, -50%);
+		max-width: calc(100% - 24px);
+		margin: 0;
+		padding: 7px 14px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-near-black) 85%, transparent);
+		color: var(--color-header-text);
+		font-size: var(--font-size-sm);
+		line-height: 1.3;
+		text-align: center;
+		text-wrap: balance;
+		pointer-events: none;
+		animation: hint-in 120ms ease-out;
+	}
+
+	@keyframes hint-in {
+		from {
+			opacity: 0;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.gesture-hint {
+			animation: none;
 		}
 	}
 

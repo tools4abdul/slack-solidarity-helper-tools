@@ -89,35 +89,47 @@ main {
 
 /* --- Chapter bar -------------------------------------------------------- */
 
+/* Medium Blue, not the Deep Blue of the site header thirty-two pixels above
+   it: two bands of the same navy separated by a cream stripe read as one slab
+   that failed to join up. A step along the brand's own blues keeps it as the
+   page's own header. */
 .chapter-bar {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 16px;
-	padding: 12px 16px;
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
+	padding: 14px 16px;
+	background: var(--color-navy-mid);
+	border: 1px solid var(--color-navy-mid);
 	border-radius: var(--radius-md);
 	margin-bottom: 20px;
+	color: var(--color-header-text);
 }
 
+/* Full-strength text, subordinated by size and tracking rather than by being
+   faded: a 78% mix of it runs 3.5:1 on the bar's dark value. */
 .chapter-label {
 	font-size: var(--font-size-sm);
-	color: var(--color-text-muted);
+	color: var(--color-header-text);
 	text-transform: uppercase;
-	letter-spacing: 0.04em;
+	letter-spacing: var(--tracking-subhead);
 	margin-right: 8px;
 }
 
+/* The display face, because this names where the volunteer is and it is the
+   only heading on the page that answers that. */
 .chapter-current {
-	font-size: 1.05rem;
+	font-family: var(--font-display);
+	font-size: 1.3rem;
 	font-weight: 700;
-	color: var(--color-text);
+	text-transform: uppercase;
+	letter-spacing: var(--tracking-headline);
+	color: var(--color-header-text);
 }
 
 .change-chapter {
 	font-size: var(--font-size-md);
-	color: var(--color-action);
+	color: var(--color-header-text);
 	text-decoration: underline;
 	white-space: nowrap;
 }
@@ -129,9 +141,11 @@ main {
 	flex-wrap: wrap;
 }
 
+/* Mixed against the bar's own text colour rather than given fixed values, so
+   the switch keeps its footing whatever the chapter bar is themed to. */
 .view-switch {
 	display: inline-flex;
-	border: 1px solid var(--color-border);
+	border: 1px solid color-mix(in srgb, var(--color-header-text) 45%, transparent);
 	border-radius: var(--radius-md);
 	overflow: hidden;
 }
@@ -140,22 +154,22 @@ main {
 	padding: 5px 12px;
 	font-size: var(--font-size-sm);
 	font-weight: 600;
-	color: var(--color-text-muted);
+	color: var(--color-header-text);
 	text-decoration: none;
-	background: var(--color-surface);
+	background: transparent;
 }
 
 .view-option + .view-option {
-	border-left: 1px solid var(--color-border);
+	border-left: 1px solid color-mix(in srgb, var(--color-header-text) 45%, transparent);
 }
 
 .view-option:hover {
-	background: var(--color-cream-light);
+	background: color-mix(in srgb, var(--color-header-text) 16%, transparent);
 }
 
 .view-option.is-active {
-	background: var(--color-action);
-	color: var(--color-action-text);
+	background: var(--color-header-text);
+	color: var(--color-header-bg);
 }
 
 /* Only rendered when the server actually sent a holder name, i.e. organizer
@@ -184,7 +198,11 @@ main {
 
 .code-card h2 {
 	margin: 0;
-	font-size: 1.2rem;
+	font-family: var(--font-display);
+	font-size: 1.3rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: var(--tracking-headline);
 	color: var(--color-text);
 }
 
@@ -243,15 +261,24 @@ main {
 	line-height: 1.9;
 }
 
-.sync-warning {
+.sync-warning,
+.sync-reminder {
 	margin: 0 0 16px;
 	padding: 10px 14px;
 	background: var(--color-cream-light);
-	border-left: 3px solid var(--color-warning);
 	border-radius: var(--radius-sm);
 	font-size: var(--font-size-md);
 	line-height: 1.55;
 	color: var(--color-text);
+}
+
+/* The accent marks something that has actually gone wrong and is worth
+   stopping for: a failed action, or a turf VAN no longer has. The standing
+   advice about syncing is on every held turf every time, and an alarm that is
+   always on is one nobody reads — .sync-reminder is the same block without
+   it. */
+.sync-warning {
+	border-left: 3px solid var(--color-warning);
 }
 
 /* Equal columns, so neither ending is the small print of the other — the
@@ -276,23 +303,18 @@ main {
 	line-height: 1.5;
 }
 
-/* The two endings sit as a matched pair, so the secondary one fills its
-   column and stands as tall as the primary. Elsewhere .ghost-btn is a small
-   inline control and keeps its own size. */
-.card-actions .ghost-btn {
+/* The secondary of the two endings. Sized to match .claim-btn beside it, so
+   the pair reads as two answers to one question rather than an action and its
+   footnote; the muted fill is what makes one of them secondary. */
+.ghost-btn {
 	width: 100%;
 	padding: 12px 24px;
-	font-size: var(--font-size-lg);
-	font-weight: 600;
-}
-
-.ghost-btn {
-	padding: 8px 14px;
 	background: transparent;
 	color: var(--color-text-muted);
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-md);
-	font-size: var(--font-size-md);
+	font-size: var(--font-size-lg);
+	font-weight: 600;
 	cursor: pointer;
 }
 
@@ -372,6 +394,13 @@ main {
 		   own bottom margin already. */
 		margin-bottom: 20px;
 	}
+}
+
+/* min-width, because a grid item's default is its own content: a turf name
+   with no spaces in it — VAN cuts them like WARD_03_PRECINCT_07 — would widen
+   this track past its 1fr share and take the space out of the map. */
+.list-col {
+	min-width: 0;
 }
 
 .legend {
@@ -464,8 +493,23 @@ main {
 
 .list-head h2 {
 	margin: 0;
+	font-family: var(--font-display);
 	font-size: 1.05rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: var(--tracking-headline);
 	color: var(--color-text);
+}
+
+/* The count is the heading's payload, so it is the part that gets the size.
+   --color-blue rather than --color-navy-mid: in dark mode the latter resolves
+   to Light Blue, and Light Blue on the Deep Blue page ground is 2.9:1 — the
+   exact pair tokens.ts calls out as unreadable. This runs 5.5 dark, 4.7
+   light. */
+.available-count {
+	font-size: 1.5rem;
+	color: var(--color-blue);
+	margin-right: 1px;
 }
 
 .freshness {
@@ -550,7 +594,15 @@ main {
 	opacity: 1;
 }
 
+/* Two columns: the one number that decides whether the turf is worth walking
+   to, and everything that names it. The number leads because that is the order
+   the list is read in — down the left edge first, across only for the rows
+   worth crossing for. */
 .turf-card {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: stretch;
+	gap: 14px;
 	width: 100%;
 	text-align: left;
 	background: transparent;
@@ -560,6 +612,23 @@ main {
 	cursor: pointer;
 	font-family: inherit;
 	color: var(--color-text);
+}
+
+/* Open, the tile beside it is three lines tall, so the summary spreads into
+   that height rather than floating in the middle of it: name at the top,
+   statistics at the bottom. Closed, the two columns are the same height
+   already and centring is what keeps a one-line row from looking sprung. */
+.card-main {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.turf-row.is-selected .card-main {
+	justify-content: space-between;
+	gap: 12px;
 }
 
 .turf-card:focus-visible {
@@ -572,26 +641,172 @@ main {
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
-	margin-bottom: 2px;
 }
 
 .turf-name {
 	font-weight: 700;
-	font-size: var(--font-size-md);
+	font-size: 1.05rem;
+	line-height: 1.25;
+	/* Wraps rather than pushing the chips off the edge: in the desktop list
+	   column a long name and two chips want more width than there is. The
+	   break-anywhere is for the names that have nowhere to break — VAN cuts
+	   turf names like WARD_03_PRECINCT_07, which is one word to a browser. */
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
-.card-meta {
+.card-badges {
 	display: flex;
-	align-items: baseline;
-	flex-wrap: wrap;
+	align-items: center;
 	gap: 6px;
-	font-size: var(--font-size-sm);
+	flex-shrink: 0;
+}
+
+/* The closed row's one line. Nothing to separate from anything, so it stays
+   plain text — the labelled treatment below is what the open row needs and
+   what forty closed rows cannot afford. */
+.card-meta {
+	font-size: var(--font-size-md);
+	line-height: 1.45;
 	color: var(--color-text-muted);
 }
 
-.doors {
+/* --- The open row's statistics ------------------------------------------- */
+
+.card-stats {
+	display: flex;
+	flex-wrap: wrap;
+	/* Wide enough apart that the columns read as separate fields without a
+	   separator between them. */
+	gap: 8px 20px;
+}
+
+.stat {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+}
+
+/* The label/value split does the work here, because the values are a distance,
+   a place name and a bare number — run together in one muted line they read as
+   one string. Three things separate label from value, so it survives at this
+   size and in both themes: case, weight and colour. Faint was too far: these
+   are read while deciding, not skimmed past, so they sit at muted. */
+.stat-label {
+	font-size: var(--font-size-xs);
 	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	line-height: 1.2;
+	color: var(--color-text-muted);
+}
+
+.stat-value {
+	font-size: 1rem;
+	font-weight: 700;
+	line-height: 1.25;
 	color: var(--color-text);
+	/* Region names are free text and can arrive longer than the column. */
+	overflow-wrap: anywhere;
+}
+
+/* --- Doors left ---------------------------------------------------------- */
+
+/* The field the list is actually scanned for, so it is the one thing in a row
+   that can be read without reading. */
+.door-tile {
+	display: grid;
+	justify-items: center;
+	align-content: center;
+	/* Wide enough for the label, which is longer than any count it will carry,
+	   so the tile is the same width open or closed and the rows below it do not
+	   shift sideways as one is opened. */
+	min-width: 86px;
+	padding: 7px 10px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-md);
+	text-align: center;
+}
+
+.door-count {
+	font-family: var(--font-display);
+	font-size: 1.5rem;
+	font-weight: 700;
+	line-height: 1.05;
+	/* Tabular figures so the column of counts lines up down the list. */
+	font-variant-numeric: tabular-nums;
+	color: var(--color-text);
+}
+
+/* The count's caveat, tucked under it on the open row. Bordered off rather
+   than merely smaller: it qualifies the number above it, and without a rule
+   between them "62 / DOORS LEFT / as of 20 minutes ago" reads as one phrase in
+   three sizes. */
+.door-age {
+	margin-top: 5px;
+	padding-top: 4px;
+	border-top: 1px solid color-mix(in srgb, var(--color-text) 20%, transparent);
+	font-size: var(--font-size-xs);
+	line-height: 1.2;
+	color: var(--color-text);
+}
+
+/* The open row's tile is a line taller, for the age underneath. The count
+   grows into it rather than leaving a gap above and below itself — it is the
+   reason the row was opened. */
+.turf-row.is-selected .door-count {
+	font-size: 2.1rem;
+}
+
+.door-label {
+	font-size: var(--font-size-xs);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	line-height: 1.2;
+	/* Body text colour, not muted: it sits on a tint, and a muted foreground on
+	   a tinted ground loses contrast from both sides at once. Size and tracking
+	   make it subordinate to the number instead. */
+	color: var(--color-text);
+}
+
+/* The map's four door bands (turf-shade.ts), so a turf that looks heavy on the
+   map reads heavy in the list.
+
+   Lighter than the legend's 28/42/56/70 of the same blue, and deliberately: a
+   legend swatch is 14 square pixels of colour, while this one has two lines of
+   text on it. On the legend's ramp the label runs 3.64:1 at the top band in
+   dark mode and 4.46 at the one below it, both under AA. Capped at 46% the
+   worst case is 5.20, and four steps ten points apart stay well above a
+   just-noticeable difference. */
+.door-tile.shade-low {
+	background: color-mix(in srgb, var(--color-blue) 16%, transparent);
+}
+.door-tile.shade-medium {
+	background: color-mix(in srgb, var(--color-blue) 26%, transparent);
+}
+.door-tile.shade-high {
+	background: color-mix(in srgb, var(--color-blue) 36%, transparent);
+}
+.door-tile.shade-full {
+	background: color-mix(in srgb, var(--color-blue) 46%, transparent);
+}
+
+/* Hue, not the ramp, for the two states where the count is not the question:
+   matching the map, where status wins over door count. */
+.door-tile.shade-yours {
+	background: color-mix(in srgb, var(--color-success) 20%, transparent);
+}
+.door-tile.shade-taken {
+	background: color-mix(in srgb, var(--color-warm-dark) 14%, transparent);
+}
+
+/* Dashed, matching the map and the legend: nothing left is a different kind of
+   turf, not the pale end of the ramp. */
+.door-tile.shade-cleared {
+	background: color-mix(in srgb, var(--color-warm-dark) 10%, transparent);
+	border: 1px dashed var(--color-warm-dark);
 }
 
 /* Shown only to organizers — the server nulls `heldBy` for everyone else, so
@@ -605,12 +820,6 @@ main {
 .admin-only {
 	color: var(--color-warm-dark);
 	font-style: italic;
-}
-
-/* Inline separator between meta items. `aria-hidden` in the markup, because a
-   screen reader announcing "middle dot" between every field is noise. */
-.dot {
-	color: var(--color-text-faint);
 }
 
 .badge {
@@ -653,31 +862,27 @@ main {
 	color: var(--color-text);
 }
 
-/* "Updating" is a footnote on a row that already carries a status chip, so it
-   is the one chip that does NOT get a tint: two filled pills side by side read
-   as two competing statuses, and this one is subordinate to whichever status
-   sits next to it. An outline in the faint text colour says "extra
-   information" without claiming the row. */
+/* Amber, and the one chip with an outline as well as a fill: it sits beside a
+   status chip and has to be told apart from the amber of CHECKED OUT, which is
+   a fill alone. The text stays --color-text for the reason above — on 30% of
+   the amber it runs 10.2:1 light and 5.8 dark, and 6.1/4.8 through the dimming
+   that a checked-out row applies to the whole summary. Amber on amber-tinted
+   white would be 4.1 before any of that. */
 .badge-updating {
-	background: transparent;
-	border: 1px solid var(--color-border);
-	color: var(--color-text-muted);
-	font-weight: 600;
+	background: color-mix(in srgb, var(--color-warning) 30%, transparent);
+	border: 1px solid var(--color-warning);
+	color: var(--color-text);
 }
 
-/* The age of a door count, sitting under the count itself. Smaller and muted:
-   the number is the answer, the age is the caveat on it. */
-.detail-age {
-	display: block;
-	font-size: var(--font-size-xs);
-	font-weight: 400;
-	color: var(--color-text-muted);
-}
-
+/* Amber text, no rule and no fill: it is a caveat inside an open row, not a
+   panel, and the row already has the UPDATING chip carrying the same amber.
+   The colour alone runs 4.95:1 light and 6.33 dark on the card, and nothing
+   dims the detail the way the summary is dimmed. */
 .detail-note {
 	margin: 0 0 10px;
 	font-size: var(--font-size-sm);
-	color: var(--color-text-muted);
+	line-height: 1.5;
+	color: var(--color-warning);
 }
 
 /* --- The expanded half of a selected row --------------------------------- */
@@ -686,37 +891,6 @@ main {
 	/* 11px on the left to sit flush with the summary above it, which is inset
 	   by the row's 3px accent border. */
 	padding: 0 14px 14px 11px;
-}
-
-.detail-stats {
-	/* Auto-fit rather than a flex row: this lives in a 300px column on a
-	   desktop and the full width of a phone, and neither should get a ragged
-	   second line of statistics. */
-	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
-	gap: 10px 16px;
-	margin: 0 0 14px;
-}
-
-/* The label/value split does the work here, because the values are bare
-   numbers and a region name — without it "Doors left 42" reads as one string.
-   Three things separate them, so it survives at small sizes and in both
-   themes: case, weight, and colour. Faint was too far: these are read while
-   deciding, not skimmed past, so they sit at muted. */
-.detail-stats dt {
-	font-size: var(--font-size-xs);
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	color: var(--color-text-muted);
-	margin-bottom: 3px;
-}
-
-.detail-stats dd {
-	margin: 0;
-	font-size: 1.05rem;
-	font-weight: 700;
-	color: var(--color-text);
 }
 
 .claim-btn {
@@ -769,35 +943,86 @@ main {
 	font-size: 0.95em;
 }
 
-/* --- ZIP fallback ------------------------------------------------------- */
+/* --- Sort bar ------------------------------------------------------------ */
 
-/* The path that works when geolocation is declined, unavailable, or blocked —
-   and, being a plain GET form, when JavaScript is off entirely. It is not a
-   lesser path: on a phone with location services disabled it is the only one. */
+/* Both ways of ordering the list, on one line. `wrap` is the escape hatch for
+   a screen too narrow to hold them, not the layout: what actually keeps the
+   row to one line on a phone is the heading dropping out below 430px. The ZIP
+   field cannot give the width back — it has a five-digit floor.
 
-.zip-form {
-	margin-top: 16px;
+   The ZIP form is the path that works when geolocation is declined,
+   unavailable, or blocked — and, being a plain GET form, when JavaScript is
+   off entirely. It is not a lesser path: on a phone with location services
+   disabled it is the only one, which is why it sits beside the location
+   button rather than under it as a fallback. */
+.sort-bar {
 	display: flex;
-	flex-direction: column;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 20px;
+}
+
+.sort-title {
+	margin: 0;
+	font-family: var(--font-display);
+	font-size: var(--font-size-md);
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: var(--tracking-subhead);
+	color: var(--color-text-muted);
+	white-space: nowrap;
+}
+
+.sort-btn {
+	padding: 7px 14px;
+	background: var(--color-surface);
+	color: var(--color-text);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	font-family: inherit;
+	font-size: var(--font-size-md);
+	font-weight: 600;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.sort-btn:hover {
+	border-color: var(--color-action);
+	background: var(--color-cream-light);
+}
+
+.sort-btn:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 1px;
+}
+
+/* Label, field and button wrap as one: a ZIP box on a line by itself with its
+   Sort button on the next is not a control any more. */
+.zip-form {
+	display: flex;
+	align-items: center;
 	gap: 6px;
 }
 
 .zip-form label {
-	font-size: 0.85rem;
+	font-size: var(--font-size-sm);
 	font-weight: 600;
 	color: var(--color-text-muted);
+	white-space: nowrap;
 }
 
-.zip-row {
-	display: flex;
-	gap: 8px;
-	align-items: center;
-}
-
-.zip-row input {
-	flex: 0 1 8rem;
-	padding: 8px 10px;
+.zip-form input {
+	/* Sized to hold five digits. box-sizing is border-box app-wide, so the
+	   width has to carry the 16px of padding and 2px of border as well as the
+	   figures — a bare 5.5ch leaves room for three. Tabular figures make ch an
+	   exact digit width, so 5.5 of them is five digits and a caret. */
+	flex: 0 1 auto;
+	width: calc(5.5ch + 18px);
+	min-width: calc(5ch + 18px);
+	padding: 7px 8px;
 	font: inherit;
+	font-size: var(--font-size-md);
 	/* Tabular figures so a five-digit ZIP doesn't jitter as it's typed. */
 	font-variant-numeric: tabular-nums;
 	border: 1px solid var(--color-border);
@@ -806,9 +1031,33 @@ main {
 	color: var(--color-text);
 }
 
-.zip-row input:focus-visible {
+.zip-form input:focus-visible {
 	outline: 2px solid var(--color-border-focus);
 	outline-offset: 1px;
+}
+
+/* Its own line under the controls: which sort is in force is an answer, not a
+   third control competing for the row. */
+.sort-note {
+	flex-basis: 100%;
+	margin: 0;
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+/* Below roughly a phone's width the heading is what costs the row its second
+   line — about 60px against a 312px content column. It goes to the screen
+   reader only, which keeps the region named while the two controls, one of
+   which says "Sort", stay legible on their own. */
+@media (max-width: 430px) {
+	.sort-title {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
 }
 
 /* --- Back to top -------------------------------------------------------- */

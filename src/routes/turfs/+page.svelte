@@ -15,6 +15,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
+	import { turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
 	import TurfMap from '$lib/components/turfs/TurfMap.svelte';
 	import { mappableTurfs, type TurfView } from '$lib/van/turf-view.js';
@@ -469,7 +470,7 @@
 						<li>Choose <strong>Enter List Number</strong> and type the number above.</li>
 						<li>Knock the doors, then hit <strong>Sync</strong> before you close the app.</li>
 					</ol>
-					<p class="sync-warning">
+					<p class="sync-reminder">
 						Your answers only reach VAN when you sync. If you skip it, the turf looks unwalked and
 						someone else gets sent to the same doors.
 					</p>
@@ -512,6 +513,52 @@
 				</article>
 			</section>
 		{/each}
+
+		<!-- Sorting orders the map and the list alike, so it belongs to the page
+		     rather than to the map it used to sit under, where it was below the
+		     fold on a phone and read as a map control. One row, because the two
+		     ways in are alternatives: stacked, they read as two features and a
+		     volunteer who grants location wonders what the ZIP field is still
+		     for. -->
+		<section class="sort-bar" aria-labelledby="sort-by">
+			<h2 class="sort-title" id="sort-by">Sort by</h2>
+			{#if locationState === 'idle'}
+				<button type="button" class="sort-btn" onclick={askForLocation}>Nearest me</button>
+			{/if}
+
+			<!-- The ZIP fallback (6.4). A plain GET form, so it works with the
+			     location permission denied, with the Geolocation API missing,
+			     and with JavaScript off entirely — the server resolves the ZIP
+			     and sorts before serialising. -->
+			{#if locationState !== 'granted'}
+				<form class="zip-form" method="GET" action={resolve('/turfs')}>
+					<input type="hidden" name="chapter" value={data.chapter.chapterId} />
+					<label for="zip">ZIP</label>
+					<input
+						id="zip"
+						name="zip"
+						inputmode="numeric"
+						pattern={ZIP_PATTERN}
+						maxlength="5"
+						placeholder="48104"
+						value={data.zip ?? ''}
+					/>
+					<button type="submit" class="sort-btn">Sort</button>
+				</form>
+			{/if}
+
+			<!-- Whichever sort is in force, said once. The note wraps to its own
+			     line; the controls above it stay on one. -->
+			{#if locationState === 'granted'}
+				<p class="sort-note">Nearest turf first, from where you are now.</p>
+			{:else if data.zip}
+				<p class="sort-note">Nearest turf first, from {data.zip}.</p>
+			{:else if locationState === 'denied'}
+				<p class="sort-note">
+					Location unavailable — a ZIP sorts the list instead. The list works either way.
+				</p>
+			{/if}
+		</section>
 
 		<div class="turf-layout">
 			<div class="map-col">
@@ -557,47 +604,14 @@
 						complete either way.
 					</p>
 				{/if}
-
-				{#if locationState === 'idle'}
-					<button type="button" class="ghost-btn" onclick={askForLocation}>
-						Sort by what's nearest me
-					</button>
-				{/if}
-
-				<!-- The ZIP fallback (6.4). A plain GET form, so it works with the
-				     location permission denied, with the Geolocation API missing,
-				     and with JavaScript off entirely — the server resolves the ZIP
-				     and sorts before serialising. -->
-				{#if locationState !== 'granted'}
-					<form class="zip-form" method="GET" action={resolve('/turfs')}>
-						<input type="hidden" name="chapter" value={data.chapter.chapterId} />
-						<label for="zip">Or sort by ZIP code</label>
-						<div class="zip-row">
-							<input
-								id="zip"
-								name="zip"
-								inputmode="numeric"
-								pattern={ZIP_PATTERN}
-								maxlength="5"
-								placeholder="48104"
-								value={data.zip ?? ''}
-							/>
-							<button type="submit" class="ghost-btn">Sort</button>
-						</div>
-						{#if data.zip}
-							<p class="gate-help">Sorted by distance from {data.zip}.</p>
-						{:else if locationState === 'denied'}
-							<p class="gate-help">
-								Location unavailable. Enter a ZIP to sort by distance — the list works either way.
-							</p>
-						{/if}
-					</form>
-				{/if}
 			</div>
 
 			<div class="list-col">
 				<div class="list-head">
-					<h2>{availableCount} turf{availableCount === 1 ? '' : 's'} available</h2>
+					<h2>
+						<span class="available-count">{availableCount}</span>
+						turf{availableCount === 1 ? '' : 's'} available
+					</h2>
 					{#if turfs.length > 0}
 						<span class="freshness">
 							Doors remaining as of {describeAge(stalestMinutes)}
@@ -627,9 +641,10 @@
 
 				<ul class="turf-list" bind:this={listEl}>
 					{#each sortedTurfs as turf (turf.mapRouteId)}
+						{@const expanded = turf.mapRouteId === selectedId}
 						<li
 							class="turf-row"
-							class:is-selected={turf.mapRouteId === selectedId}
+							class:is-selected={expanded}
 							class:is-mine={turf.status === 'held-by-you'}
 							class:is-unavailable={turf.status === 'checked-out'}
 						>
@@ -637,83 +652,105 @@
 								type="button"
 								class="turf-card"
 								onclick={() => toggle(turf.mapRouteId)}
-								aria-expanded={turf.mapRouteId === selectedId}
-								aria-controls={turf.mapRouteId === selectedId
-									? `turf-detail-${turf.mapRouteId}`
-									: undefined}
+								aria-expanded={expanded}
+								aria-controls={expanded ? `turf-detail-${turf.mapRouteId}` : undefined}
 							>
-								<span class="card-top">
-									<span class="turf-name">{turf.name}</span>
-									<!-- Status reads as a badge rather than another line of meta
-									     text: it is the field that decides whether the row is
-									     worth opening, and colour makes that answerable without
-									     reading. The class follows the status verbatim, so a new
-									     status shows up as an unstyled chip rather than silently
-									     borrowing the wrong colour. -->
-									<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
-									{#if turf.updating}
-										<!-- VAN is re-cutting this turf's region, so its door count
-										     is about to move. Deliberately a chip and not a
-										     disabled state: Story 4.5 keeps the turf claimable
-										     during a refresh, because blocking would take the page
-										     down on exactly the mornings it is busiest. -->
-										<span class="badge badge-updating" title="VAN is recounting this area"
-											>Updating</span
-										>
+								<!-- First in the DOM as well as on screen, so what a screen
+								     reader hears matches what the eye lands on, and both lead
+								     with the field the list is scanned for. -->
+								<span class="door-tile shade-{turfShade(turf.status, turf.doorsRemaining)}">
+									<span class="door-count">{turf.doorsRemaining}</span>
+									<span class="door-label">doors left</span>
+									{#if expanded}
+										<!-- Story 4.3: never imply live data. A volunteer who walks a
+										     turf on stale counts finds knocked doors and stops
+										     trusting the tool, so the number carries its age. Only
+										     on the open row — on forty closed ones it is noise
+										     against the count, which is what the list is scanned
+										     for. -->
+										<span class="door-age">as of {describeAge(turf.refreshedMinutesAgo)}</span>
 									{/if}
 								</span>
-								<span class="card-meta">
-									<span class="doors">{turf.doorsRemaining} doors left</span>
-									{#if distances[turf.mapRouteId] !== undefined}
-										<span class="dot" aria-hidden="true">·</span>
-										<span>{formatDistance(distances[turf.mapRouteId])} away</span>
+
+								<span class="card-main">
+									<span class="card-top">
+										<span class="turf-name">{turf.name}</span>
+										<!-- Grouped, so the status chip is hard against the right
+										     edge whether or not UPDATING is beside it. Loose in the
+										     row, the space-between would strand it in the middle on
+										     the rows that carry both. -->
+										<span class="card-badges">
+											{#if turf.updating}
+												<!-- VAN is re-cutting this turf's region, so its door
+											     count is about to move. Deliberately a chip and not
+											     a disabled state: Story 4.5 keeps the turf claimable
+											     during a refresh, because blocking would take the
+											     page down on exactly the mornings it is busiest.
+											     Left of the status: it qualifies the count, while
+											     the status decides whether the row is worth opening
+											     at all, and that one keeps the edge. -->
+												<span class="badge badge-updating" title="VAN is recounting this area"
+													>Updating</span
+												>
+											{/if}
+											<!-- Status reads as a badge rather than another line of meta
+										     text: it is the field that decides whether the row is
+										     worth opening, and colour makes that answerable without
+										     reading. The class follows the status verbatim, so a new
+										     status shows up as an unstyled chip rather than silently
+										     borrowing the wrong colour. -->
+											<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
+										</span>
+									</span>
+									{#if expanded}
+										<!-- What the open row says about the turf besides its name,
+										     as a list rather than a run of {#if}s: a turf with no
+										     distance to show still lays out correctly, with nothing
+										     dangling where the missing field was. Two of them, so
+										     they hold one line even in the ~190px the list column
+										     leaves beside the door tile on a desktop. -->
+										{@const stats = [
+											distances[turf.mapRouteId] !== undefined
+												? { label: 'Distance', value: formatDistance(distances[turf.mapRouteId]) }
+												: null,
+											{ label: 'People in list', value: String(turf.routeSize) },
+										].filter((stat) => stat !== null)}
+										<!-- Labelled rather than run together with separators: the
+										     values are a distance and a bare number, and side by
+										     side in one muted line they read as one string. Case,
+										     weight and colour each separate label from value, so the
+										     split survives at this size and in both themes. -->
+										<span class="card-stats">
+											<!-- Keyed by position: a fixed short list of plain values,
+											     two of which can read alike — a region named for its
+											     ward, say — which a value key would reject. -->
+											{#each stats as stat, i (i)}
+												<span class="stat">
+													<span class="stat-label">{stat.label}</span>
+													<span class="stat-value">{stat.value}</span>
+												</span>
+											{/each}
+										</span>
+									{:else if distances[turf.mapRouteId] !== undefined}
+										<span class="card-meta">{formatDistance(distances[turf.mapRouteId])} away</span>
 									{/if}
-								</span>
-								{#if turf.heldBy}
-									<!-- Only ever populated for admins; the server nulls it for
+									{#if turf.heldBy}
+										<!-- Only ever populated for admins; the server nulls it for
 									     everyone else (visibleTurfState), so this cannot leak by
 									     template edit. The expiry distinguishes an app claim,
 									     which lapses, from turf an organizer sent to someone in
 									     VAN, which does not. -->
-									<span class="card-note admin-only">
-										Held by {turf.heldBy}{turf.expiresInHours
-											? ` — frees up in ${turf.expiresInHours} h`
-											: ' (assigned in VAN)'}
-									</span>
-								{/if}
+										<span class="card-note admin-only">
+											Held by {turf.heldBy}{turf.expiresInHours
+												? ` — frees up in ${turf.expiresInHours} h`
+												: ' (assigned in VAN)'}
+										</span>
+									{/if}
+								</span>
 							</button>
 
-							{#if turf.mapRouteId === selectedId}
+							{#if expanded}
 								<div class="row-detail" id="turf-detail-{turf.mapRouteId}">
-									<dl class="detail-stats">
-										<div>
-											<dt>Region</dt>
-											<dd>{turf.regionName || '—'}</dd>
-										</div>
-										<div>
-											<!-- Story 4.3: never imply live data. A volunteer who
-											     walks a turf on stale counts finds knocked doors
-											     and stops trusting the tool, so the number and its
-											     age are shown together rather than the number
-											     alone. -->
-											<dt>Doors left</dt>
-											<dd>
-												{turf.doorsRemaining}
-												<span class="detail-age">as of {describeAge(turf.refreshedMinutesAgo)}</span
-												>
-											</dd>
-										</div>
-										<div>
-											<dt>People in list</dt>
-											<dd>{turf.routeSize}</dd>
-										</div>
-										{#if turf.heldBy}
-											<div>
-												<dt>Held by</dt>
-												<dd>{turf.heldBy}</dd>
-											</div>
-										{/if}
-									</dl>
 									{#if turf.updating}
 										<p class="detail-note">
 											VAN is recounting this area — the doors left may change shortly. You can still
