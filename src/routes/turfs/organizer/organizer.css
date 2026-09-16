@@ -253,16 +253,11 @@ tr:hover td {
 
 /* --- Notices -------------------------------------------------------------- */
 
-.empty,
-.cap-note {
+.empty {
 	margin: var(--space-5) 0;
 	font-size: var(--font-size-base);
 	color: var(--color-text-muted);
 	line-height: 1.5;
-}
-
-.cap-note {
-	font-size: var(--font-size-sm);
 }
 
 @media (max-width: 700px) {

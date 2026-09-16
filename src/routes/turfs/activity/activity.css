@@ -166,7 +166,7 @@ tr:hover td {
 .time-ago {
 	display: block;
 	font-size: var(--font-size-xs);
-	color: var(--color-text-faint);
+	color: var(--color-text-muted);
 }
 
 .turf-name {
