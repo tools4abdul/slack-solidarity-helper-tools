@@ -115,12 +115,10 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	const candidates = bounds ? withinBounds(rows, bounds) : rows;
 	const { selected, omitted } = selectNearest(candidates, { location, limit, offset });
 
-	// Claims are fetched for exactly the turf being served. Scoping by
-	// mapRouteId rather than pulling the whole ledger keeps a chapter's payload
-	// from carrying evidence of activity in other chapters.
 	const claims = await claimsFor(
 		db,
 		selected.map((r) => r.mapRouteId),
+		viewer.slackUserId,
 	);
 
 	// One small read for the whole payload rather than a lookup per row. The
@@ -156,14 +154,34 @@ async function activeRouteIdsFor(db: Db, slackUserId: string): Promise<number[]>
 }
 
 /** Active claims on the given routes, as the pure rules want them. */
-async function claimsFor(db: Db, mapRouteIds: number[]): Promise<ClaimSnapshot[]> {
+/**
+ * Live claims relevant to this payload: the turf being served, plus the
+ * viewer's own wherever it is.
+ *
+ * The viewer's own are in the set because `canClaim` counts them to decide
+ * whether this viewer is at their claim limit. Scoped to the payload alone, a
+ * volunteer who pans away from the turf they hold is counted as holding
+ * nothing, so every turf renders claimable with no reason given and the click
+ * 409s. Adding them discloses nothing new — their own page already shows them.
+ *
+ * Everyone else's stays scoped by mapRouteId, so a chapter's payload still
+ * carries no evidence of activity in other chapters.
+ */
+async function claimsFor(
+	db: Db,
+	mapRouteIds: number[],
+	viewerSlackUserId: string,
+): Promise<ClaimSnapshot[]> {
 	if (mapRouteIds.length === 0) return [];
 	const rows = await db
 		.select()
 		.from(vanTurfCheckouts)
 		.where(
 			and(
-				inArray(vanTurfCheckouts.mapRouteId, mapRouteIds),
+				or(
+					inArray(vanTurfCheckouts.mapRouteId, mapRouteIds),
+					eq(vanTurfCheckouts.slackUserId, viewerSlackUserId),
+				),
 				isNull(vanTurfCheckouts.releasedAt),
 				isNull(vanTurfCheckouts.completedAt),
 			),

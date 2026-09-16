@@ -159,10 +159,15 @@ function ledgerWith(records: RsvpRecord[] = []): AttendeeLedger & { forgotten: n
 	};
 }
 
-function run(ledger: AttendeeLedger, apply = false, links: TimeslotLink[] = [LINK]) {
+function run(
+	ledger: AttendeeLedger,
+	apply = false,
+	links: TimeslotLink[] = [LINK],
+	over: { writeDeadline?: number } = {},
+) {
 	return runAttendeeSync(
 		links,
-		{ api: API, solidarityToken: 't', apply, maxNewProfiles: 1000, pauseMs: 0 },
+		{ api: API, solidarityToken: 't', apply, maxNewProfiles: 1000, pauseMs: 0, ...over },
 		ledger,
 		new Map(),
 		1330,
@@ -901,5 +906,43 @@ describe('runAttendeeSync seat order', () => {
 			([url, init]) => String(url).includes('/v1/users') && init?.method === 'POST',
 		);
 		expect(String(created[0]?.[1]?.body)).toContain('lower-id@example.com');
+	});
+});
+
+describe('the run stops on its time budget', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('stops between signups and reports what it did not reach', async () => {
+		// Three signups on one shift, and a deadline already in the past: the loop
+		// must refuse the first one rather than working through all three.
+		mockApis({
+			attendances: [attendance({ id: 1 }), attendance({ id: 2 }), attendance({ id: 3 })],
+			userFound: false,
+		});
+
+		const report = await run(ledgerWith(), false, [LINK], { writeDeadline: Date.now() - 1 });
+
+		expect(report.incomplete).toBe(true);
+		expect(report.pending).toBe(3);
+		// Not an abort: nothing went wrong, so the alerting path stays quiet.
+		expect(report.abortedReason).toBeUndefined();
+		expect(report.failed).toBe(0);
+	});
+
+	it('runs to the end when the budget is ample', async () => {
+		mockApis({ attendances: [attendance({ id: 1 })], userFound: false });
+
+		const report = await run(ledgerWith(), false, [LINK], { writeDeadline: Date.now() + 60_000 });
+
+		expect(report.incomplete).toBe(false);
+		expect(report.pending).toBe(0);
+	});
+
+	it('has no budget at all when none is given', async () => {
+		mockApis({ attendances: [attendance({ id: 1 })], userFound: false });
+
+		const report = await run(ledgerWith());
+
+		expect(report.incomplete).toBe(false);
 	});
 });

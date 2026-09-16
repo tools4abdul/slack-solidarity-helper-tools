@@ -226,19 +226,32 @@ async function stampRequested(
 		// refuses would be asked 37 times a day forever. What it does NOT do is
 		// clear `requestedAt`: the want survives, and the retry happens an hour
 		// later rather than never.
-		const set = error
+		const base = error
 			? { lastRequestAt: nowIso, lastRequestKind: kind, lastError: error, lastErrorAt: nowIso }
 			: {
 					lastRequestAt: nowIso,
 					lastRequestKind: kind,
-					requestedAt: null,
 					inFlightSince: nowIso,
 					lastError: null,
 					lastErrorAt: null,
 				};
+
+		// A satisfied want is cleared, but only the want this sweep actually saw.
+		// `now` is stamped before the plan is read, so a completion recorded
+		// while the sweep was working has a newer `requested_at` — and clearing
+		// that drops a refresh nobody will ask for again, because `lastRequestAt`
+		// is now fresh and the hourly throttle blocks the retry. Those doors then
+		// sit in the count until the nightly sweep, up to twenty hours later.
+		const set = error
+			? base
+			: {
+					...base,
+					requestedAt: sql`CASE WHEN ${vanRegionRefreshes.requestedAt} <= ${nowIso} THEN NULL ELSE ${vanRegionRefreshes.requestedAt} END`,
+				};
+
 		await db
 			.insert(vanRegionRefreshes)
-			.values({ folderId: region.folderId, mapRegionId: region.mapRegionId, ...set })
+			.values({ folderId: region.folderId, mapRegionId: region.mapRegionId, ...base })
 			.onConflictDoUpdate({
 				target: [vanRegionRefreshes.folderId, vanRegionRefreshes.mapRegionId],
 				set,

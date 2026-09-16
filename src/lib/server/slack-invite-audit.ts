@@ -73,6 +73,9 @@ const INVITE_RE = /https?:\/\/join\.slack\.com\/t\/[^\s"'<>\\)&]+/gi;
 // value the audit does NOT start crying wolf: `classifyInvite` detects the wall
 // explicitly and returns 'unknown', and `runSlackInviteAudit` surfaces it as a
 // configuration problem to fix rather than as broken links.
+/** Slack's own chain is one hop; anything past a handful is a loop. */
+const MAX_INVITE_REDIRECTS = 5;
+
 const BROWSER_UA =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
 
@@ -149,7 +152,16 @@ export function collectInviteRefsFromHtml(page: SolidarityPage, html: string): I
 export async function classifyInvite(
 	url: string,
 	fetchImpl: typeof fetch = fetch,
+	depth = 0,
 ): Promise<{ status: InviteStatus; detail: string }> {
+	// `redirect: 'manual'` turns off the runtime's own redirect cap, so the
+	// join.slack.com hop below is chased by this function and nothing else
+	// bounds it. Two hosts pointing shared-invite URLs at each other would
+	// recurse until the stack gives out, which fails the whole hourly audit and
+	// leaves broken invite links unreported.
+	if (depth > MAX_INVITE_REDIRECTS) {
+		return { status: 'unknown', detail: `redirected more than ${MAX_INVITE_REDIRECTS} times` };
+	}
 	let res: Response;
 	try {
 		res = await fetchImpl(url, {
@@ -167,7 +179,7 @@ export async function classifyInvite(
 	// at the token, so that first hop says nothing — follow it before judging.
 	const location = res.headers.get('location') ?? '';
 	if (res.status >= 300 && res.status < 400 && /\/join\/shared_invite\//.test(location)) {
-		return classifyInvite(location, fetchImpl);
+		return classifyInvite(location, fetchImpl, depth + 1);
 	}
 
 	if (res.status >= 300 && res.status < 400) {

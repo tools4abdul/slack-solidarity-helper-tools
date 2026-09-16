@@ -10,6 +10,13 @@ import {
 	auditIsWorthPosting,
 } from '$lib/server/slack-invite-audit.js';
 import { recordAudit, formatChanges } from '$lib/server/slack-invite-log.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
+import { withSyncLock } from '$lib/server/sync-lock.js';
+
+const SYNC_LOCK_NAME = 'slack-invite-audit';
+// A full sweep is ~100s; generous headroom on an hourly schedule, and erring
+// high only delays the next pass after a crash.
+const SYNC_LOCK_TTL_MS = 15 * 60 * 1000;
 
 // Internal endpoint called hourly by a scheduler (GitHub Actions) to verify
 // every Slack invite link published through Solidarity still admits the public.
@@ -21,7 +28,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.error('[invite-audit] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
+	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 	if (!SOLIDARITY_API_TOKEN) {
@@ -36,11 +43,26 @@ export const POST: RequestHandler = async ({ url }) => {
 			return json({ error: 'Tracking channel is not configured' }, { status: 500 });
 		}
 
-		const result = await runSlackInviteAudit(SOLIDARITY_API_TOKEN);
+		// Serialised because `recordAudit` reads each sighting and then writes it.
+		// The table has a unique index on (page, location, link), so two runs
+		// overlapping — a sweep is ~100s and a manual call can land on top of the
+		// hourly one — both see no prior row, both insert, and the loser throws
+		// `UNIQUE constraint failed` partway through, losing the rest of that
+		// run's history.
+		const run = await withSyncLock(db, SYNC_LOCK_NAME, SYNC_LOCK_TTL_MS, async () => {
+			const audited = await runSlackInviteAudit(SOLIDARITY_API_TOKEN);
+			// Record before posting: the ledger is the durable record, and a Slack
+			// outage must not cost us the history of this run.
+			return { result: audited, changes: dryRun ? [] : await recordAudit(db, audited) };
+		});
 
-		// Record before posting: the ledger is the durable record, and a Slack
-		// outage must not cost us the history of this run.
-		const changes = dryRun ? [] : await recordAudit(db, result);
+		// 200, like the other internal syncs: an overlap is expected rather than a
+		// failure, and the workflow uses `curl --fail-with-body`.
+		if (run.skipped) {
+			console.log('[invite-audit] skipped — another audit is already running');
+			return json({ skipped: true, reason: 'another invite audit is already running' });
+		}
+		const { result, changes } = run.result;
 
 		const changeSummary = formatChanges(changes);
 		const message = changeSummary

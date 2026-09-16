@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createClient } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
+import { migrate } from 'drizzle-orm/libsql/migrator';
 import {
 	loadRegionStates,
 	refreshingRegionIds,
@@ -155,15 +158,17 @@ describe('runRefreshSweep — on demand', () => {
 
 		expect(refreshMapRegion).toHaveBeenCalledWith(1152, 10);
 		expect(result.regionsRefreshed).toBe(1);
-		expect(upserts[0].set).toEqual({
+		expect(upserts[0].set).toMatchObject({
 			lastRequestAt: NOW.toISOString(),
 			lastRequestKind: 'completion',
-			// The want is satisfied and the wait begins.
-			requestedAt: null,
 			inFlightSince: NOW.toISOString(),
 			lastError: null,
 			lastErrorAt: null,
 		});
+		// The want is satisfied and the wait begins — but conditionally, so a
+		// completion recorded since the plan was read is not swallowed. The
+		// behaviour of that condition is exercised against real SQLite below.
+		expect((upserts[0].set as Record<string, unknown>).requestedAt).not.toBeNull();
 	});
 
 	it('keeps the want but starts the clock when VAN refuses', async () => {
@@ -352,5 +357,66 @@ describe('refreshingRegionIds', () => {
 	it('is the set the turf page marks as updating', async () => {
 		const { db } = makeDb([[{ mapRegionId: 10 }, { mapRegionId: 12 }]]);
 		expect(await refreshingRegionIds(db)).toEqual(new Set([10, 12]));
+	});
+});
+
+// Real SQLite, because what is under test is a conditional UPDATE: a fake can
+// show which statement was built but not which rows it would actually touch.
+describe('runRefreshSweep — a want recorded mid-sweep survives', () => {
+	let db: ReturnType<typeof drizzle>;
+	let client: ReturnType<typeof createClient>;
+
+	beforeEach(async () => {
+		client = createClient({ url: ':memory:' });
+		db = drizzle(client);
+		await migrate(db, { migrationsFolder: 'drizzle' });
+		await client.execute({
+			sql: `INSERT INTO van_turfs
+			        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+			         region_name, name, door_count, first_seen_at, last_seen_at)
+			      VALUES (100, 10, 1152, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?)`,
+			args: [NOW.toISOString(), NOW.toISOString()],
+		});
+	});
+
+	async function storedRequestedAt(): Promise<string | null> {
+		const res = await client.execute('SELECT requested_at FROM van_region_refreshes');
+		return (res.rows[0]?.requested_at as string | null) ?? null;
+	}
+
+	const sweep = () =>
+		runRefreshSweep(db, makeClient({ refreshMapRegion: async () => undefined }), { now: NOW });
+
+	it('clears a want the sweep actually saw', async () => {
+		await requestRegionRefresh(db, {
+			folderId: 1152,
+			mapRegionId: 10,
+			now: new Date(NOW.getTime() - 10 * 60 * 1000),
+		});
+
+		const result = await sweep();
+
+		expect(result.regionsRefreshed).toBe(1);
+		expect(await storedRequestedAt()).toBeNull();
+	});
+
+	it('keeps a want recorded after the sweep started', async () => {
+		await requestRegionRefresh(db, {
+			folderId: 1152,
+			mapRegionId: 10,
+			now: new Date(NOW.getTime() - 10 * 60 * 1000),
+		});
+		// A volunteer marks turf complete while the sweep is mid-flight. Clearing
+		// this would lose the refresh entirely: lastRequestAt is now fresh, so the
+		// hourly throttle blocks the retry and those doors stay in the count.
+		await requestRegionRefresh(db, {
+			folderId: 1152,
+			mapRegionId: 10,
+			now: new Date(NOW.getTime() + 5 * 60 * 1000),
+		});
+
+		await sweep();
+
+		expect(await storedRequestedAt()).toBe(new Date(NOW.getTime() + 5 * 60 * 1000).toISOString());
 	});
 });

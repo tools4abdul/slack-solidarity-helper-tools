@@ -39,13 +39,21 @@ export const handle: Handle = async ({ event, resolve }) => {
 		const lookup = await sessionStore.get(sid);
 		if (lookup.status === 'found') {
 			event.locals.session = lookup.data;
-			event.cookies.set('session', sid, {
-				path: '/',
-				httpOnly: true,
-				secure: !dev,
-				sameSite: 'lax',
-				maxAge: 8 * 60 * 60,
-			});
+			// Re-issued with the life the SESSION actually has left, not a fresh
+			// eight hours. The row's expiry is never extended on read, so a fixed
+			// maxAge here promises a sliding window that does not exist: the
+			// cookie outlives the row and the last stretch of it reads as signed
+			// out with a cookie still in the jar.
+			const remainingSeconds = Math.floor((Date.parse(lookup.expiresAt) - Date.now()) / 1000);
+			if (remainingSeconds > 0) {
+				event.cookies.set('session', sid, {
+					path: '/',
+					httpOnly: true,
+					secure: !dev,
+					sameSite: 'lax',
+					maxAge: remainingSeconds,
+				});
+			}
 		} else {
 			event.locals.session = null;
 			// Only clear the cookie when the session is genuinely gone. On

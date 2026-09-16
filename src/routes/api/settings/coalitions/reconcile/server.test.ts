@@ -131,9 +131,37 @@ describe('POST /api/settings/coalitions/reconcile', () => {
 		]);
 	});
 
-	it('invite: invites each target to the coalition channel, already_in_channel counts as success', async () => {
+	it('invite: sends one batched call for the whole set', async () => {
 		vi.spyOn(console, 'log').mockImplementation(() => {});
+		mockInvite.mockResolvedValueOnce({ ok: true });
+
+		const res = await POST(
+			postEvent(authed, {
+				group: 'labor',
+				action: 'invite',
+				targets: [
+					{ slackUserId: 'U_A', email: 'a@x.com' },
+					{ slackUserId: 'U_B', email: 'b@x.com' },
+				],
+			}) as never,
+		);
+
+		expect(res.status).toBe(200);
+		expect(mockInvite).toHaveBeenCalledTimes(1);
+		expect(mockInvite).toHaveBeenCalledWith({ channel: 'C_LABOR', users: 'U_A,U_B' });
+		expect((await res.json()).results).toEqual([
+			{ email: 'a@x.com', ok: true },
+			{ email: 'b@x.com', ok: true },
+		]);
+	});
+
+	it('invite: retries a failed batch per person, and already_in_channel counts as success', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mockInvite
+			// Slack reports a partial failure as one error for the whole call, so
+			// the batch tells us nothing about who actually got in.
+			.mockRejectedValueOnce(new Error('already_in_channel'))
 			.mockResolvedValueOnce({ ok: true })
 			.mockRejectedValueOnce(new Error('already_in_channel'));
 
@@ -150,9 +178,36 @@ describe('POST /api/settings/coalitions/reconcile', () => {
 
 		expect(res.status).toBe(200);
 		expect(mockInvite).toHaveBeenCalledWith({ channel: 'C_LABOR', users: 'U_A' });
+		expect(mockInvite).toHaveBeenCalledWith({ channel: 'C_LABOR', users: 'U_B' });
 		expect((await res.json()).results).toEqual([
 			{ email: 'a@x.com', ok: true },
 			{ email: 'b@x.com', ok: true },
+		]);
+	});
+
+	it('invite: a genuinely failing person does not mark the rest failed', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockInvite
+			.mockRejectedValueOnce(new Error('user_not_found'))
+			.mockResolvedValueOnce({ ok: true })
+			.mockRejectedValueOnce(new Error('user_not_found'));
+
+		const res = await POST(
+			postEvent(authed, {
+				group: 'labor',
+				action: 'invite',
+				targets: [
+					{ slackUserId: 'U_A', email: 'a@x.com' },
+					{ slackUserId: 'U_GONE', email: 'gone@x.com' },
+				],
+			}) as never,
+		);
+
+		expect((await res.json()).results).toEqual([
+			{ email: 'a@x.com', ok: true },
+			{ email: 'gone@x.com', ok: false, error: 'user_not_found' },
 		]);
 	});
 
