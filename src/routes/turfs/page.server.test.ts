@@ -255,6 +255,44 @@ describe('/turfs load', () => {
 		});
 	});
 
+	describe('turf request budget', () => {
+		it('throttles repeated loads of ONE chapter, which the chapter limiter lets through', async () => {
+			// Re-opening a chapter already seen is free by design, so the chapter
+			// limiter never fires here. Without the request budget on this load,
+			// `?chapter=N&zip=XXXXX` in a loop walks a whole chapter 150 turfs at
+			// a time for nothing — the API route has always charged for it.
+			const { MAX_REQUESTS } = await import('$lib/van/request-budget.js');
+			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const scraper = { ...VOLUNTEER, slackUserId: 'U_BUDGET' };
+
+			const results = [];
+			for (let i = 0; i < MAX_REQUESTS + 2; i++) {
+				stubQueries([turfRow({ chapterId: 71 })]);
+				results.push(await run(event(scraper, 'chapter=71')));
+			}
+
+			const stopped = results.find((r) => r.rateLimited > 0);
+			expect(stopped).toBeDefined();
+			expect(stopped!.turfs).toEqual([]);
+			// A wait, not a block — the chapter list still renders.
+			expect(stopped!.blocked).toBeNull();
+			expect(stopped!.chapters.length).toBeGreaterThan(0);
+		});
+
+		it('never charges an admin for it', async () => {
+			const { MAX_REQUESTS } = await import('$lib/van/request-budget.js');
+			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+			const organizer = { slackUserId: 'U_BUDGET_ADMIN', isAdmin: true };
+
+			for (let i = 0; i < MAX_REQUESTS + 2; i++) {
+				stubQueries([turfRow({ chapterId: 71 })]);
+				const result = await run(event(organizer, 'chapter=71'));
+				expect(result.rateLimited).toBe(0);
+			}
+		});
+	});
+
 	describe('chapter-switch rate limit', () => {
 		it('refuses turf after too many distinct chapters, without blocking the user', async () => {
 			// The limiter is module state, so this test uses its own user and its

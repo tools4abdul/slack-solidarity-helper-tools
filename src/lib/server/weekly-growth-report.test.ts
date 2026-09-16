@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createClient } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
+import { migrate } from 'drizzle-orm/libsql/migrator';
 import type { WebClient } from '@slack/web-api';
 import {
+	runWeeklyGrowthReport,
 	computeWindow,
 	computeWeeklyLeaderboard,
 	computeLiveLeaderboardSinceSnapshot,
@@ -417,5 +421,126 @@ describe('computeLiveLeaderboardSinceSnapshot', () => {
 		expect(second.topChapters[0]?.existing).toBe(57);
 		// Second load was served from cache — Slack was hit only once.
 		expect(infoMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+// A real in-memory libsql rather than a chained fake: what these cover is the
+// snapshot write — one batch, and written once per window — which is a
+// collaboration with SQLite rather than something a fake can show.
+describe('runWeeklyGrowthReport — the snapshot is written once per window', () => {
+	let db: ReturnType<typeof drizzle>;
+	let client: ReturnType<typeof createClient>;
+	let postMessage: ReturnType<typeof vi.fn>;
+	let numMembers: number;
+
+	// A Thursday inside the Mon 2026-05-04 → Mon 2026-05-11 window.
+	const MONDAY_RUN = new Date('2026-05-11T14:00:00Z');
+	const WINDOW_END = '2026-05-11T00:00:00.000Z';
+
+	function slackStub() {
+		postMessage = vi.fn(async () => ({ ok: true }));
+		return {
+			conversations: {
+				info: async () => ({ channel: { name: 'ann-arbor', num_members: numMembers } }),
+			},
+			chat: { postMessage },
+		} as unknown as WebClient;
+	}
+
+	async function joined(slackUserId: string, joinedAt: string | null, chapterIds: number[]) {
+		await client.execute({
+			sql: `INSERT INTO slack_joins (slack_user_id, email, joined_at, chapter_ids) VALUES (?, ?, ?, ?)`,
+			args: [slackUserId, `${slackUserId}@example.invalid`, joinedAt, JSON.stringify(chapterIds)],
+		});
+	}
+
+	async function storedRows() {
+		const res = await client.execute({
+			sql: `SELECT chapter_id, new_joins, existing, num_members FROM weekly_chapter_growth
+			      WHERE window_end = ? ORDER BY chapter_id`,
+			args: [WINDOW_END],
+		});
+		return res.rows;
+	}
+
+	beforeEach(async () => {
+		client = createClient({ url: ':memory:' });
+		db = drizzle(client);
+		await migrate(db, { migrationsFolder: 'drizzle' });
+		numMembers = 40;
+		// Three joins inside the window, one long before it.
+		await joined('U1', '2026-05-05T10:00:00.000Z', [71]);
+		await joined('U2', '2026-05-06T10:00:00.000Z', [71]);
+		await joined('U3', '2026-05-07T10:00:00.000Z', [71]);
+		await joined('U_OLD', '2026-01-01T10:00:00.000Z', [71]);
+	});
+
+	const run = (over: Record<string, unknown> = {}) =>
+		runWeeklyGrowthReport(db, slackStub(), 'C_REPORT', {
+			now: MONDAY_RUN,
+			chapterChannelIds: new Map([[71, 'C_ANN_ARBOR']]),
+			...over,
+		});
+
+	it('writes the window row and its chapter rows together', async () => {
+		const result = await run();
+
+		expect(result.persisted).toBe(true);
+		expect(result.posted).toBe(true);
+		const rows = await storedRows();
+		expect(rows).toHaveLength(1);
+		// 40 members now, 3 of them joined this week.
+		expect(rows[0]).toMatchObject({ chapter_id: 71, new_joins: 3, existing: 37, num_members: 40 });
+	});
+
+	it('returns the stored snapshot on a re-run instead of recomputing it', async () => {
+		await run();
+
+		// Three days later the channel has grown, which is exactly what would
+		// silently rewrite `existing` down and reorder the leaderboard.
+		numMembers = 60;
+		const second = await run({ now: new Date('2026-05-14T09:00:00Z') });
+
+		expect(second.persisted).toBe(false);
+		expect(second.posted).toBe(false);
+		expect(second.topChapters[0]).toMatchObject({ newJoins: 3, existing: 37 });
+		// The stored row is untouched, so the dashboard still agrees with the
+		// message the channel was sent on Monday.
+		expect((await storedRows())[0]).toMatchObject({ existing: 37, num_members: 40 });
+		// And no second report lands in the channel.
+		expect(postMessage).not.toHaveBeenCalled();
+	});
+
+	it('recomputes the window when explicitly forced', async () => {
+		await run();
+		numMembers = 60;
+
+		const forced = await run({ now: new Date('2026-05-14T09:00:00Z'), force: true });
+
+		expect(forced.persisted).toBe(true);
+		expect((await storedRows())[0]).toMatchObject({ existing: 57, num_members: 60 });
+	});
+
+	it('leaves no stale chapter row when a chapter drops out of a forced re-run', async () => {
+		await joined('U4', '2026-05-05T10:00:00.000Z', [72]);
+		await run();
+		expect(await storedRows()).toHaveLength(2);
+
+		// Chapter 72 is excluded this time, so its row must not survive the
+		// delete-and-reinsert the batch performs.
+		const forced = await run({ force: true, excludedChapterIds: new Set([72]) });
+
+		expect(forced.persisted).toBe(true);
+		const rows = await storedRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.chapter_id).toBe(71);
+	});
+
+	it('does not write at all on a dry run', async () => {
+		const result = await run({ dryRun: true });
+
+		expect(result.persisted).toBe(false);
+		expect(result.posted).toBe(false);
+		expect(await storedRows()).toHaveLength(0);
 	});
 });

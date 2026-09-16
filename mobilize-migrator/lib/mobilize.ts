@@ -221,14 +221,42 @@ async function callJson<T>(
 	return body;
 }
 
-/** Follow `next` to the end of a list endpoint. */
+/**
+ * Follow `next` to the end of a list endpoint.
+ *
+ * Bounded two ways, mirroring the VAN client's paginator. `next` is a URL the
+ * server chooses, and this file already documents an edge layer that injects
+ * content of its own into these responses — a `next` pointing at the page that
+ * produced it, or at any page already read, loops until the process runs out of
+ * memory. The page cap catches a cycle too long for the visited set to be worth
+ * reading as one.
+ *
+ * Both exits throw rather than returning what was read, because a short list
+ * and a complete one are indistinguishable to the caller: the syncs diff
+ * Mobilize against Solidarity, and a partial read of the Mobilize side looks
+ * exactly like events that need creating.
+ */
+const MAX_PAGES = 200;
+
 async function collect<T>(config: MobilizeApiConfig, firstUrl: string): Promise<T[]> {
 	const all: T[] = [];
+	const visited = new Set<string>();
 	let url: string | null = firstUrl;
-	while (url) {
+	for (let page = 0; page < MAX_PAGES && url; page++) {
+		if (visited.has(url)) {
+			throw new MobilizeError(`pagination cycled back to ${url}`, 0, '');
+		}
+		visited.add(url);
 		const body: Envelope<T[]> = await callJson<T[]>(config, url);
 		all.push(...(body.data ?? []));
 		url = body.next ?? null;
+	}
+	if (url) {
+		throw new MobilizeError(
+			`${firstUrl.replace(BASE, '')} paginated past ${MAX_PAGES} pages`,
+			0,
+			'',
+		);
 	}
 	return all;
 }

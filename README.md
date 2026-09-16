@@ -597,12 +597,15 @@ The same data the dashboard pages render, as JSON. Requires an active session (n
 
 Scheduler-only. Computes the per-chapter growth leaderboard for the previous 7 days and posts the top 5 to `SLACK_GROWTH_REPORT_CHANNEL_ID`. Auth via `?key=<INTERNAL_CRON_SECRET>`.
 
-| Parameter | Required | Description                                           |
-| --------- | -------- | ----------------------------------------------------- |
-| `key`     | Yes      | Must match `INTERNAL_CRON_SECRET`                     |
-| `dry_run` | No       | When `1`, returns the result without posting to Slack |
+| Parameter | Required | Description                                                      |
+| --------- | -------- | ---------------------------------------------------------------- |
+| `key`     | Yes      | Must match `INTERNAL_CRON_SECRET`                                |
+| `dry_run` | No       | When `1`, returns the result without posting to Slack            |
+| `force`   | No       | When `1`, recomputes a window that already has a stored snapshot |
 
-Returns the full leaderboard (window, totals, top chapters, whether the message was posted). The ranking score is `newJoins / (existing + 1) ^ SLACK_GROWTH_REPORT_RANKING_ALPHA`. Chapters listed in `REPORT_EXCLUDED_CHAPTER_IDS` are skipped.
+Returns the full leaderboard (window, totals, top chapters, whether the message was posted, and whether this run wrote the snapshot). The ranking score is `newJoins / (existing + 1) ^ SLACK_GROWTH_REPORT_RANKING_ALPHA`. Chapters listed in `REPORT_EXCLUDED_CHAPTER_IDS` are skipped.
+
+**A window is computed once.** `computeWindow` pins the window end to the most recent Monday, so every run for the rest of that week addresses the same snapshot row — but `existing` comes from a live `conversations.info` against a fixed `newJoins`, so it grows each day. Recomputing on Thursday would lower every percentage, reorder the ranking, and leave the dashboard disagreeing with the message the channel was sent on Monday. So a re-run returns the stored snapshot untouched, posts nothing, and reports `persisted: false`; `?force=1` is the way to deliberately recompute. The write itself is one batch — the window row and its chapter rows land together or not at all, because `numMembers` is a point-in-time channel size that cannot be recovered by asking again. Runs are serialised on a `sync_locks` lock, so a scheduler retry after a timeout queues rather than racing the run still in flight.
 
 ### `POST /api/internal/solidarity-snapshot`
 
@@ -648,7 +651,7 @@ Whatever time is left in the request budget after the catalog then goes to drain
 
 **The chapter → folder mapping is an input, not something the sync discovers.** A chapter with no folder mapped has no turf, and the first sync is a no-op until an admin fills it in. Run `npm run van:check` to list the folder ids the key can see.
 
-**Retirement is scoped to folders that actually synced.** A folder that errors — a 403 on an ungranted tier, a VAN outage — is skipped, and its turf is left exactly as it was. Retiring turf the sync merely failed to look at would release live checkouts under volunteers already standing on the doorstep. When a route genuinely disappears it is stamped `retiredAt` (never deleted, so a live checkout still renders) and any active claim on it is released with `releaseReason = 'retired'`.
+**Retirement is scoped to folders that actually synced.** A folder that errors — a 403 on an ungranted tier, a VAN outage, or a page walk that hit the cycle guard or the page cap — is skipped, and its turf is left exactly as it was. A walk that cannot be finished raises rather than returning the pages it managed to read, precisely so it lands on this path: a short list and a complete one are otherwise indistinguishable. Retiring turf the sync merely failed to look at would release live checkouts under volunteers already standing on the doorstep. When a route genuinely disappears it is stamped `retiredAt` (never deleted, so a live checkout still renders) and any active claim on it is released with `releaseReason = 'retired'`.
 
 #### Doors remaining: the refresh cycle
 
@@ -746,7 +749,7 @@ The volunteer turf page. Any signed-in Slack member may use it, minus the block 
 
 **Blocking is announced and the volunteer is told.** A block posts a `[van]` line to the member notes channel — the same private admin channel moderation already logs to, because cutting someone off from turf is moderation, and without a trace two organizers undo each other. If the block took turf off them, the volunteer gets a DM naming it and saying not to head out; someone walking to a block that is no longer theirs is the failure this prevents. The DM does not relay the reason the admin typed: that is a note about a person written for other organizers, and repeating it turns a routine notice into an argument the DM cannot hold. A block that freed nothing sends no DM.
 
-**Two numbers are tunable at Settings → Turf checkout**: how long a claim lasts (default 48 hours) and how many turfs one volunteer may hold at once (default 2). Both are read wherever they matter — the page's claim button, the map's viewport endpoint, the claim route that enforces them, and the copy telling a volunteer how long they've got — so the greyed-out button, the promise on it and the expiry written to the ledger cannot drift apart. Out-of-range values are refused on write and clamped again on read, so a row predating the bounds degrades to something sane rather than handing someone a claim that lapses in a minute.
+**Two numbers are tunable at Settings → Turf checkout**: how long a claim lasts (default 48 hours) and how many turfs one volunteer may hold at once (default 2). Both are read wherever they matter — the page's claim button, the map's viewport endpoint, the claim route that enforces them, the `/turfs` Slack command and its Claim buttons, and the copy telling a volunteer how long they've got — so the greyed-out button, the promise on it and the expiry written to the ledger cannot drift apart, and the same volunteer gets the same rules whether they open the page or type the command. Out-of-range values are refused on write and clamped again on read, so a row predating the bounds degrades to something sane rather than handing someone a claim that lapses in a minute.
 
 Four gates, all server-side: session, block list, chapter, and a rate limit on switching chapters. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
 
@@ -827,6 +830,8 @@ Nothing is written by this page, and nothing is posted to Slack: it reads `van_t
 Claim, release, or complete a turf, via `{"action": "claim" | "release" | "complete"}`. 401 unauthenticated, 403 blocked, 409 with a volunteer-readable reason when the rules refuse.
 
 Two simultaneous claims resolve to exactly one winner at the storage layer, not in application code: a partial unique index on `van_turf_checkouts (map_route_id) WHERE released_at IS NULL AND completed_at IS NULL`. `canClaim` in `$lib/van/checkout.ts` is the friendly layer that refuses with a reason someone can act on.
+
+The per-volunteer cap is enforced at the storage layer too, by a count subquery inside the claiming `INSERT`. An index cannot express it — it constrains a set of rows rather than one — so a volunteer one under the cap who fires two claims on _different_ turf would otherwise pass both checks and land both inserts. Evaluating the count inside the write makes SQLite serialise the two, and the second sees the first's row.
 
 Release and complete are scoped to the caller's own active claim, so posting someone else's route id does nothing.
 

@@ -8,7 +8,10 @@ const mockConversationsInvite = vi.hoisted(() => vi.fn());
 const mockConversationsOpen = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockUsersInfo = vi.hoisted(() => vi.fn());
-const mockOnConflictDoNothing = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+// The insert claims the joiner and reads the claim back; default to "this call
+// won it", which is the ordinary single-delivery case.
+const mockReturning = vi.hoisted(() => vi.fn().mockResolvedValue([{ slackUserId: 'U_NEW' }]));
+const mockOnConflictDoNothing = vi.hoisted(() => vi.fn(() => ({ returning: mockReturning })));
 const mockInsertValues = vi.hoisted(() =>
 	vi.fn(() => ({ onConflictDoNothing: mockOnConflictDoNothing })),
 );
@@ -174,6 +177,34 @@ describe('POST /api/slack/events', () => {
 		expect(mockPostMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ channel: 'DM_CHANNEL' }),
 		);
+	});
+
+	it('does no work for a redelivery another pass already claimed', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+		// The insert conflicted: some other delivery of this same team_join got
+		// there first and owns the invites, the channel post and the DM.
+		mockReturning.mockResolvedValueOnce([]);
+
+		const res = await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		expect(res.status).toBe(200);
+		await new Promise((r) => setTimeout(r, 20));
+
+		expect(mockConversationsInvite).not.toHaveBeenCalled();
+		expect(mockPostMessage).not.toHaveBeenCalled();
+		expect(mockConversationsOpen).not.toHaveBeenCalled();
+	});
+
+	it('still does the work when the claiming insert itself fails', async () => {
+		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+		// A database blip must not cost the joiner their invites; a duplicate
+		// greeting is the cheaper error.
+		mockReturning.mockRejectedValueOnce(new Error('turso unavailable'));
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		await POST({ request: makeSignedRequest(teamJoinPayload()) } as never);
+		await waitForDm();
+
+		expect(mockConversationsInvite).toHaveBeenCalledWith({ channel: 'C_COUNTY', users: 'U_NEW' });
 	});
 
 	it('posts a creative welcome mentioning the user in the chapter channel', async () => {

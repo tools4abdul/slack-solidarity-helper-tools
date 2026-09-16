@@ -157,6 +157,99 @@ describe('claimTurf', () => {
 	});
 });
 
+describe('claimTurf — the per-volunteer cap', () => {
+	/** Two more free turfs, so one volunteer can reach for several at once. */
+	async function addTurfs(...routeIds: number[]) {
+		for (const id of routeIds) {
+			await client.execute({
+				sql: `INSERT INTO van_turfs
+				        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name,
+				         region_name, name, printed_list_number, door_count, first_seen_at, last_seen_at)
+				      VALUES (?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, 250, ?, ?)`,
+				args: [id, `Turf ${id}`, `L-${id}`, NOW.toISOString(), NOW.toISOString()],
+			});
+		}
+	}
+
+	async function activeCount(slackUserId: string): Promise<number> {
+		const rows = await client.execute({
+			sql: `SELECT count(*) AS n FROM van_turf_checkouts
+			      WHERE slack_user_id = ? AND released_at IS NULL AND completed_at IS NULL
+			        AND expires_at > ?`,
+			args: [slackUserId, NOW.toISOString()],
+		});
+		return Number(rows.rows[0]!.n);
+	}
+
+	it('refuses the claim that would take a volunteer past the cap', async () => {
+		await addTurfs(101, 102);
+		const claim = (mapRouteId: number) =>
+			claimTurf(db, {
+				mapRouteId,
+				slackUserId: 'U_KEEN',
+				slackUserName: 'Keen',
+				now: NOW,
+				options: { maxConcurrentClaims: 2 },
+			});
+
+		expect((await claim(100)).ok).toBe(true);
+		expect((await claim(101)).ok).toBe(true);
+
+		const third = await claim(102);
+		expect(third.ok).toBe(false);
+		expect(third).toMatchObject({ status: 409, message: expect.stringContaining('2 turfs') });
+		expect(await activeCount('U_KEEN')).toBe(2);
+	});
+
+	it('holds the cap when two claims on different turf race each other', async () => {
+		// The check-then-act the storage layer has to settle: canClaim reads the
+		// claims, both requests see one free slot, and the unique index cannot
+		// object because they are different routes. Without the count inside the
+		// INSERT this volunteer ends up holding three.
+		await addTurfs(101, 102);
+		await claimTurf(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_KEEN',
+			slackUserName: 'Keen',
+			now: NOW,
+			options: { maxConcurrentClaims: 2 },
+		});
+
+		const results = await Promise.all(
+			[101, 102].map((mapRouteId) =>
+				claimTurf(db, {
+					mapRouteId,
+					slackUserId: 'U_KEEN',
+					slackUserName: 'Keen',
+					now: NOW,
+					options: { maxConcurrentClaims: 2 },
+				}),
+			),
+		);
+
+		expect(results.filter((r) => r.ok)).toHaveLength(1);
+		expect(await activeCount('U_KEEN')).toBe(2);
+	});
+
+	it('does not count a lapsed claim the sweep has not stamped yet', async () => {
+		// LAPSED is in the past, so this claim is invisible to isActive on every
+		// read path; the cap must not see it either, or a volunteer whose turf
+		// quietly expired is locked out until the nightly sweep runs.
+		await addTurfs(101);
+		await insertClaim({ slack_user_id: 'U_KEEN', expires_at: LAPSED });
+
+		const result = await claimTurf(db, {
+			mapRouteId: 101,
+			slackUserId: 'U_KEEN',
+			slackUserName: 'Keen',
+			now: NOW,
+			options: { maxConcurrentClaims: 1 },
+		});
+
+		expect(result.ok).toBe(true);
+	});
+});
+
 describe('endClaim', () => {
 	it('will not let one volunteer release another volunteer’s turf', async () => {
 		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });

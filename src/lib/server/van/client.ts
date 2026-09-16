@@ -98,6 +98,23 @@ const MAX_RECENT_EXPORT_PAGES = 20;
 // hands back a self-referencing nextPageLink.
 const MAX_PAGES = 200;
 
+/**
+ * A paginated walk that could not be finished.
+ *
+ * Deliberately NOT a VanError: nothing here is an HTTP status, and it must
+ * never read as an auth failure, which callers treat as "this will never work
+ * as configured" rather than "try again next tick".
+ */
+export class VanIncompleteError extends Error {
+	readonly path: string;
+
+	constructor(path: string, reason: string) {
+		super(`VAN ${path} pagination did not complete: ${reason}`);
+		this.name = 'VanIncompleteError';
+		this.path = path;
+	}
+}
+
 export interface VanClient {
 	/** Every folder the key can see. */
 	folders(): Promise<VanFolder[]>;
@@ -249,8 +266,19 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		}
 	}
 
-	/** Walk `{items, nextPageLink}` pages. `nextPageLink` is an absolute URL,
-	 *  so it is passed through `request` unchanged. */
+	/**
+	 * Walk `{items, nextPageLink}` pages. `nextPageLink` is an absolute URL, so
+	 * it is passed through `request` unchanged.
+	 *
+	 * Both ways of stopping early THROW rather than returning what was read so
+	 * far, because a short array and a complete one are indistinguishable to
+	 * every caller. That ambiguity is dangerous on `mapRegions`: the catalog
+	 * sync treats a folder it read as authoritative and retires every turf it
+	 * did not see, so a truncated walk stamps `retiredAt` on live routes and
+	 * releases the claims of volunteers already out walking them. Failing is
+	 * what the sync's per-folder error path is for — it skips the folder and
+	 * leaves its turf exactly as it was.
+	 */
 	async function paginate<T>(path: string): Promise<T[]> {
 		const all: T[] = [];
 		// Cycle guard. Comparing each link to the previous one is not enough —
@@ -262,11 +290,16 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 		let next: string | null = path;
 		for (let page = 0; page < MAX_PAGES && next; page++) {
 			const absolute = next.startsWith('http') ? next : `${baseUrl}${next}`;
-			if (visited.has(absolute)) break;
+			if (visited.has(absolute)) {
+				throw new VanIncompleteError(path, `pagination cycled back to ${absolute}`);
+			}
 			visited.add(absolute);
 			const body: VanPage<T> = await getJson<VanPage<T>>(next);
 			all.push(...(body?.items ?? []));
 			next = body?.nextPageLink ?? null;
+		}
+		if (next) {
+			throw new VanIncompleteError(path, `more than ${MAX_PAGES} pages`);
 		}
 		return all;
 	}

@@ -5,19 +5,23 @@
 // handlers because all three endpoints need the same load-decide-write shape,
 // and three copies of it would eventually disagree about one of the checks.
 //
-// The collision guarantee is NOT here. It is the partial unique index on
-// van_turf_checkouts (map_route_id) WHERE released_at IS NULL AND completed_at
-// IS NULL. `canClaim` is the friendly layer that refuses with a reason a
-// volunteer can act on; the index is what makes two simultaneous clicks
-// resolve to exactly one winner even if the friendly layer is bypassed.
+// Neither guarantee a claim rests on is enforced in JavaScript. One turf to one
+// volunteer is the partial unique index on van_turf_checkouts (map_route_id)
+// WHERE released_at IS NULL AND completed_at IS NULL. The per-volunteer cap is
+// the count subquery inside the INSERT in `claimTurf` — the index cannot
+// express it, since it constrains a set of rows rather than one. `canClaim` is
+// the friendly layer that refuses with a reason a volunteer can act on; both
+// storage-level checks are what make simultaneous clicks resolve correctly even
+// when the friendly layer is bypassed or raced.
 
-import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
 import { requestRegionRefresh } from './refresh.js';
 import {
 	canClaim,
+	DEFAULT_MAX_CONCURRENT_CLAIMS,
 	type ClaimOptions,
 	type ClaimSnapshot,
 	type TurfSnapshot,
@@ -96,9 +100,14 @@ export async function claimTurf(
 		doorCount: row.doorCount,
 	};
 
+	const options = input.options ?? {};
 	const claims = await relevantClaims(db, mapRouteId, slackUserId);
-	const decision = canClaim(snapshot, claims, slackUserId, now, input.options ?? {});
+	const decision = canClaim(snapshot, claims, slackUserId, now, options);
 	if (!decision.ok) return { ok: false, status: 409, message: decision.message };
+
+	// Same default canClaim destructures, so the SQL below caps at the number
+	// the volunteer was just told about rather than a second opinion.
+	const { maxConcurrentClaims = DEFAULT_MAX_CONCURRENT_CLAIMS } = options;
 
 	// Clear a lapsed claim before inserting over it.
 	//
@@ -138,38 +147,58 @@ export async function claimTurf(
 			);
 	}
 
-	// onConflictDoNothing + returning() is the race resolver: the partial
-	// unique index rejects the second of two simultaneous inserts, and the
+	// Both race resolvers, in one statement.
+	//
+	// ON CONFLICT DO NOTHING is the turf-level one: the partial unique index
+	// rejects the second of two simultaneous inserts on the same route, and the
 	// loser gets zero rows back rather than an exception to parse.
-	const inserted = await db
-		.insert(vanTurfCheckouts)
-		.values({
-			mapRouteId,
-			slackUserId,
-			slackUserName,
-			claimedAt: nowIso,
-			expiresAt: decision.expiresAt,
-			// VAN's door count as the volunteer takes the turf on. The baseline
-			// half of the post-completion check (Story 5.6): van_turfs holds one
-			// number and it moves, so by the time the completion is verified the
-			// count they started against is gone unless it is captured here.
-			claimDoorCount: row.doorCount,
-			// What we are about to tell them, recorded at the moment we tell them.
-			// van_turfs.printed_list_number is what VAN says today; this is what
-			// the volunteer has in their hand, and Story 4.5's reconciliation is
-			// the comparison of the two. Without it a regenerated printed list is
-			// undetectable and the volunteer finds out by standing on a street
-			// with a number MiniVAN will not load.
-			issuedListNumber: row.printedListNumber,
-		})
-		.onConflictDoNothing()
-		.returning({ id: vanTurfCheckouts.id });
+	//
+	// The count subquery is the volunteer-level one. `canClaim` read the claims
+	// a moment ago and is a check-then-act: a volunteer one under the cap who
+	// fires two claims on DIFFERENT turf passes both checks, and both inserts
+	// land, because the index constrains one route and says nothing about how
+	// many a person holds. Evaluating the count inside the INSERT makes SQLite
+	// settle it — the two statements serialise, and the second sees the first's
+	// row. Repeating that is how one person takes a neighbourhood, which is the
+	// whole reason the cap exists.
+	//
+	// The `expires_at >` predicate mirrors `isActive`, so a lapsed claim the
+	// nightly sweep has not stamped yet does not count against the holder here
+	// any more than it does on the page.
+	//
+	// The column list is written out because SELECT ... WHERE is what carries
+	// the condition; SQLite needs that WHERE for a following ON CONFLICT to
+	// parse at all, which is convenient rather than a constraint here.
+	const inserted = (await db.all(sql`
+		INSERT INTO van_turf_checkouts
+			(map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			 claim_door_count, issued_list_number)
+		SELECT ${mapRouteId}, ${slackUserId}, ${slackUserName}, ${nowIso}, ${decision.expiresAt},
+		       ${row.doorCount}, ${row.printedListNumber}
+		WHERE (
+			SELECT count(*) FROM van_turf_checkouts
+			WHERE slack_user_id = ${slackUserId}
+			  AND released_at IS NULL
+			  AND completed_at IS NULL
+			  AND expires_at > ${nowIso}
+		) < ${maxConcurrentClaims}
+		ON CONFLICT DO NOTHING
+		RETURNING id
+	`)) as { id: number }[];
 
 	if (inserted.length === 0) {
+		// Zero rows means one of two refusals and the statement cannot say
+		// which, so re-derive it from current state. One extra read, only ever
+		// on the losing path, and the wording comes from the same `canClaim`
+		// the volunteer would have seen a moment earlier.
+		const fresh = await relevantClaims(db, mapRouteId, slackUserId);
+		const reason = canClaim(snapshot, fresh, slackUserId, now, options);
 		return {
 			ok: false,
 			status: 409,
-			message: 'Someone claimed this turf a moment before you did. Try another nearby.',
+			message: reason.ok
+				? 'Someone claimed this turf a moment before you did. Try another nearby.'
+				: reason.message,
 		};
 	}
 

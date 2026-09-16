@@ -68,11 +68,11 @@ export const MAX_CONCURRENT_CLAIMS = 10;
  * Turn the admin-configured values into options `canClaim` can use.
  *
  * Every caller of `canClaim` and `claimTurf` goes through this, so the page,
- * the map's viewport endpoint and the claim route cannot disagree about how
- * long a claim lasts or how many a volunteer may hold. That mattered before it
- * was configurable too — the page passed `{}` while the viewport endpoint
- * passed nothing at all — but with real settings a disagreement becomes
- * visible: turf that shows claimable on the map and refuses on click.
+ * the map's viewport endpoint, the claim route and the `/turfs` Slack command
+ * cannot disagree about how long a claim lasts or how many a volunteer may
+ * hold. With real settings a disagreement is visible: turf that shows claimable
+ * and refuses on click, or the same person getting different rules depending on
+ * whether they opened the page or typed the command.
  *
  * Clamps rather than rejects. These arrive from a validated settings write, so
  * an out-of-range value means a row predating the bounds or hand-edited SQL,

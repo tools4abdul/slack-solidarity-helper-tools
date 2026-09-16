@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { runCatalogSync } from './sync.js';
-import { VanError, type VanClient } from './client.js';
+import { VanError, VanIncompleteError, type VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
 import { vanGeometryQueue } from '../schema.js';
 
@@ -172,6 +172,41 @@ describe('runCatalogSync', () => {
 			makeClient({
 				mapRegions: async (folderId: number) => {
 					if (folderId === 9999) throw new VanError('/mapRegions', 500, [], 'boom');
+					return makeClient().mapRegions(folderId);
+				},
+			}),
+			[{ chapterId: 71, chapterName: 'Middlesex County', folderIds: [1152, 9999] }],
+		);
+
+		expect(result.foldersSkipped).toBe(1);
+		expect(result.turfsRetired).toBe(0);
+		expect(updates).toHaveLength(0);
+		expect(result.warnings.join(' ')).toContain('Folder 9999');
+	});
+
+	it('skips a folder whose page walk did not finish, without retiring its turf', async () => {
+		// The dangerous case: a partial read looks exactly like a folder whose
+		// turf is gone, and retiring it would release claims under volunteers
+		// who are out walking those blocks right now.
+		const existing = [
+			{
+				mapRouteId: 500,
+				folderId: 9999,
+				retiredAt: null,
+				hullJson: null,
+				hullSourceRouteSize: null,
+				routeSize: 0,
+			},
+		];
+		const { db, updates } = makeDb(existing);
+
+		const result = await runCatalogSync(
+			db,
+			makeClient({
+				mapRegions: async (folderId: number) => {
+					if (folderId === 9999) {
+						throw new VanIncompleteError('/folders/9999/mapRegions', 'more than 200 pages');
+					}
 					return makeClient().mapRegions(folderId);
 				},
 			}),

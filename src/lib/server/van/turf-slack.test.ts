@@ -330,6 +330,38 @@ describe('claimFromSlack', () => {
 		expect(body(msg)).toContain('Open MiniVAN');
 	});
 
+	it('claims on the terms the admin configured, not the code defaults', async () => {
+		// The failure this guards: /settings says 12h and one turf at a time,
+		// the web page honours it, and /turfs in Slack quietly hands out 48h and
+		// two — the same volunteer getting different rules per surface.
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHANNEL_MAP,
+			vanTurfClaimTtlHours: 12,
+			vanTurfMaxConcurrentClaims: 1,
+		});
+
+		await claimFromSlack(makeDb(), {
+			slackUserId: freshUser(),
+			chapterId: 71,
+			mapRouteId: 100,
+		});
+
+		expect(mockClaimTurf).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				options: { ttlHours: 12, maxConcurrentClaims: 1 },
+			}),
+		);
+		// The list rendered alongside has to agree, or a Claim button offers
+		// turf the claim route is about to refuse.
+		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				claimOptions: { ttlHours: 12, maxConcurrentClaims: 1 },
+			}),
+		);
+	});
+
 	it('records the claim under the volunteer’s display name', async () => {
 		const user = freshUser();
 		await claimFromSlack(makeDb(), { slackUserId: user, chapterId: 71, mapRouteId: 100 });
