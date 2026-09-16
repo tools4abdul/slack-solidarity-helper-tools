@@ -457,11 +457,13 @@ main {
 	gap: 2px;
 }
 
-/* "few" and "many" are scale ends, not entries in their own right — smaller
-   and quieter than the item label so the eye reads the bar first. */
+/* "few" and "many" are scale ends, not entries in their own right, so they are
+   smaller than the item label and the eye reads the bar first. Size alone does
+   that: at 10px, faint runs 3.17:1 on the page ground and the quieter colour
+   was costing legibility rather than buying hierarchy. */
 .ramp-end {
 	font-size: 0.78em;
-	color: var(--color-text-faint);
+	color: var(--color-text-muted);
 }
 
 .legend-ramp .ramp-end:first-child {
@@ -514,7 +516,7 @@ main {
 
 .freshness {
 	font-size: var(--font-size-xs);
-	color: var(--color-text-faint);
+	color: var(--color-text-muted);
 }
 
 /* One pane of rows, not a stack of cards. At a card apiece a dozen turfs was
@@ -810,10 +812,10 @@ main {
 }
 
 /* Shown only to organizers — the server nulls `heldBy` for everyone else, so
-   this styles a line that a volunteer's payload cannot contain. */
+   this styles a line that a volunteer's payload cannot contain. The colour
+   comes from .admin-only below, which it is always worn with. */
 .card-note {
 	font-size: var(--font-size-xs);
-	color: var(--color-text-faint);
 	margin-top: 4px;
 }
 
