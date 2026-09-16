@@ -514,52 +514,6 @@
 			</section>
 		{/each}
 
-		<!-- Sorting orders the map and the list alike, so it belongs to the page
-		     rather than to the map it used to sit under, where it was below the
-		     fold on a phone and read as a map control. One row, because the two
-		     ways in are alternatives: stacked, they read as two features and a
-		     volunteer who grants location wonders what the ZIP field is still
-		     for. -->
-		<section class="sort-bar" aria-labelledby="sort-by">
-			<h2 class="sort-title" id="sort-by">Sort by</h2>
-			{#if locationState === 'idle'}
-				<button type="button" class="sort-btn" onclick={askForLocation}>Nearest me</button>
-			{/if}
-
-			<!-- The ZIP fallback (6.4). A plain GET form, so it works with the
-			     location permission denied, with the Geolocation API missing,
-			     and with JavaScript off entirely — the server resolves the ZIP
-			     and sorts before serialising. -->
-			{#if locationState !== 'granted'}
-				<form class="zip-form" method="GET" action={resolve('/turfs')}>
-					<input type="hidden" name="chapter" value={data.chapter.chapterId} />
-					<label for="zip">ZIP</label>
-					<input
-						id="zip"
-						name="zip"
-						inputmode="numeric"
-						pattern={ZIP_PATTERN}
-						maxlength="5"
-						placeholder="48104"
-						value={data.zip ?? ''}
-					/>
-					<button type="submit" class="sort-btn">Sort</button>
-				</form>
-			{/if}
-
-			<!-- Whichever sort is in force, said once. The note wraps to its own
-			     line; the controls above it stay on one. -->
-			{#if locationState === 'granted'}
-				<p class="sort-note">Nearest turf first, from where you are now.</p>
-			{:else if data.zip}
-				<p class="sort-note">Nearest turf first, from {data.zip}.</p>
-			{:else if locationState === 'denied'}
-				<p class="sort-note">
-					Location unavailable — a ZIP sorts the list instead. The list works either way.
-				</p>
-			{/if}
-		</section>
-
 		<div class="turf-layout">
 			<div class="map-col">
 				{#if drawable.length > 0}
@@ -608,6 +562,51 @@
 			</div>
 
 			<div class="list-col">
+				<!-- Above the rows it orders, in both layouts: beside the map on a
+				     desktop and above the list on a phone, it is the same control in
+				     the same place relative to what it acts on. One row, because the
+				     two ways in are alternatives: stacked, they read as two features
+				     and a volunteer who grants location wonders what the ZIP field is
+				     still for. -->
+				<section class="sort-bar" aria-labelledby="sort-by">
+					<h2 class="sort-title" id="sort-by">Sort by</h2>
+					{#if locationState === 'idle'}
+						<button type="button" class="sort-btn" onclick={askForLocation}>Nearest me</button>
+					{/if}
+
+					<!-- The ZIP fallback (6.4). A plain GET form, so it works with the
+					     location permission denied, with the Geolocation API missing,
+					     and with JavaScript off entirely — the server resolves the ZIP
+					     and sorts before serialising. -->
+					{#if locationState !== 'granted'}
+						<form class="zip-form" method="GET" action={resolve('/turfs')}>
+							<input type="hidden" name="chapter" value={data.chapter.chapterId} />
+							<label for="zip">ZIP</label>
+							<input
+								id="zip"
+								name="zip"
+								inputmode="numeric"
+								pattern={ZIP_PATTERN}
+								maxlength="5"
+								placeholder="48104"
+								value={data.zip ?? ''}
+							/>
+							<button type="submit" class="sort-btn">Sort</button>
+						</form>
+					{/if}
+
+					<!-- Whichever sort is in force, said once. The note wraps to its own
+					     line; the controls above it stay on one. -->
+					{#if locationState === 'granted'}
+						<p class="sort-note">Nearest turf first, from where you are now.</p>
+					{:else if data.zip}
+						<p class="sort-note">Nearest turf first, from {data.zip}.</p>
+					{:else if locationState === 'denied'}
+						<p class="sort-note">
+							Location unavailable — a ZIP sorts the list instead. The list works either way.
+						</p>
+					{/if}
+				</section>
 				<div class="list-head">
 					<h2>
 						<span class="available-count">{availableCount}</span>
