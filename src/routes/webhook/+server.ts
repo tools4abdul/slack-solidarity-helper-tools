@@ -8,9 +8,10 @@ import { slack } from '$lib/server/slack.js';
 import { WEBHOOK_SECRET, APP_URL } from '$lib/server/env.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { notifyNewRequest } from '$lib/server/events.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 export const GET: RequestHandler = async ({ url }) => {
-	if (url.searchParams.get('secret') !== WEBHOOK_SECRET) {
+	if (!secretMatches(url.searchParams.get('secret'), WEBHOOK_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 

@@ -112,6 +112,22 @@ describe('verifySlackSignature', () => {
 		const req = makeSignedRequest(body, { secret: 'wrong-secret' });
 		expect(await verifySlackSignature(req, body)).toBe(false);
 	});
+
+	it('rejects a multi-byte signature rather than throwing on it', async () => {
+		// 67 characters like a real signature, but 68 bytes. A character-length
+		// pre-check lets this reach timingSafeEqual, which throws RangeError on a
+		// byte-length mismatch — turning junk into an unauthenticated 500.
+		const body = '{}';
+		const req = new Request('http://localhost', {
+			method: 'POST',
+			body,
+			headers: {
+				'x-slack-signature': `v0=${'a'.repeat(63)}\u00e9`,
+				'x-slack-request-timestamp': Math.floor(Date.now() / 1000).toString(),
+			},
+		});
+		await expect(verifySlackSignature(req, body)).resolves.toBe(false);
+	});
 });
 
 describe('POST /api/slack/events', () => {

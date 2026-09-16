@@ -199,16 +199,28 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	let active = 0;
 	const waiting: Array<() => void> = [];
 
+	/**
+	 * At most MAX_CONCURRENCY calls in flight.
+	 *
+	 * The slot is TRANSFERRED to a waiter rather than released and re-taken.
+	 * Decrementing first and waking a waiter afterwards opens a gap: the woken
+	 * waiter's `active++` runs a microtask later, so a fresh caller arriving in
+	 * between sees a free slot, takes it, and the waiter then takes one too —
+	 * three in flight against a limit of two.
+	 */
 	async function withSlot<T>(run: () => Promise<T>): Promise<T> {
 		if (active >= MAX_CONCURRENCY) {
+			// Resuming here means a slot was handed over, already counted.
 			await new Promise<void>((resolve) => waiting.push(resolve));
+		} else {
+			active++;
 		}
-		active++;
 		try {
 			return await run();
 		} finally {
-			active--;
-			waiting.shift()?.();
+			const next = waiting.shift();
+			if (next) next();
+			else active--;
 		}
 	}
 

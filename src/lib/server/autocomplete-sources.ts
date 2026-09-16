@@ -140,10 +140,21 @@ interface CacheEntry<T, C> {
 	// so a forced caller can't piggy-back on a possibly-failing refetch and
 	// receive a stale-flagged result (FR-009).
 	inFlight: { promise: Promise<AutocompleteResult<T>>; credential: C } | null;
+	/**
+	 * When the fetch whose result currently sits in `data` was STARTED.
+	 *
+	 * Completion order is not start order: a forced refresh and a background one
+	 * can be in flight together (a forced caller deliberately never joins the
+	 * in-flight slot), and whichever finishes last wins. Without this, a slow
+	 * background fetch that began before the admin clicked Refresh lands
+	 * afterwards, overwrites the fresher list with its older one, and stamps it
+	 * fresh for the whole TTL.
+	 */
+	startedAt: number;
 }
 
 function makeEntry<T, C>(): CacheEntry<T, C> {
-	return { data: null, fetchedAt: 0, credential: null, inFlight: null };
+	return { data: null, fetchedAt: 0, credential: null, inFlight: null, startedAt: 0 };
 }
 
 const channelsEntry: CacheEntry<ChannelEntry, WebClient> = makeEntry();
@@ -181,11 +192,19 @@ async function runFetch<T, C>(
 	credential: C,
 	fetcher: () => Promise<T[]>,
 ): Promise<AutocompleteResult<T>> {
+	const startedAt = Date.now();
 	try {
 		const result = await fetcher();
-		entry.data = result;
-		entry.fetchedAt = Date.now();
-		entry.credential = credential;
+		// Only if nothing newer has already landed. The loser still returns its
+		// own rows to its own caller — they are a valid read of the list, just
+		// not the one worth keeping.
+		if (startedAt >= entry.startedAt) {
+			entry.data = result;
+			entry.fetchedAt = Date.now();
+			entry.credential = credential;
+			entry.startedAt = startedAt;
+			return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
+		}
 		return { items: result, stale: false, fetchedAt: entry.fetchedAt, refreshing: false };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

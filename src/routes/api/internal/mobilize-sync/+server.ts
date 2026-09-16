@@ -7,6 +7,7 @@ import { INTERNAL_CRON_SECRET, MOBILIZE_API_KEY, SOLIDARITY_API_TOKEN } from '$l
 import { withSyncLock } from '$lib/server/sync-lock.js';
 import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
 import { CAMPAIGN_TIMEZONE } from '../../../../../mobilize-migrator/lib/payload.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 /** A shift's start, in the campaign's timezone — "Sat, Sep 12, 6:00 PM". Enough
  *  to tell two shifts on one event apart at a glance. */
@@ -57,7 +58,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.error('[mobilize-sync] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
+	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 

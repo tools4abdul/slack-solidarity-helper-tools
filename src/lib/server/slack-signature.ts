@@ -34,7 +34,13 @@ export async function verifySlackSignature(request: Request, body: string): Prom
 	const computed = `v0=${createHmac('sha256', SLACK_SIGNING_SECRET).update(sigBasestring).digest('hex')}`;
 
 	// timingSafeEqual throws on a length mismatch, so the pre-check is required,
-	// not merely an optimization.
-	if (computed.length !== signature.length) return false;
-	return timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
+	// not merely an optimization — and it has to measure the same thing the
+	// comparison does. A header carrying one multi-byte character is the same
+	// NUMBER of characters as a valid signature but more bytes, so a character
+	// count lets it through to a RangeError, turning a junk signature into an
+	// unauthenticated 500 on every /api/slack/* route.
+	const computedBytes = Buffer.from(computed);
+	const signatureBytes = Buffer.from(signature);
+	if (computedBytes.length !== signatureBytes.length) return false;
+	return timingSafeEqual(computedBytes, signatureBytes);
 }

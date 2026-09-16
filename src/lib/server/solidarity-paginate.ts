@@ -150,6 +150,17 @@ export async function fetchPaginated<T>(
 			onProgress(all.length, total);
 		}
 		if (items.length < PAGE_LIMIT) break;
+		if (page === MAX_PAGES - 1) {
+			// Stopping here would return a short array indistinguishable from a
+			// complete one, and callers commit what they read as fact: the
+			// snapshot job upserts per-chapter counts, so a truncated backfill
+			// walk OVERWRITES correct history with lower numbers and logs
+			// nothing. Same reasoning as the VAN and Mobilize paginators.
+			throw new Error(
+				`Solidarity ${resourceLabel} paginated past ${MAX_PAGES} pages — ` +
+					'refusing to return a partial walk',
+			);
+		}
 	}
 	return all;
 }

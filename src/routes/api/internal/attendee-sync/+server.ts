@@ -16,6 +16,7 @@ import { assessMatchHealth } from '$lib/server/attendee-sync-health.js';
 import { mrkdwnLink } from '$lib/server/slack-mrkdwn.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
 import { loadSettings } from '$lib/server/settings.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 const SYNC_LOCK_NAME = 'attendee-sync';
 
@@ -27,6 +28,14 @@ const SYNC_LOCK_NAME = 'attendee-sync';
 // which the 30-minute cadence absorbs.
 const SYNC_LOCK_TTL_MS = 90 * 60 * 1000;
 
+// The run's own stopping point, derived from the lock rather than picked
+// separately so the two cannot drift apart. The lock is acquired once and never
+// renewed, so a run that outlives it keeps working while the next pass takes
+// the lock and starts from the same ledger — the double-write the lock exists
+// to prevent. Ten minutes of headroom covers the reads and the final writes
+// after the last deadline check.
+const DEFAULT_BUDGET_MS = SYNC_LOCK_TTL_MS - 10 * 60 * 1000;
+
 // Mirrors Mobilize signups into Solidarity as event RSVPs, so organizers only
 // have to look in one place. Auth via ?key=<INTERNAL_CRON_SECRET>.
 //
@@ -34,6 +43,8 @@ const SYNC_LOCK_TTL_MS = 90 * 60 * 1000;
 //   ?window=4.5       only sessions starting within N hours (omit for all upcoming)
 //   ?lookback=48      also include sessions that started within N hours (default 48)
 //   ?maxProfiles=N    raise the new-profile guardrail
+//   ?budgetMs=N       shorten how long the run may spend writing (never lengthen
+//                     it past the lock — see DEFAULT_BUDGET_MS)
 //
 // Two cadences: every 30 minutes with a 4.5h look-ahead so organizers have
 // accurate lists before doors open, and nightly with no window so events further
@@ -47,7 +58,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.error('[attendee-sync] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
+	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
@@ -96,6 +107,15 @@ export const POST: RequestHandler = async ({ url }) => {
 	if (maxParam && (!Number.isInteger(maxNewProfiles) || maxNewProfiles! < 0)) {
 		return json({ error: `invalid maxProfiles: ${maxParam}` }, { status: 400 });
 	}
+	const budgetParam = url.searchParams.get('budgetMs');
+	const budgetOverride = budgetParam ? Number(budgetParam) : undefined;
+	if (budgetParam && (!Number.isInteger(budgetOverride) || budgetOverride! <= 0)) {
+		return json({ error: `invalid budgetMs: ${budgetParam}` }, { status: 400 });
+	}
+	// Clamped, not just defaulted: an override longer than the lock would put
+	// the run back outside its own lock, which is the thing the budget exists to
+	// prevent. A caller asking for more silently gets the safe maximum.
+	const budgetMs = Math.min(budgetOverride ?? DEFAULT_BUDGET_MS, DEFAULT_BUDGET_MS);
 
 	try {
 		const run = await withSyncLock(db, SYNC_LOCK_NAME, SYNC_LOCK_TTL_MS, () =>
@@ -105,6 +125,7 @@ export const POST: RequestHandler = async ({ url }) => {
 				lookbackHours,
 				maxNewProfiles,
 				zipExcludedChapterIds,
+				budgetMs,
 			}),
 		);
 
@@ -164,6 +185,15 @@ export const POST: RequestHandler = async ({ url }) => {
 			);
 		} else if (result.abortedReason) {
 			await alert(`:warning: *Attendee sync aborted.* ${result.abortedReason}`);
+		} else if (result.incomplete) {
+			// Not an abort and not a failure: every write landed, the run simply
+			// ran out of time. Said out loud because a pass that keeps ending here
+			// means the window or the cadence needs changing.
+			await alert(
+				`:hourglass_flowing_sand: Attendee sync ran out of time with ${result.pending} ` +
+					'signup(s) not reached. Everything written is good and the next run picks up ' +
+					'where this one stopped.',
+			);
 		} else if (!dryRun && (result.rsvpsCreated > 0 || result.profilesCreated > 0)) {
 			await alert(
 				`:busts_in_silhouette: Attendee sync: ${result.rsvpsCreated} new RSVP(s), ` +

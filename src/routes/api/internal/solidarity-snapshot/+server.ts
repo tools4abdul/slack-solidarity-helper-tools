@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { runSolidaritySnapshot } from '$lib/server/solidarity-snapshot.js';
 import { INTERNAL_CRON_SECRET, SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 // Internal endpoint called by a scheduler (GitHub Actions / Fly cron) to write
 // the previous day's Solidarity signup snapshot. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -12,7 +13,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.error('[snapshot] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
+	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 	if (!SOLIDARITY_API_TOKEN) {

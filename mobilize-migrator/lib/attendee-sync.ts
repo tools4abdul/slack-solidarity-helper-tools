@@ -84,6 +84,18 @@ export interface AttendeeSyncConfig {
 	apply: boolean;
 	/** Refuse to create more than this many new profiles in one run. */
 	maxNewProfiles: number;
+	/**
+	 * Epoch ms after which no further signup is written.
+	 *
+	 * The run holds a `sync_locks` lock whose TTL is set once and never renewed,
+	 * so a pass that outlives it is still working while the next pass acquires
+	 * the lock and starts from the same ledger — the double-write the lock
+	 * exists to prevent. Checked between signups rather than mid-write, so the
+	 * ledger is never left describing half a person.
+	 *
+	 * Omit for no limit (the CLI, and tests).
+	 */
+	writeDeadline?: number;
 	pauseMs?: number;
 	log?: (message: string) => void;
 }
@@ -170,6 +182,12 @@ export interface AttendeeSyncReport {
 	/** Mobilize status we don't have a mapping for. */
 	skippedUnknownStatus: number;
 	abortedReason?: string;
+	/** The run stopped on its time budget with signups still to process. Not an
+	 *  abort: everything written is good, and the next pass resumes from the
+	 *  ledger. */
+	incomplete: boolean;
+	/** Signups not reached, when `incomplete`. */
+	pending: number;
 	/** Mobilize answered 403 — the API key is rejected or lacks access. */
 	authFailed: boolean;
 	failed: number;
@@ -200,6 +218,8 @@ function emptyReport(): AttendeeSyncReport {
 		skippedUnknownStatus: 0,
 		authFailed: false,
 		failed: 0,
+		incomplete: false,
+		pending: 0,
 		errors: [],
 	};
 }
@@ -442,7 +462,19 @@ export async function runAttendeeSync(
 
 	let projectedNewProfiles = 0;
 
-	for (const { link, participation } of pending) {
+	for (const [index, { link, participation }] of pending.entries()) {
+		// Between signups, never mid-write: a partial write would leave the
+		// ledger describing half a person, and the next pass would not know.
+		if (config.writeDeadline !== undefined && Date.now() > config.writeDeadline) {
+			report.incomplete = true;
+			report.pending = pending.length - index;
+			log(
+				`time budget spent — stopping with ${report.pending} signup(s) not reached. ` +
+					'Everything written is good; the next run resumes from the ledger.',
+			);
+			break;
+		}
+
 		const attending = attendingFor(participation.status);
 		if (!attending) {
 			report.skippedUnknownStatus++;
@@ -590,6 +622,18 @@ export async function runAttendeeSync(
 			// waitlist by a later run — that would take a place away from a person who
 			// has it, on nothing more than the order the sync happened to read them in.
 			const seats = seatsBySession.get(link.solidaritySessionId) ?? 0;
+			// Every seat change reads the map again rather than adjusting this
+			// snapshot. One iteration can move the count twice — adopting an
+			// existing `yes` takes a seat, and cancelling it in the same pass
+			// hands it back — and computing both from `seats` makes the second
+			// write undo the first instead of following it, leaving the session
+			// one under. The next arrival is then admitted as `yes` and pushes
+			// the session over its cap.
+			const bumpSeats = (delta: number) =>
+				seatsBySession.set(
+					link.solidaritySessionId,
+					Math.max(0, (seatsBySession.get(link.solidaritySessionId) ?? 0) + delta),
+				);
 			const capacity = link.sessionCapacity;
 			const full = capacity !== null && seats >= capacity;
 			const desired: AttendingValue =
@@ -600,7 +644,7 @@ export async function runAttendeeSync(
 				else {
 					report.rsvpsCreated++;
 					if (desired === 'waitlisted') report.rsvpsWaitlisted++;
-					else seatsBySession.set(link.solidaritySessionId, seats + 1);
+					else bumpSeats(1);
 				}
 				continue;
 			}
@@ -624,7 +668,7 @@ export async function runAttendeeSync(
 					report.rsvpsAdopted++;
 					log(`adopted RSVP ${written.id} for user ${userId} — Solidarity already had one`);
 					if (current.is_attending === 'yes') {
-						seatsBySession.set(link.solidaritySessionId, seats + 1);
+						bumpSeats(1);
 					}
 				} else {
 					current = { id: rsvpId, is_attending: desired };
@@ -635,7 +679,7 @@ export async function runAttendeeSync(
 							`waitlisted user ${userId} — session ${link.solidaritySessionId} is at its cap of ${capacity}`,
 						);
 					} else {
-						seatsBySession.set(link.solidaritySessionId, seats + 1);
+						bumpSeats(1);
 					}
 				}
 				rememberRsvp(link.solidaritySessionId, userId, current);
@@ -647,7 +691,7 @@ export async function runAttendeeSync(
 				// A cancellation hands the seat back, so the next person in this run
 				// can have it rather than being waitlisted against a stale count.
 				if (current.is_attending === 'yes' && attending === 'no') {
-					seatsBySession.set(link.solidaritySessionId, Math.max(0, seats - 1));
+					bumpSeats(-1);
 				}
 				// Kept current for the same reason a create is recorded: a second
 				// signup by this person must compare against what the row says now.

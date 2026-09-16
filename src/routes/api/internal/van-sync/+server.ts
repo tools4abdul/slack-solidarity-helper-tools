@@ -18,6 +18,7 @@ import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
 import { doorsHealthWarning } from '$lib/server/van/doors-store.js';
 import { alertFor } from '$lib/server/slack.js';
 import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 // VAN turf catalog sync, plus the turf ledger's housekeeping. Called on a
 // schedule (see .github/workflows/van-catalog-sync.yml) and by hand during
@@ -110,7 +111,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.error('[van] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
+	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 	const token = await acquireSyncLock(db, VAN_SYNC_LOCK, LOCK_TTL_MS);

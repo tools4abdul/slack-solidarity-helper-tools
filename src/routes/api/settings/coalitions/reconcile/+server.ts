@@ -79,6 +79,16 @@ interface ApplyBody {
 	targets?: unknown;
 }
 
+/** Slack accepts up to 1000 ids on `users`; a smaller chunk keeps the
+ *  per-person retry below cheap when one of them is unreachable. */
+const INVITE_CHUNK_SIZE = 100;
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+	return out;
+}
+
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
 		return json({ error: 'unauthenticated' }, { status: 401 });
@@ -137,26 +147,60 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			}
 		}
 	} else {
+		const invitable: Array<{ email: string; slackUserId: string }> = [];
 		for (const raw of targets as InviteTarget[]) {
 			const email = typeof raw.email === 'string' ? raw.email : '';
 			if (typeof raw.slackUserId !== 'string' || raw.slackUserId === '') {
 				results.push({ email, ok: false, error: 'missing slackUserId' });
 				continue;
 			}
+			invitable.push({ email, slackUserId: raw.slackUserId });
+		}
+
+		// `users` takes a batch, so a reconcile of a few hundred people is a
+		// handful of calls rather than one per person against Slack's rate limit.
+		//
+		// On a batch failure the chunk is retried one at a time. Slack answers a
+		// partial failure with a single error for the whole call, so without the
+		// retry one unreachable account would mark everyone beside it as failed —
+		// and an admin would re-run, or chase people who are already in.
+		for (const chunk of chunked(invitable, INVITE_CHUNK_SIZE)) {
 			try {
-				await slack.conversations.invite({ channel: entry.channelId, users: raw.slackUserId });
-				console.log(
-					`[reconcile] invited ${email} (${raw.slackUserId}) to ${entry.channelId} (${group}) by ${editorId}`,
-				);
-				results.push({ email, ok: true });
-			} catch (err) {
-				const msg = errMessage(err);
-				// Someone who joined between diff and apply is a success, not an error.
-				if (msg.includes('already_in_channel')) {
+				await slack.conversations.invite({
+					channel: entry.channelId,
+					users: chunk.map((t) => t.slackUserId).join(','),
+				});
+				for (const { email, slackUserId } of chunk) {
+					console.log(
+						`[reconcile] invited ${email} (${slackUserId}) to ${entry.channelId} (${group}) by ${editorId}`,
+					);
 					results.push({ email, ok: true });
-				} else {
-					console.error(`[reconcile] invite failed for ${email}:`, msg);
-					results.push({ email, ok: false, error: msg });
+				}
+			} catch (batchErr) {
+				// already_in_channel on a batch means at least one of them was in,
+				// not that the rest were invited — so this falls through to the
+				// per-person pass like any other failure.
+				console.warn(
+					`[reconcile] batch invite of ${chunk.length} failed, retrying individually:`,
+					errMessage(batchErr),
+				);
+				for (const { email, slackUserId } of chunk) {
+					try {
+						await slack.conversations.invite({ channel: entry.channelId, users: slackUserId });
+						console.log(
+							`[reconcile] invited ${email} (${slackUserId}) to ${entry.channelId} (${group}) by ${editorId}`,
+						);
+						results.push({ email, ok: true });
+					} catch (err) {
+						const msg = errMessage(err);
+						// Someone who joined between diff and apply is a success, not an error.
+						if (msg.includes('already_in_channel')) {
+							results.push({ email, ok: true });
+						} else {
+							console.error(`[reconcile] invite failed for ${email}:`, msg);
+							results.push({ email, ok: false, error: msg });
+						}
+					}
 				}
 			}
 		}

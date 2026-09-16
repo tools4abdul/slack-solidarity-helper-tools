@@ -6,6 +6,7 @@ import { runWeeklyGrowthReport, firstChannelByChapter } from '$lib/server/weekly
 import { loadSettings } from '$lib/server/settings.js';
 import { INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 import { withSyncLock } from '$lib/server/sync-lock.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 // Internal endpoint called by a scheduler (GitHub Actions) to compute and post
 // the weekly per-chapter Slack-growth leaderboard. Auth via ?key=<INTERNAL_CRON_SECRET>.
@@ -27,7 +28,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		console.error('[growth] INTERNAL_CRON_SECRET is not set');
 		return json({ error: 'Server misconfigured' }, { status: 500 });
 	}
-	if (url.searchParams.get('key') !== INTERNAL_CRON_SECRET) {
+	if (!secretMatches(url.searchParams.get('key'), INTERNAL_CRON_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 

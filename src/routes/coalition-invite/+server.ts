@@ -5,9 +5,10 @@ import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { WEBHOOK_SECRET } from '$lib/server/env.js';
+import { secretMatches } from '$lib/server/secret-compare.js';
 
 export const GET: RequestHandler = async ({ url }) => {
-	if (url.searchParams.get('secret') !== WEBHOOK_SECRET) {
+	if (!secretMatches(url.searchParams.get('secret'), WEBHOOK_SECRET)) {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 

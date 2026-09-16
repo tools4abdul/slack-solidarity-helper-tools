@@ -40,7 +40,9 @@ export const db = new Proxy({} as ReturnType<typeof drizzle>, {
  * Slack OAuth — a transient blip turned into a mass logout.
  */
 export type SessionLookup =
-	{ status: 'found'; data: SessionData } | { status: 'missing' } | { status: 'unavailable' };
+	| { status: 'found'; data: SessionData; expiresAt: string }
+	| { status: 'missing' }
+	| { status: 'unavailable' };
 
 export class TursoStore {
 	async get(sid: string): Promise<SessionLookup> {
@@ -55,7 +57,11 @@ export class TursoStore {
 				await this.destroy(sid);
 				return { status: 'missing' };
 			}
-			return { status: 'found', data: JSON.parse(row.data) as SessionData };
+			return {
+				status: 'found',
+				data: JSON.parse(row.data) as SessionData,
+				expiresAt: row.expiresAt,
+			};
 		} catch (err) {
 			console.warn(
 				'[session] session lookup failed — signing this request out but KEEPING the cookie:',

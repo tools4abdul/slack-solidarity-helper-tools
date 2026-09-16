@@ -105,6 +105,8 @@ interface Envelope<T> {
 /** Documented limits are 15 req/s read and 5 req/s write, answered with 429. */
 const MAX_ATTEMPTS = 6;
 const BACKOFF_MS = 2_000;
+/** Upper bound on an honored Retry-After. */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 /**
  * Statuses worth a second attempt on a READ.
@@ -150,11 +152,14 @@ async function request(
 	for (let attempt = 0; ; attempt++) {
 		const res = await fetch(url, { ...init, headers });
 		if (!retryable.has(res.status) || attempt >= MAX_ATTEMPTS - 1) return res;
-		// Mobilize sends Retry-After on some 429s; prefer it over guessing.
+		// Mobilize sends Retry-After on some 429s; prefer it over guessing, but
+		// cap it — an upstream answering `Retry-After: 3600` would otherwise
+		// park the sync for an hour per attempt. Both sibling clients bound it
+		// the same way (van/client.ts, solidarity-paginate.ts).
 		const retryAfter = Number(res.headers.get('retry-after'));
 		await sleep(
 			Number.isFinite(retryAfter) && retryAfter > 0
-				? retryAfter * 1000
+				? Math.min(retryAfter * 1000, MAX_RETRY_AFTER_MS)
 				: BACKOFF_MS * (attempt + 1),
 		);
 	}

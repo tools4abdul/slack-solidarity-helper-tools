@@ -34,6 +34,11 @@ import {
 } from './env.js';
 import { mobilizeSyncedRsvps, mobilizeSyncedTimeslots, zipChapterMap } from './schema.js';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
+
+/** Matches the autocomplete roster walk: under Solidarity's 60-per-30s limit,
+ *  so a long walk never earns a 429 in the first place. */
+const ROSTER_PACE_MS = 600;
 
 type Db = LibSQLDatabase<Record<string, unknown>>;
 
@@ -124,6 +129,14 @@ export interface AttendeeSyncOptions {
 	 * already holds the settings it needs for its Slack alerts.
 	 */
 	zipExcludedChapterIds?: ReadonlySet<number>;
+	/**
+	 * How long this run may spend writing before it stops, in ms.
+	 *
+	 * The run holds a lock whose TTL is set once and never renewed, so without a
+	 * budget an overrun keeps working while the next run acquires the lock and
+	 * starts from the same ledger. The route derives the default from that TTL.
+	 */
+	budgetMs?: number;
 }
 
 export interface AttendeeSyncResult extends AttendeeSyncReport {
@@ -192,11 +205,18 @@ export async function refreshZipChapterMap(
 	db: Db,
 	excludedChapterIds: ReadonlySet<number> = new Set(),
 ): Promise<ZipMapRefresh> {
-	const users = await fetchPaginated<{
-		address?: { zip_code?: string | null } | null;
-		chapter_id?: number | null;
-		chapter_ids?: number[] | null;
-	}>(SOLIDARITY_API_TOKEN, '/v1/users', 'zip chapter map', '', 'attendee-sync');
+	// The same full /v1/users walk the settings autocomplete does, so it takes
+	// the same lock and the same pacing. Two roster walks at once earn 429s,
+	// drain fetchWithRetry's shared retry budget and abort a walk that was
+	// minutes in — here that can kill the whole attendee sync before a single
+	// signup is mirrored, and take an admin's roster walk down with it.
+	const users = await withSolidarityWalkLock(() =>
+		fetchPaginated<{
+			address?: { zip_code?: string | null } | null;
+			chapter_id?: number | null;
+			chapter_ids?: number[] | null;
+		}>(SOLIDARITY_API_TOKEN, '/v1/users', 'zip chapter map', '', 'attendee-sync', ROSTER_PACE_MS),
+	);
 
 	const map = buildZipChapterMap(users, excludedChapterIds);
 	const now = new Date().toISOString();
@@ -274,6 +294,14 @@ export async function runSolidarityAttendeeSync(
 	options: AttendeeSyncOptions = {},
 ): Promise<AttendeeSyncResult> {
 	const apply = options.apply ?? true;
+	// Started before the reads, which are part of what has to fit in the budget.
+	// A junk override falls back to no budget rather than to NaN: `Date.now() +
+	// NaN` is NaN and every comparison against it is false, which would silently
+	// disable the stop it was meant to tighten.
+	const writeDeadline =
+		Number.isFinite(options.budgetMs) && (options.budgetMs as number) > 0
+			? Date.now() + (options.budgetMs as number)
+			: undefined;
 	const api = loadMobilizeApi('the attendee sync');
 	const windowHours = options.windowHours ?? null;
 	const lookbackHours = options.lookbackHours ?? 48;
@@ -356,6 +384,7 @@ export async function runSolidarityAttendeeSync(
 			solidarityToken: SOLIDARITY_API_TOKEN,
 			apply,
 			maxNewProfiles: options.maxNewProfiles ?? ATTENDEE_SYNC_MAX_NEW_PROFILES,
+			writeDeadline,
 			log: (message) => console.log(`[attendee-sync] ${message}`),
 		},
 		new TursoAttendeeLedger(db),
