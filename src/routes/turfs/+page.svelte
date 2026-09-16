@@ -596,7 +596,8 @@
 					     is the authority on which doors are in the list. -->
 					<p class="gate-help">
 						Shapes are approximate — they're drawn around the addresses in each list, so they can
-						cover ground the turf doesn't include. MiniVAN has the exact doors.
+						cover ground the turf doesn't include. Turfs too small to draw at this zoom show as
+						dots. MiniVAN has the exact doors.
 					</p>
 				{:else}
 					<p class="gate-help">

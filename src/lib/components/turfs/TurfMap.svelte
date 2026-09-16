@@ -794,17 +794,18 @@
 		{/if}
 	</div>
 
+	<!-- How to work the map, and nothing else. What the shapes mean is said
+	     once, under the legend beside it, and a volunteer who swipes and gets
+	     a page scroll is answered on the map itself. The keyboard line is for
+	     the phone-less: on a touch screen it is instructions for hardware that
+	     is not there. -->
 	<figcaption>
 		{#if narrow}
-			Swipe to scroll the page past the map. Drag with two fingers to pan it, and pinch — or hold
-			<kbd>Ctrl</kbd>/<kbd>⌘</kbd> and scroll — to zoom.
+			Two fingers move the map. Pinch to zoom.
 		{:else}
-			Drag to pan, pinch or scroll to zoom.
+			Drag to move the map, scroll to zoom. With it focused, arrow keys pan and
+			<kbd>+</kbd>/<kbd>−</kbd> zoom.
 		{/if}
-		With the map focused, arrow keys pan and
-		<kbd>+</kbd>/<kbd>−</kbd> zoom. Turfs too small to draw at this zoom show as dots. Shapes are convex
-		hulls over each turf's doors, so they claim a little more ground than the turf really covers — MiniVAN
-		is the authority on which doors are on your list.
 	</figcaption>
 </figure>
 
@@ -859,16 +860,16 @@
 		}
 	}
 
-	/* Centred, which is the one part of the map with nothing else in it: the
-	   +/− controls are in the top corner, the scale bar and the attribution
-	   run along the bottom. Pointer-transparent — it appears mid-gesture and
-	   must not become the thing the next finger lands on. */
+	/* Out of the way, bottom right: it answers a gesture that did nothing, and
+	   the map is what the volunteer is trying to look at. Above the attribution
+	   rather than over it, clear of the +/− controls in the top corner and of
+	   the scale bar at bottom left. Pointer-transparent — it appears
+	   mid-gesture and must not become the thing the next finger lands on. */
 	.gesture-hint {
 		position: absolute;
-		left: 50%;
-		top: 50%;
-		transform: translate(-50%, -50%);
-		max-width: calc(100% - 24px);
+		right: 8px;
+		bottom: 24px;
+		max-width: calc(100% - 16px);
 		margin: 0;
 		padding: 7px 14px;
 		border-radius: 999px;
@@ -930,8 +931,8 @@
 
 	figcaption {
 		margin-top: 8px;
-		font-size: var(--font-size-xs);
-		color: var(--color-text-faint);
+		font-size: var(--font-size-md);
+		color: var(--color-text-muted);
 		line-height: 1.5;
 	}
 
