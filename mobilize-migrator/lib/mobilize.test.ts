@@ -84,6 +84,37 @@ describe('edge challenge pages', () => {
 	});
 });
 
+describe('pagination is bounded', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('fails rather than looping when `next` points at a page already read', async () => {
+		const self = `https://api.mobilize.us/v1/organizations/44679/events/7/attendances?per_page=100`;
+		vi.stubGlobal('fetch', async () => ({
+			ok: true,
+			status: 200,
+			text: async () => JSON.stringify({ data: [{ id: 1 }], next: self }),
+			headers: new Headers(),
+		}));
+
+		await expect(listEventAttendances(API, 7)).rejects.toThrow(/cycled back/);
+	});
+
+	it('fails rather than truncating when a walk runs past the page cap', async () => {
+		let page = 0;
+		vi.stubGlobal('fetch', async () => ({
+			ok: true,
+			status: 200,
+			text: async () =>
+				JSON.stringify({ data: [{ id: ++page }], next: `https://api.mobilize.us/v1/p/${page}` }),
+			headers: new Headers(),
+		}));
+
+		// A short list and a complete one look the same to the sync, which would
+		// read the missing attendances as people who never signed up.
+		await expect(listEventAttendances(API, 7)).rejects.toThrow(/paginated past 200 pages/);
+	});
+});
+
 describe('createEvent envelope', () => {
 	// Verified against the live API: create nests the event one level deeper
 	// than every other endpoint. Reading data.id returns undefined and every

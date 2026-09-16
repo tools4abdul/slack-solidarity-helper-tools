@@ -52,6 +52,7 @@ import { chaptersSeen, recordChapterView } from '../../van/chapter-rate-limit.js
 import { recordRequest } from '../../van/request-budget.js';
 import { chapterVisits, pruneRateLimitStores, turfRequests } from './rate-limit-store.js';
 import type { LatLng } from '../../van/geometry.js';
+import { resolveClaimOptions, type ClaimOptions } from '../../van/checkout.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -110,6 +111,7 @@ async function buildList(
 		limit: SLACK_TURF_LIMIT,
 		offset,
 		includeHeldByViewer: true,
+		claimOptions: gate.claimOptions,
 		now: new Date(now),
 	});
 
@@ -140,6 +142,7 @@ export async function claimFromSlack(
 		slackUserId: ctx.slackUserId,
 		slackUserName: await displayName(ctx.slackUserId),
 		now: new Date(now),
+		options: gate.claimOptions,
 	});
 
 	if (!result.ok) {
@@ -161,6 +164,7 @@ export async function claimFromSlack(
 		mapRouteIds: [ctx.mapRouteId],
 		limit: 1,
 		includeHeldByViewer: true,
+		claimOptions: gate.claimOptions,
 		now: new Date(now),
 	});
 	const claimed = turfs.find((t) => t.mapRouteId === ctx.mapRouteId);
@@ -226,6 +230,12 @@ type GateResult =
 			chapter: ChapterRef | null;
 			location: LatLng | null;
 			zip: string | null;
+			/** How long a claim lasts and how many one volunteer may hold, as
+			 *  configured on /settings. Carried on the gate because passGates is
+			 *  the one place that reads settings: without it this file falls back
+			 *  to the code defaults, and the same volunteer gets 48h/2 in Slack
+			 *  while the web page gives them whatever the admin actually set. */
+			claimOptions: ClaimOptions;
 	  };
 
 async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<GateResult> {
@@ -242,6 +252,10 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 		loadSettings(db),
 	]);
 	const viewer = { slackUserId: ctx.slackUserId, isAdmin };
+	const claimOptions = resolveClaimOptions({
+		ttlHours: settings.vanTurfClaimTtlHours,
+		maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+	});
 
 	// Counted against the same store the web API spends, so the budget follows
 	// the user rather than the surface they came in through — and so does the
@@ -285,7 +299,9 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 		chapters,
 		channelMap: settings.chapterChannelMap,
 	});
-	if (!chapter) return { ok: true, viewer, chapters, chapter: null, location, zip };
+	if (!chapter) {
+		return { ok: true, viewer, chapters, chapter: null, location, zip, claimOptions };
+	}
 
 	// Same counter the page spends. Re-opening a chapter already seen this hour
 	// is free, so paging and claiming within one county cost nothing.
@@ -309,7 +325,7 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 		);
 	}
 
-	return { ok: true, viewer, chapters, chapter, location, zip };
+	return { ok: true, viewer, chapters, chapter, location, zip, claimOptions };
 }
 
 function locationQuery(argument: ReturnType<typeof parseTurfArgument>): string {

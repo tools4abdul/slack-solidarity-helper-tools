@@ -14,7 +14,12 @@ import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 import { lookupZipCentroid } from '$lib/server/van/zip-centroid.js';
 import { turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
-import { chapterVisits, pruneRateLimitStores } from '$lib/server/van/rate-limit-store.js';
+import { recordRequest } from '$lib/van/request-budget.js';
+import {
+	chapterVisits,
+	pruneRateLimitStores,
+	turfRequests,
+} from '$lib/server/van/rate-limit-store.js';
 import { selectNearest, TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 import { toTurfView, type TurfView } from '$lib/van/turf-view.js';
 import { DEFAULT_CLAIM_TTL_HOURS } from '$lib/van/checkout.js';
@@ -172,8 +177,25 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const now = Date.now();
 	pruneRateLimitStores(now);
-	// Shared with /api/turfs, so the budget follows the user rather than the
-	// URL — see rate-limit-store.ts for why that matters.
+
+	// Both limiters are shared with /api/turfs, so the budget follows the user
+	// rather than the URL — see rate-limit-store.ts for why that matters.
+	//
+	// The per-request budget is spent HERE as well as on the API. This load
+	// returns the nearest 150 turfs to whatever `zip` is passed, and a different
+	// ZIP is a different 150, so a loop over `?chapter=N&zip=XXXXX` walks a
+	// whole chapter through the page alone. Each uncached ZIP also costs an
+	// unthrottled third-party geocode. The API route's header promises every
+	// gate it applies is applied here too; leaving this one off the page made
+	// the promise true in only one direction.
+	const budget = recordRequest(turfRequests, session.slackUserId, now, {
+		exempt: session.isAdmin,
+	});
+	if (!budget.allowed) {
+		console.warn(`[van] turf request budget exhausted (page): user=${session.slackUserId}`);
+		return { ...empty, rateLimited: budget.retryAfterSeconds };
+	}
+
 	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now, {
 		exempt: session.isAdmin,
 	});

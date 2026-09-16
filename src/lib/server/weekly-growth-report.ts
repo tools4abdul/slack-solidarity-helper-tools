@@ -39,6 +39,9 @@ export interface WeeklyGrowthResult {
 	totalNewJoins: number;
 	topChapters: ChapterGrowth[];
 	posted: boolean;
+	/** False when this window was already computed and the stored snapshot was
+	 *  returned untouched. See the write-once note on runWeeklyGrowthReport. */
+	persisted: boolean;
 }
 
 /**
@@ -445,34 +448,79 @@ async function persistSnapshot(
 ): Promise<void> {
 	const computedAt = new Date().toISOString();
 
-	await db
-		.insert(weeklyGrowthWindows)
-		.values({
-			windowEnd: windowEndIso,
-			windowStart: windowStartIso,
-			totalNewJoins,
-			computedAt,
-		})
-		.onConflictDoUpdate({
-			target: weeklyGrowthWindows.windowEnd,
-			set: { windowStart: windowStartIso, totalNewJoins, computedAt },
-		});
+	// One batch, which libsql applies as a single transaction.
+	//
+	// The delete and the inserts are a replacement, not two independent edits,
+	// and what they replace cannot be recomputed: `numMembers` is the channel
+	// size Slack reported at window-end, and asking again next week returns a
+	// different number (which is the whole reason the snapshot exists). Run as
+	// separate statements, a machine stopped between them — Fly autostops
+	// idle ones — leaves the window row claiming a leaderboard whose chapter
+	// rows are missing or half-written, and nothing can rebuild it.
+	const statements = [
+		db
+			.insert(weeklyGrowthWindows)
+			.values({
+				windowEnd: windowEndIso,
+				windowStart: windowStartIso,
+				totalNewJoins,
+				computedAt,
+			})
+			.onConflictDoUpdate({
+				target: weeklyGrowthWindows.windowEnd,
+				set: { windowStart: windowStartIso, totalNewJoins, computedAt },
+			}),
+		// Wipe any prior rows for this window before re-inserting — keeps the
+		// table clean if a chapter dropped out of the leaderboard on a re-run.
+		db.delete(weeklyChapterGrowth).where(eq(weeklyChapterGrowth.windowEnd, windowEndIso)),
+		...rows.map((row) =>
+			db.insert(weeklyChapterGrowth).values({
+				windowEnd: windowEndIso,
+				chapterId: row.chapterId,
+				chapterName: row.chapterName,
+				slackChannelId: row.slackChannelId,
+				newJoins: row.newJoins,
+				existing: row.existing,
+				numMembers: row.numMembers,
+			}),
+		),
+	];
+	await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
+}
 
-	// Wipe any prior rows for this window before re-inserting — keeps the table
-	// clean if a chapter dropped out of the leaderboard on a re-run.
-	await db.delete(weeklyChapterGrowth).where(eq(weeklyChapterGrowth.windowEnd, windowEndIso));
+/**
+ * The stored snapshot for one window, or null when it has not been computed.
+ *
+ * Because persistSnapshot writes atomically, the window row existing means the
+ * chapter rows exist too — so this can be trusted as "that week is done".
+ */
+async function readSnapshot(
+	db: LibSQLDatabase<Record<string, unknown>>,
+	windowEndIso: string,
+	rankingAlpha: number,
+): Promise<{ totalNewJoins: number; leaderboard: ChapterGrowth[] } | null> {
+	const [win] = await db
+		.select()
+		.from(weeklyGrowthWindows)
+		.where(eq(weeklyGrowthWindows.windowEnd, windowEndIso))
+		.limit(1);
+	if (!win) return null;
 
-	for (const row of rows) {
-		await db.insert(weeklyChapterGrowth).values({
-			windowEnd: windowEndIso,
-			chapterId: row.chapterId,
-			chapterName: row.chapterName,
-			slackChannelId: row.slackChannelId,
-			newJoins: row.newJoins,
-			existing: row.existing,
-			numMembers: row.numMembers,
-		});
-	}
+	const rows = await db
+		.select()
+		.from(weeklyChapterGrowth)
+		.where(eq(weeklyChapterGrowth.windowEnd, windowEndIso));
+
+	const leaderboard: ChapterGrowth[] = rows.map((r) => ({
+		chapterId: r.chapterId,
+		chapterName: r.chapterName,
+		slackChannelId: r.slackChannelId,
+		newJoins: r.newJoins,
+		existing: r.existing,
+		pct: r.existing > 0 ? (r.newJoins / r.existing) * 100 : 0,
+	}));
+	sortByRanking(leaderboard, rankingAlpha);
+	return { totalNewJoins: win.totalNewJoins, leaderboard };
 }
 
 export async function runWeeklyGrowthReport(
@@ -490,6 +538,8 @@ export async function runWeeklyGrowthReport(
 		/** Power-law exponent for the ranking score. Defaults to
 		 * DEFAULT_RANKING_ALPHA. */
 		rankingAlpha?: number;
+		/** Recompute and overwrite a window that already has a snapshot. */
+		force?: boolean;
 	} = {},
 ): Promise<WeeklyGrowthResult> {
 	const excluded = options.excludedChapterIds ?? new Set<number>();
@@ -499,6 +549,35 @@ export async function runWeeklyGrowthReport(
 	const { start: windowStart, end: windowEnd } = computeWindow(now);
 	const windowStartIso = windowStart.toISOString();
 	const windowEndIso = windowEnd.toISOString();
+
+	// A window is computed once, and a re-run inside the same week returns what
+	// was stored rather than recomputing it.
+	//
+	// `computeWindow` pins windowEnd to the most recent Monday, so every run for
+	// the rest of the week addresses the same row — but `existing` comes from a
+	// LIVE conversations.info against a fixed newJoins, so it grows each day.
+	// Recomputing on Thursday lowers every pct, reorders the ranking, and leaves
+	// the dashboard disagreeing with the message the channel was sent on Monday.
+	// A Slack lookup that failed on the re-run would swap in a different basis
+	// again (`sqlExisting`, `numMembers: null`) and overwrite with that.
+	//
+	// Checked before the conversations.info fan-out below, so a no-op re-run
+	// costs one read rather than a call per chapter.
+	if (!options.dryRun && !options.force) {
+		const stored = await readSnapshot(db, windowEndIso, rankingAlpha);
+		if (stored) {
+			console.log(`[growth] ${windowEndIso} already computed — returning the stored snapshot`);
+			return {
+				windowStart: windowStartIso,
+				windowEnd: windowEndIso,
+				chaptersWithGrowth: stored.leaderboard.length,
+				totalNewJoins: stored.totalNewJoins,
+				topChapters: stored.leaderboard.slice(0, TOP_N),
+				posted: false,
+				persisted: false,
+			};
+		}
+	}
 
 	// Aggregate per-chapter counts in SQL via json_each so we never round-trip
 	// every slack_joins row across the wire. Rows with chapter_ids = '[]' produce
@@ -627,5 +706,6 @@ export async function runWeeklyGrowthReport(
 		totalNewJoins,
 		topChapters,
 		posted,
+		persisted: !options.dryRun,
 	};
 }

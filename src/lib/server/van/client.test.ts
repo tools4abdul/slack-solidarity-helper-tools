@@ -77,15 +77,34 @@ describe('createVanClient', () => {
 		expect(fetchFn.mock.calls[1]![0]).toBe(`${VAN_BASE_URL}/folders?$skip=1`);
 	});
 
-	it('stops rather than looping when nextPageLink points at itself', async () => {
+	it('fails rather than looping when nextPageLink points at itself', async () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValue(
 				res(200, { items: [{ folderId: 1, name: 'A' }], nextPageLink: `${VAN_BASE_URL}/folders` }),
 			);
-		const folders = await createVanClient(config, fetchFn as never).folders();
-		expect(folders).toHaveLength(1);
+
+		// Returning the one page it managed to read would be indistinguishable
+		// from that being the whole folder list.
+		await expect(createVanClient(config, fetchFn as never).folders()).rejects.toThrow(
+			/pagination did not complete: pagination cycled back/,
+		);
 		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it('fails rather than truncating when a walk runs past the page cap', async () => {
+		// Every page points at a new link, so the walk only ever ends on the cap.
+		let page = 0;
+		const fetchFn = vi.fn(async () =>
+			res(200, {
+				items: [{ folderId: ++page, name: `F${page}` }],
+				nextPageLink: `${VAN_BASE_URL}/folders?$skip=${page}`,
+			}),
+		);
+
+		await expect(createVanClient(config, fetchFn as never).folders()).rejects.toThrow(
+			/pagination did not complete: more than 200 pages/,
+		);
 	});
 
 	it('parses the {errors:[...]} envelope into VanError codes and message', async () => {
