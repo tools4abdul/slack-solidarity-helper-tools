@@ -27,9 +27,10 @@
 	interface Props {
 		ttlHours: number;
 		maxConcurrentClaims: number;
+		regionRefreshEnabled: boolean;
 	}
 
-	let { ttlHours, maxConcurrentClaims }: Props = $props();
+	let { ttlHours, maxConcurrentClaims, regionRefreshEnabled }: Props = $props();
 
 	async function postAppConfig(patch: Record<string, unknown>): Promise<void> {
 		const res = await fetch('/api/settings/app-config', {
@@ -53,9 +54,24 @@
 		save: (value) => postAppConfig({ vanTurfMaxConcurrentClaims: value }),
 	});
 
+	const refreshSave = createFieldAutosave<boolean>({
+		initial: regionRefreshEnabled,
+		parse: (raw) => raw === 'true',
+		save: (value) => postAppConfig({ vanRegionRefreshEnabled: value }),
+	});
+
+	/** The autosave helper reads `event.target.value`, which on a checkbox is
+	 *  the constant "on" — so hand it the checked state as the string it
+	 *  parses instead. */
+	function onRefreshToggle(e: Event): void {
+		const checked = (e.currentTarget as HTMLInputElement).checked;
+		refreshSave.oninput({ target: { value: String(checked) } } as unknown as Event);
+	}
+
 	$effect(() => () => {
 		ttlSave.destroy();
 		capSave.destroy();
+		refreshSave.destroy();
 	});
 
 	/** Hours read as days once they stop being a number of hours anyone counts.
@@ -119,6 +135,25 @@
 	</p>
 </SettingsRow>
 
+<SettingsRow
+	label="Re-cut regions in VAN"
+	status={refreshSave.status}
+	error={refreshSave.error}
+	onRetry={refreshSave.status === 'error' ? refreshSave.retry : undefined}
+>
+	<label class="turf-toggle">
+		<input type="checkbox" checked={refreshSave.value} onchange={onRefreshToggle} />
+		<span>Let the sync ask VAN to re-cut map regions</span>
+	</label>
+	<p class="app-config-note">
+		A re-cut is how knocked doors leave the counts: after someone finishes a turf, and overnight for
+		every mapped folder. But VAN replaces every route in a region it re-cuts, and the new routes may
+		have no MiniVAN list number until someone generates printed lists in VAN again — until then they
+		can't be claimed. It also re-cuts turf other organizers cut, in any shared folder mapped above.
+		Off by default. Turn it on only once a test re-cut has shown list numbers survive.
+	</p>
+</SettingsRow>
+
 <style>
 	.turf-number {
 		display: flex;
@@ -139,6 +174,12 @@
 	.turf-number input:focus-visible {
 		outline: 2px solid var(--color-border-focus);
 		outline-offset: 1px;
+	}
+
+	.turf-toggle {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
 	}
 
 	.turf-unit {

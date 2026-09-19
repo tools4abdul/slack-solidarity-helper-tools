@@ -12,12 +12,16 @@ const mockPostMessage = vi.hoisted(() => vi.fn());
 const mockSweep = vi.hoisted(() => vi.fn());
 const mockWarn = vi.hoisted(() => vi.fn());
 const mockDrift = vi.hoisted(() => vi.fn());
+const mockListExpiry = vi.hoisted(() => vi.fn());
 const mockSettle = vi.hoisted(() => vi.fn());
 const mockReconcile = vi.hoisted(() => vi.fn());
 const mockRefreshSweep = vi.hoisted(() => vi.fn());
 const mockDoorDeltas = vi.hoisted(() => vi.fn());
 const mockDoorsHealth = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
+// On in most tests so the sweep's own behaviour is exercised; the default-off
+// case has its own test below.
+const mockSettings = vi.hoisted(() => ({ vanRegionRefreshEnabled: true }));
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/slack.js', () => ({
@@ -29,6 +33,7 @@ vi.mock('$lib/server/settings.js', () => ({
 		slackTrackingChannelId: 'C_TRACK',
 		slackTurfChannelId: 'C_TURF',
 		vanTurfClaimTtlHours: 48,
+		vanRegionRefreshEnabled: mockSettings.vanRegionRefreshEnabled,
 	}),
 	loadVanChapterFolders: async () => [
 		{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
@@ -49,6 +54,9 @@ vi.mock('$lib/server/van/sync.js', () => ({ runCatalogSync: mockRunCatalogSync }
 vi.mock('$lib/server/van/checkout-store.js', () => ({ sweepExpiredClaims: mockSweep }));
 vi.mock('$lib/server/van/expiry-warning-store.js', () => ({ sendExpiryWarnings: mockWarn }));
 vi.mock('$lib/server/van/drift-alert-store.js', () => ({ sendDriftAlerts: mockDrift }));
+vi.mock('$lib/server/van/list-expiry-alert-store.js', () => ({
+	sendListExpiryAlerts: mockListExpiry,
+}));
 vi.mock('$lib/server/van/refresh.js', () => ({
 	settleRefreshes: mockSettle,
 	runRefreshSweep: mockRefreshSweep,
@@ -137,6 +145,7 @@ describe('POST /api/internal/van-sync', () => {
 		mockSweep.mockResolvedValue(0);
 		mockWarn.mockResolvedValue({ sent: 0, failed: 0 });
 		mockDrift.mockResolvedValue(driftResult);
+		mockListExpiry.mockResolvedValue({ announced: 0, failed: false, skipped: 'nothing-new' });
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -217,6 +226,7 @@ describe('POST /api/internal/van-sync', () => {
 			expiryWarningsSent: 0,
 			expiryWarningsFailed: 0,
 			drift: driftResult,
+			listExpiry: { announced: 0, failed: false, skipped: 'nothing-new' },
 			refreshesSettled: 0,
 			reconciled: reconcileResult,
 			doorDeltas: doorDeltaResult,
@@ -299,6 +309,27 @@ describe('POST /api/internal/van-sync', () => {
 		expect(order).toEqual(['catalog', 'settle', 'reconcile', 'deltas', 'drift', 'refresh']);
 	});
 
+	it('warns about expiring list numbers after the catalog, in the turf channel', async () => {
+		// The catalog writes each list's creation date, so warning before it
+		// would count from a list an organizer may have just replaced.
+		const order: string[] = [];
+		mockRunCatalogSync.mockImplementation(async () => {
+			order.push('catalog');
+			return result;
+		});
+		mockListExpiry.mockImplementation(async () => {
+			order.push('list-expiry');
+			return { announced: 2, failed: false };
+		});
+		const body = await (await POST(event())).json();
+		expect(order).toEqual(['catalog', 'list-expiry']);
+		expect(mockListExpiry).toHaveBeenCalledWith(
+			{},
+			{ now: mockSweep.mock.calls[0]![1], channelId: 'C_TURF', appUrl: 'https://app.example' },
+		);
+		expect(body.listExpiry).toEqual({ announced: 2, failed: false });
+	});
+
 	it('reports what the sync-back check found', async () => {
 		mockDoorDeltas.mockResolvedValue({
 			measured: 4,
@@ -338,6 +369,22 @@ describe('POST /api/internal/van-sync', () => {
 		mockDoorsHealth.mockRejectedValue(new Error('database is locked'));
 		const res = await POST(event());
 		expect(res.status).toBe(200);
+	});
+
+	it('sends no refresh while the switch is off, and says so', async () => {
+		// A re-cut replaces every route in the region, and the replacements may
+		// have no printed list — so with the switch off (the default) the sweep
+		// must not run at all, not merely send fewer requests.
+		mockSettings.vanRegionRefreshEnabled = false;
+		try {
+			const body = await (await POST(event())).json();
+			expect(mockRefreshSweep).not.toHaveBeenCalled();
+			expect(body.refresh).toEqual({ disabled: true });
+			// Confirming earlier refreshes makes no VAN call, so it still runs.
+			expect(mockSettle).toHaveBeenCalled();
+		} finally {
+			mockSettings.vanRegionRefreshEnabled = true;
+		}
 	});
 
 	it('posts refresh warnings to the turf channel with the rest', async () => {

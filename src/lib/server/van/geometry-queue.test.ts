@@ -25,7 +25,8 @@ beforeEach(async () => {
 		`CREATE TABLE van_turfs (
 			map_route_id integer PRIMARY KEY NOT NULL, map_region_id integer, folder_id integer,
 			chapter_id integer, chapter_name text DEFAULT '' NOT NULL, region_name text DEFAULT '' NOT NULL,
-			name text NOT NULL, saved_list_id integer, printed_list_number text, route_number integer,
+			name text NOT NULL, saved_list_id integer, printed_list_number text,
+			printed_list_created_at text, list_expiry_warned_for text, route_number integer,
 			route_size integer DEFAULT 0 NOT NULL, door_count integer DEFAULT 0 NOT NULL,
 			phone_count integer DEFAULT 0 NOT NULL, centroid_lat real, centroid_lng real, hull_json text,
 			hull_source_route_size integer, van_distributed_to text, drift_alerted_at text,

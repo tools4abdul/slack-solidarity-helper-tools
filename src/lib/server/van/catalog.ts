@@ -87,6 +87,17 @@ export function needsGeometry(row: {
 	return row.routeSize < source * HULL_COLLAPSE_RATIO;
 }
 
+/** When each printed list was generated, by number. Covers both sources of a
+ *  number: a route-level `printedList` may omit `dateCreated`, and a backfilled
+ *  number only has one here. */
+function listCreatedIndex(printedLists: VanPrintedList[]): Map<string, string> {
+	const index = new Map<string, string>();
+	for (const list of printedLists) {
+		if (list.number && list.dateCreated) index.set(list.number.trim(), list.dateCreated);
+	}
+	return index;
+}
+
 /** Printed-list numbers by turf name, for backfilling routes that don't carry
  *  their own. Scoped per folder because two counties can both have a
  *  "Turf 01". */
@@ -141,6 +152,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const nowIso = iso(now);
 	const warnings: string[] = [];
 	const listIndex = printedListIndex(printedLists);
+	const createdIndex = listCreatedIndex(printedLists);
 	const distributed = distributionIndex(input.minivanExports ?? []);
 	const existingById = new Map(existing.map((row) => [row.mapRouteId, row]));
 
@@ -171,6 +183,12 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 				const printedListNumber = routeNumber ?? backfill;
 				const listNumberDisagrees =
 					routeNumber !== null && backfill !== null && routeNumber !== backfill;
+				// The date belongs to whichever number is being issued, so it is
+				// looked up by that number rather than taken from the route alone.
+				const printedListCreatedAt =
+					(routeNumber !== null ? route.printedList?.dateCreated : null) ??
+					(printedListNumber ? createdIndex.get(printedListNumber) : undefined) ??
+					null;
 
 				const routeSize = route.routeSize ?? 0;
 				const hullSourceRouteSize = prior?.hullSourceRouteSize ?? null;
@@ -193,6 +211,7 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					name: route.name ?? `Turf ${route.routeNumber ?? route.mapRouteId}`,
 					savedListId: route.savedListId ?? null,
 					printedListNumber,
+					printedListCreatedAt,
 					routeNumber: route.routeNumber ?? null,
 					routeSize,
 					doorCount: route.doorCount ?? 0,

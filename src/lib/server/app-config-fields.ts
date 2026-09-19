@@ -106,6 +106,15 @@ function numberInRangeField(label: string, min: number, max: number): FieldValid
 	};
 }
 
+/** A real boolean. Strict on purpose: `"false"` is truthy, and a switch that a
+ *  stringly-typed client turns ON by sending "false" is the worst way to fail. */
+function booleanField(label: string): FieldValidator<boolean> {
+	return (value) => {
+		if (typeof value !== 'boolean') return fail(`${label} must be true or false`);
+		return { ok: true, value };
+	};
+}
+
 /** ISO datetime, re-serialized to canonical form so every reader gets the same
  *  format. `''` clears the countdown. */
 function isoDateTimeField(label: string): FieldValidator<string> {
@@ -260,6 +269,7 @@ export const APP_CONFIG_FIELDS: {
 		MIN_CONCURRENT_CLAIMS,
 		MAX_CONCURRENT_CLAIMS,
 	),
+	vanRegionRefreshEnabled: booleanField('vanRegionRefreshEnabled'),
 
 	themeTokens: themeTokensField('themeTokens'),
 

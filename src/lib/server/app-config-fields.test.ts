@@ -42,6 +42,7 @@ describe('the table', () => {
 				'slackGrowthReportRankingAlpha',
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
+				'vanRegionRefreshEnabled',
 				'doorTickerColumnsPerSecond',
 				'siteName',
 				'countdownLabel',
@@ -51,7 +52,7 @@ describe('the table', () => {
 				'themeTokens',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(18);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(19);
 	});
 });
 
@@ -147,6 +148,15 @@ describe('numeric fields', () => {
 		expect(await run('doorTickerColumnsPerSecond', MAX_TICKER_COLUMNS_PER_SECOND)).toMatchObject({
 			ok: true,
 		});
+	});
+
+	it('takes the region refresh switch only as a real boolean', async () => {
+		expect(await run('vanRegionRefreshEnabled', true)).toEqual({ ok: true, value: true });
+		expect(await run('vanRegionRefreshEnabled', false)).toEqual({ ok: true, value: false });
+		// "false" is truthy — accepting strings would let it switch the sweep ON.
+		for (const value of ['false', 'true', 1, 0, null, undefined]) {
+			expect(await run('vanRegionRefreshEnabled', value)).toMatchObject({ ok: false });
+		}
 	});
 
 	it('rejects a ticker rate outside the bounds', async () => {

@@ -846,6 +846,7 @@ The app never cuts turf — VAN's API cannot create MiniVAN exports (`/minivanEx
 - **Generate the printed list.** A route with no `printedList.number` has no MiniVAN list number, so it is not claimable. The sync posts a single summary warning naming the turfs in this state.
 - **Cut map regions against a "not yet contacted" filter.** This is what makes `doorCount` shrink as doors get knocked — the entire remaining-doors mechanism. A region cut without it never shrinks, and every doors-cleared number derived from it is zero.
 - **Bulk-export turf to MiniVAN ahead of time**, once per cut rather than once per volunteer.
+- **Regenerate printed lists before they expire.** VAN expires a printed list 30 days after it is generated, and the API cannot make a new one. The sync warns the turf channel once per list when it is five days from expiry (or already past it, if nobody was told), counting from the list's `dateCreated`. The warning names the turf, never the list number.
 
 ### `GET /policies`
 

@@ -340,6 +340,14 @@ export const appConfig = sqliteTable(
 		// that lapses in a minute.
 		vanTurfClaimTtlHours: integer('van_turf_claim_ttl_hours'),
 		vanTurfMaxConcurrentClaims: integer('van_turf_max_concurrent_claims'),
+		// Whether the sync may ask VAN to re-cut map regions. NULL means OFF: a
+		// re-cut retires every route in the region and returns new ones with new
+		// ids and new saved lists, and nothing yet shows the replacements inherit
+		// a printed list number — which this app cannot generate. So until that
+		// is verified on a test region, a refresh can turn claimable turf into
+		// unclaimable turf, and a nightly sweep would do it to every mapped folder
+		// every night, including shared folders other organizers cut.
+		vanRegionRefreshEnabled: integer('van_region_refresh_enabled', { mode: 'boolean' }),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that
@@ -778,6 +786,16 @@ export const vanTurfs = sqliteTable(
 		 *  exist before anyone generates its printed list, and a turf without
 		 *  one must not be claimable. */
 		printedListNumber: text('printed_list_number'),
+		/** VAN's `dateCreated` for that printed list. Printed lists expire 30
+		 *  days after they are generated, after which the number loads nothing
+		 *  in MiniVAN — this is what the expiry warning counts from. Null when
+		 *  VAN didn't say, which the warning treats as "can't tell", not "fine". */
+		printedListCreatedAt: text('printed_list_created_at'),
+		/** The `printedListCreatedAt` the turf channel was last warned about.
+		 *  The creation date rather than the number, because the number is the
+		 *  credential and stays out of anything posted; a regenerated list has a
+		 *  new creation date, so it is warned about afresh when its turn comes. */
+		listExpiryWarnedFor: text('list_expiry_warned_for'),
 		routeNumber: integer('route_number'),
 		/** People in the list (VAN's routeSize). */
 		routeSize: integer('route_size').notNull().default(0),

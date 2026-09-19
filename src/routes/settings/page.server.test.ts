@@ -66,6 +66,7 @@ const settingsFixture = {
 	doorTickerColumnsPerSecond: 30,
 	vanTurfClaimTtlHours: 48,
 	vanTurfMaxConcurrentClaims: 2,
+	vanRegionRefreshEnabled: false,
 };
 
 function makeEvent(overrides: {
