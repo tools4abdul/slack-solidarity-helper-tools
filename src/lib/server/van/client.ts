@@ -88,6 +88,7 @@ const PRINTED_LISTS_PAGE_SIZE = 50;
 // INVALID_PARAMETER. Its DEFAULT is 10, which is what made the naive forward
 // walk cost 200 requests to cover 2,000 of 30,261 records.
 const MINIVAN_EXPORTS_PAGE_SIZE = 50;
+const SAVED_LISTS_PAGE_SIZE = 100;
 // How far back to walk from the newest export. 20 pages = the 1,000 most
 // recent, ~20 requests and a few seconds, against 606 pages and minutes for the
 // whole table. See the note on `minivanExports` for why recency is the right
@@ -307,8 +308,14 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 			}
 			visited.add(absolute);
 			const body: VanPage<T> = await getJson<VanPage<T>>(next);
-			all.push(...(body?.items ?? []));
-			next = body?.nextPageLink ?? null;
+			const items = body?.items ?? [];
+			all.push(...items);
+			// An empty page is the end, whatever nextPageLink says. Verified live:
+			// /savedLists with 89 records answers `$skip=100` with no items and a
+			// link to `$skip=150`, and so on forever — every walk of it ran into
+			// MAX_PAGES and threw. Pages are $skip offsets, so nothing can follow
+			// an empty one.
+			next = items.length > 0 ? (body?.nextPageLink ?? null) : null;
 		}
 		if (next) {
 			throw new VanIncompleteError(path, `more than ${MAX_PAGES} pages`);
@@ -360,7 +367,9 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 				})}`,
 			),
 
-		savedLists: (folderId) => paginate<VanSavedList>(`/savedLists${query({ folderId })}`),
+		// $top=100 is this endpoint's maximum (200 is a 400), versus a default of 50.
+		savedLists: (folderId) =>
+			paginate<VanSavedList>(`/savedLists${query({ folderId, $top: SAVED_LISTS_PAGE_SIZE })}`),
 
 		/**
 		 * Walk /minivanExports from the END of the table backwards.
