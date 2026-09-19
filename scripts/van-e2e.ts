@@ -122,9 +122,9 @@ async function rawMinivanExports(): Promise<void> {
 		body.length > 2000
 			? `${body.slice(0, 2000)}\n  … (${body.length} bytes)`
 			: body
-				.split('\n')
-				.map((l) => `  ${l}`)
-				.join('\n'),
+					.split('\n')
+					.map((l) => `  ${l}`)
+					.join('\n'),
 	);
 	if (res.ok) record('GET /minivanExports (raw, no retry)', 'ok', `HTTP ${res.status}`);
 	else record('GET /minivanExports (raw, no retry)', 'FAIL', `HTTP ${res.status}`);
@@ -135,7 +135,11 @@ async function main(): Promise<void> {
 	console.log(`Database (read only; sync is a dry run): ${dbConfig.url}`);
 
 	section('Catalog reads');
-	const folders = await step('GET /folders', () => client.folders(), (f) => `${f.length} folder(s)`);
+	const folders = await step(
+		'GET /folders',
+		() => client.folders(),
+		(f) => `${f.length} folder(s)`,
+	);
 	if (!folders || folders.length === 0) {
 		console.log('\nNo folders — nothing else can be exercised.');
 		return summarise();
@@ -169,12 +173,20 @@ async function main(): Promise<void> {
 	} else {
 		record('GET /printedLists?folderIds=…', 'skip', 'no folder holds turf');
 	}
-	await step('GET /savedLists', () => client.savedLists(), (l) => `${l.length} saved list(s)`);
-	await step('GET /exportJobTypes', () => client.exportJobTypes(), (types) => {
-		const configured = types.find((t) => t.exportJobTypeId === exportJobTypeId);
-		if (!configured) throw new Error(`VAN_EXPORT_JOB_TYPE_ID=${exportJobTypeId} is not offered`);
-		return `VAN_EXPORT_JOB_TYPE_ID=${exportJobTypeId} is "${configured.name}"`;
-	});
+	await step(
+		'GET /savedLists',
+		() => client.savedLists(),
+		(l) => `${l.length} saved list(s)`,
+	);
+	await step(
+		'GET /exportJobTypes',
+		() => client.exportJobTypes(),
+		(types) => {
+			const configured = types.find((t) => t.exportJobTypeId === exportJobTypeId);
+			if (!configured) throw new Error(`VAN_EXPORT_JOB_TYPE_ID=${exportJobTypeId} is not offered`);
+			return `VAN_EXPORT_JOB_TYPE_ID=${exportJobTypeId} is "${configured.name}"`;
+		},
+	);
 	await step(
 		'GET /minivanExports (client, with retries)',
 		() => client.minivanExports(),
@@ -240,7 +252,8 @@ async function main(): Promise<void> {
 				exportJobTypeId,
 				webhookUrl: WEBHOOK_URL,
 			}),
-		(j) => `job ${j.exportJobId}, status ${j.status}${j.downloadUrl ? ', downloadUrl present' : ''}`,
+		(j) =>
+			`job ${j.exportJobId}, status ${j.status}${j.downloadUrl ? ', downloadUrl present' : ''}`,
 	);
 	if (!job) return summarise();
 
