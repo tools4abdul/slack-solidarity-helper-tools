@@ -562,12 +562,9 @@
 			</div>
 
 			<div class="list-col">
-				<!-- Above the rows it orders, in both layouts: beside the map on a
-				     desktop and above the list on a phone, it is the same control in
-				     the same place relative to what it acts on. One row, because the
-				     two ways in are alternatives: stacked, they read as two features
-				     and a volunteer who grants location wonders what the ZIP field is
-				     still for. -->
+				<!-- One row, because the two ways in are alternatives: stacked, they
+				     read as two features, and a volunteer who grants location wonders
+				     what the ZIP field is still for. -->
 				<section class="sort-bar" aria-labelledby="sort-by">
 					<h2 class="sort-title" id="sort-by">Sort by</h2>
 					{#if locationState === 'idle'}
@@ -581,7 +578,8 @@
 					{#if locationState !== 'granted'}
 						<form class="zip-form" method="GET" action={resolve('/turfs')}>
 							<input type="hidden" name="chapter" value={data.chapter.chapterId} />
-							<label for="zip">ZIP</label>
+							<span>|</span>
+							<label for="zip">Nearest my ZIP</label>
 							<input
 								id="zip"
 								name="zip"

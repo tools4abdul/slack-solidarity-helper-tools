@@ -88,10 +88,12 @@ main {
 
 /* --- Chapter bar -------------------------------------------------------- */
 
-/* Medium Blue, not the Deep Blue of the site header thirty-two pixels above
-   it: two bands of the same navy separated by a cream stripe read as one slab
-   that failed to join up. A step along the brand's own blues keeps it as the
-   page's own header. */
+/* Medium Blue, not the Deep Blue of the app header above it. On a desktop the
+   two are separated by a cream stripe, where the same navy twice would read as
+   one slab that failed to join up; on a phone the bar runs edge to edge and
+   sits directly against the header, where the step along the brand's own blues
+   is what keeps it a second band rather than a taller first one. Either way it
+   is the page's own header. */
 .chapter-bar {
 	display: flex;
 	align-items: center;
@@ -99,7 +101,6 @@ main {
 	gap: var(--space-4);
 	padding: 14px 16px;
 	background: var(--color-navy-mid);
-	border: 1px solid var(--color-navy-mid);
 	border-radius: var(--radius-md);
 	margin-bottom: 20px;
 	color: var(--color-header-text);
@@ -355,25 +356,21 @@ main {
    for the map plus its controls, sticky simply degrades to normal scrolling.
    That is a worse desktop layout, not a broken one. */
 
-/* Phone layout: the map leads.
+/* Phone layout: one column, in the page's own order.
  *
- * A volunteer opening this on a pavement wants to see where they are before
- * they read anything, so the map goes above the banner and the chapter bar
- * rather than a screen and a half below them. `display: contents` dissolves
- * the two-column grid so its children become flex items of <main> and can be
- * ordered against main's own children; the map's edge-to-edge treatment lives
- * with the map, in TurfMap.svelte.
+ * Nothing is reordered here. The DOM order — chapter bar, a turf you hold,
+ * map, list — is what both layouts show, so the page a volunteer learns on a
+ * pavement is the page they find on a laptop. `display: contents` dissolves
+ * the two-column grid so the map and the list stack as children of <main>
+ * without the grid's gap between them and the rest of the page.
  *
- * The one thing that outranks the map is a turf you already hold: that card
- * carries the MiniVAN list number, which is the thing a volunteer reopens the
- * page to read. It sits above the map, so on the common case (holding
- * nothing) the map is still the first thing on the screen. */
+ * The chapter bar and the map both run edge to edge, stacking under the app
+ * header as bands; the map's own treatment lives with the map, in
+ * TurfMap.svelte. */
 @media (max-width: 640px) {
 	main {
-		display: flex;
-		flex-direction: column;
-		/* No gap between the header and the map — the map runs to the top edge
-		   of the page the same way it runs to the sides. */
+		/* No gap above the chapter bar — it butts against the app header and
+		   reads as that header's second band. */
 		margin-top: 0;
 		padding: 0 var(--space-4);
 	}
@@ -382,13 +379,35 @@ main {
 		display: contents;
 	}
 
+	/* The only thing that can come between the app header and the chapter bar,
+	   and it needs the gap the bar deliberately doesn't take. */
+	.demo-banner {
+		margin-top: var(--space-4);
+	}
+
+	/* A subheader band rather than a card: full width, squared off, and flush
+	   with the map below it. `50% - 50vw` escapes whatever padding <main> has
+	   without naming its value — the same idiom the map frame uses. The inline
+	   padding is the page column's, not the app header's, so the chapter name
+	   lines up with the rows underneath rather than with the logo above. */
+	.chapter-bar {
+		margin-inline: calc(50% - 50vw);
+		margin-bottom: 0;
+		padding: 12px var(--space-4);
+		border-radius: 0;
+	}
+
+	/* Flush is right for the map, which is another full-width band; anything
+	   else landing under the bar is page content and needs the gap back. */
+	main > .sync-warning {
+		margin-top: var(--space-4);
+	}
+
 	.my-turfs {
-		order: -2;
-		margin: 16px 0 20px;
+		margin: var(--space-4) 0 20px;
 	}
 
 	.map-col {
-		order: -1;
 		/* The one gap the grid used to supply: everything below it carries its
 		   own bottom margin already. */
 		margin-bottom: 20px;
