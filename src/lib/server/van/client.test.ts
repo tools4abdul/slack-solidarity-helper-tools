@@ -77,6 +77,23 @@ describe('createVanClient', () => {
 		expect(fetchFn.mock.calls[1]![0]).toBe(`${VAN_BASE_URL}/folders?$skip=1`);
 	});
 
+	it('stops at an empty page even when nextPageLink keeps going', async () => {
+		// /savedLists does this live: past the last record it serves empty
+		// pages whose nextPageLink advances $skip without end.
+		let skip = 0;
+		const fetchFn = vi.fn(async () => {
+			skip += 1;
+			return res(200, {
+				items: skip <= 2 ? [{ folderId: skip, name: `F${skip}` }] : [],
+				nextPageLink: `${VAN_BASE_URL}/folders?$skip=${skip}`,
+			});
+		});
+
+		const folders = await createVanClient(config, fetchFn as never).folders();
+		expect(folders.map((f) => f.folderId)).toEqual([1, 2]);
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+
 	it('fails rather than looping when nextPageLink points at itself', async () => {
 		const fetchFn = vi
 			.fn()
