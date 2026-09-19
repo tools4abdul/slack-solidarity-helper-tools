@@ -834,9 +834,9 @@
 		touch-action: none;
 	}
 
-	/* Phone layout: the map is the first thing on the page and runs the full
-	   width of the screen. `50% - 50vw` is measured against the page column, so
-	   the frame escapes whatever padding <main> has without knowing its value.
+	/* Phone layout: the map runs the full width of the screen, as the band under
+	   the chapter bar. `50% - 50vw` is measured against the page column, so the
+	   frame escapes whatever padding <main> has without knowing its value.
 
 	   dvh, not vh: on mobile Safari and Chrome vh is the *largest* viewport, so
 	   a vh-sized map hides its own bottom edge behind the address bar. */
