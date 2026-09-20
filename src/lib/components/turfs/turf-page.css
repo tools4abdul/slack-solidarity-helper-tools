@@ -178,6 +178,21 @@ main {
 
 .my-turfs {
 	margin-bottom: var(--space-5);
+	/* Scrolled to after a claim; the sticky header would otherwise cover the
+	   top of the card, which is where the list number is. */
+	scroll-margin-top: var(--space-4);
+}
+
+/* Focused programmatically after a claim, so the default ring would appear
+   without anyone having tabbed anywhere. A keyboard user still gets one. */
+.my-turfs:focus {
+	outline: none;
+}
+
+.my-turfs:focus-visible {
+	outline: 2px solid var(--color-border-focus);
+	outline-offset: 4px;
+	border-radius: var(--radius-lg);
 }
 
 .code-card {
