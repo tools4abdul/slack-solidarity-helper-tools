@@ -4,10 +4,17 @@
 // for reading: a canvass that ran Saturday evening should say Saturday, not
 // Sunday, and a knock at 9pm belongs to the day the volunteer was out.
 //
-// `America/Detroit` is the campaign's timezone, already the assumption in the
-// canvassing board and the doors projection, which pin their day buckets to it.
-// Those keep it private because they only bucket; this module exists because
-// the activity history needs to *display* it.
+// The campaign's timezone is `CAMPAIGN_TIME_ZONE` — an IANA name, e.g.
+// `America/Chicago`. Unset, it is the default below, which is where every
+// deployment of this app started. It is one clock for the whole campaign, not a
+// per-chapter one: the canvassing board, the doors projection and the activity
+// history all bucket by it, and two chapters an hour apart comparing a day's
+// numbers need those buckets to mean the same thing.
+//
+// Read from `process.env` rather than `$env/dynamic/private`, deliberately: the
+// pure modules under $lib/van import this, scripts/ runs those under tsx, and
+// the `$env` modules only exist inside the Vite bundle (see the note on
+// ChapterFolders in server/van/sync.ts, which was written after that bit).
 //
 // Formatting happens on the SERVER and ships as strings in the payload. Doing
 // it in the browser would render each row in whatever zone the reader's laptop
@@ -15,7 +22,41 @@
 // the same event — and would risk an SSR/client hydration mismatch on every
 // row. One clock, decided once.
 
-export const CAMPAIGN_TIME_ZONE = 'America/Detroit';
+/** Where this app started, and the value every existing deployment had baked
+ *  in before the variable existed. */
+export const DEFAULT_CAMPAIGN_TIME_ZONE = 'America/Detroit';
+
+/** True when the runtime knows this zone. A typo here would otherwise throw on
+ *  the first `Intl.DateTimeFormat` call, i.e. while rendering a page, rather
+ *  than at the point somebody could still fix it. */
+function isValidTimeZone(zone: string): boolean {
+	try {
+		new Intl.DateTimeFormat('en-US', { timeZone: zone });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolveTimeZone(): string {
+	// `process` is absent in a browser bundle; nothing here is meant to run
+	// there, and the default keeps an accidental import rendering rather than
+	// crashing.
+	const raw =
+		typeof process === 'undefined' ? '' : (process.env?.['CAMPAIGN_TIME_ZONE'] ?? '').trim();
+	if (!raw) return DEFAULT_CAMPAIGN_TIME_ZONE;
+	if (!isValidTimeZone(raw)) {
+		// Warn rather than throw: a mistyped zone should not take the app down,
+		// and a silent fallback would have every timestamp quietly wrong.
+		console.warn(
+			`[campaign-time] CAMPAIGN_TIME_ZONE is not a known IANA time zone: "${raw}" — using ${DEFAULT_CAMPAIGN_TIME_ZONE}`,
+		);
+		return DEFAULT_CAMPAIGN_TIME_ZONE;
+	}
+	return raw;
+}
+
+export const CAMPAIGN_TIME_ZONE = resolveTimeZone();
 
 /** `en-CA` gives ISO-ordered `YYYY-MM-DD`, which sorts and compares as a
  *  string. */
