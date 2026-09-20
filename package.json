@@ -20,7 +20,8 @@
 		"db:seed": "node bin/seed-dev-db.js",
 		"van:check": "tsx --env-file=.env.local scripts/van-check.ts",
 		"van:sync": "tsx --env-file=.env.local scripts/van-sync-once.ts",
-		"van:e2e": "tsx --env-file=.env.local scripts/van-e2e.ts"
+		"van:e2e": "tsx --env-file=.env.local scripts/van-e2e.ts",
+		"sheets:check": "tsx --env-file=.env.local scripts/sheets-check.ts"
 	},
 	"license": "MIT",
 	"dependencies": {

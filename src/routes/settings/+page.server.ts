@@ -3,12 +3,15 @@ import type { PageServerLoad } from './$types';
 
 import { errMessage } from '$lib/err-message.js';
 import { db } from '$lib/server/db.js';
+import { sheetsServiceAccountEmail } from '$lib/server/google-env.js';
+import type { SheetTarget } from '$lib/van/sheet-routing.js';
 import { slack } from '$lib/server/slack.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import {
 	loadSettings,
 	loadVanChapterFolders,
 	loadVanBlockedUsers,
+	loadVanSheetTargets,
 	type Settings,
 	type VanChapterFolderEntry,
 	type VanBlockedUserEntry,
@@ -50,6 +53,12 @@ export interface SettingsPageData {
 	 *  also what makes the turf catalog sync a no-op. */
 	vanChapterFolderMappings: VanChapterFolderEntry[];
 	vanBlockedUsers: VanBlockedUserEntry[];
+	/** Region prefix → campaign spreadsheet, longest prefix first. Empty until
+	 *  an admin fills it in, which is also what keeps the sheet log off. */
+	vanSheetTargets: SheetTarget[];
+	/** The address every campaign spreadsheet must be shared with; null when no
+	 *  Google credential is configured. */
+	sheetsServiceAccountEmail: string | null;
 	/** Stored theme overrides as JSON; '{}' when untouched. */
 	themeTokens: string;
 	slackChannels: AutocompleteResult<ChannelEntry> | null;
@@ -65,6 +74,7 @@ export interface SettingsPageData {
 		userLists?: string;
 		vanChapterFolders?: string;
 		vanBlocklist?: string;
+		vanSheetTargets?: string;
 	};
 	oldestFetchedAt: number | null;
 	/** Today's real ticker standings, so the speed slider previews the board
@@ -188,22 +198,28 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// page-fatal — an empty mapping just means no turf is published yet, and a
 	// theme read failure means the editor opens on the brand defaults, which is
 	// also what the site is rendering.
-	const [vanChapterFoldersResult, vanBlockedUsersResult, themeTokensResult] =
+	const [vanChapterFoldersResult, vanBlockedUsersResult, vanSheetTargetsResult, themeTokensResult] =
 		await Promise.allSettled([
 			loadVanChapterFolders(db),
 			loadVanBlockedUsers(db),
+			loadVanSheetTargets(db),
 			loadThemeTokensJson(db),
 		]);
 	const vanChapterFolderMappings =
 		vanChapterFoldersResult.status === 'fulfilled' ? vanChapterFoldersResult.value : [];
 	const vanBlockedUsers =
 		vanBlockedUsersResult.status === 'fulfilled' ? vanBlockedUsersResult.value : [];
+	const vanSheetTargets =
+		vanSheetTargetsResult.status === 'fulfilled' ? vanSheetTargetsResult.value : [];
 	const themeTokens = themeTokensResult.status === 'fulfilled' ? themeTokensResult.value : '{}';
 	if (vanChapterFoldersResult.status === 'rejected') {
 		errors.vanChapterFolders = 'Failed to load chapter → VAN folder mapping.';
 	}
 	if (vanBlockedUsersResult.status === 'rejected') {
 		errors.vanBlocklist = 'Failed to load the turf-checkout block list.';
+	}
+	if (vanSheetTargetsResult.status === 'rejected') {
+		errors.vanSheetTargets = 'Failed to load the checkout spreadsheet rules.';
 	}
 
 	return {
@@ -212,6 +228,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		settings,
 		vanChapterFolderMappings,
 		vanBlockedUsers,
+		vanSheetTargets,
+		sheetsServiceAccountEmail: sheetsServiceAccountEmail(),
 		themeTokens,
 		leaderboard,
 		slackChannels,

@@ -13,7 +13,7 @@ function flatten(tree: readonly SettingsNavItem[]): SettingsNavItem[] {
 
 describe('SETTINGS_SECTIONS', () => {
 	it('has one top-level entry per section the page renders', () => {
-		expect(SETTINGS_SECTIONS).toHaveLength(11);
+		expect(SETTINGS_SECTIONS).toHaveLength(12);
 	});
 
 	it('uses unique ids across the whole tree', () => {

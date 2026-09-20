@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
-import { loadSettings, loadVanChapterFolders } from '$lib/server/settings.js';
+import { loadSettings, loadVanChapterFolders, loadVanSheetTargets } from '$lib/server/settings.js';
 import { acquireSyncLock, releaseSyncLock } from '$lib/server/sync-lock.js';
 import { vanClient, vanExportJobTypeId } from '$lib/server/van-env.js';
 import { runCatalogSync } from '$lib/server/van/sync.js';
@@ -15,6 +15,8 @@ import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
 import { sendListExpiryAlerts } from '$lib/server/van/list-expiry-alert-store.js';
 import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
 import { reconcileClaims } from '$lib/server/van/reconcile-store.js';
+import { flushSheetLog } from '$lib/server/van/sheet-store.js';
+import { sheetsClient } from '$lib/server/google-env.js';
 import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
 import { doorsHealthWarning } from '$lib/server/van/doors-store.js';
 import { alertFor } from '$lib/server/slack.js';
@@ -47,6 +49,14 @@ const REFRESH_BUDGET_MS = 30 * 1000;
 // Below this there is no point starting a turf we cannot finish — the export
 // job would be submitted and then abandoned mid-download.
 const MIN_GEOMETRY_BUDGET_MS = 20 * 1000;
+// The checkout log's slice. A run is one append per spreadsheet the campaign
+// keeps, and each returns in well under a second — but the whole point of this
+// feature is that Google can be slow or unreachable without anybody noticing,
+// so it is capped rather than trusted to finish.
+const SHEET_BUDGET_MS = 30 * 1000;
+// Below this there is no point starting: one append that times out halfway
+// leaves its rows unstamped anyway, and they are no worse off waiting.
+const MIN_SHEET_BUDGET_MS = 5 * 1000;
 // Longer than the sync's own time budget, so a run killed mid-flight by Fly
 // still frees the lock within a cadence rather than blocking until someone
 // notices.
@@ -103,6 +113,48 @@ async function runGeometry(
 		// Geometry is decoration. A failure here must not fail a sync whose
 		// catalog rows are already written and correct.
 		console.error('[van] geometry queue failed:', err instanceof Error ? err.message : err);
+		return null;
+	}
+}
+
+/**
+ * Append pending checkout events to the campaign's spreadsheets.
+ *
+ * Returns null — rather than zeros — when the log cannot run at all, so "not
+ * configured" stays distinguishable from "ran and found nothing to do". Most
+ * deployments of this tool have no campaign spreadsheet, and an integration
+ * nobody set up must be silent rather than reassuring.
+ */
+async function runSheetLog(
+	requestDeadline: number,
+	channelId: string,
+): Promise<Awaited<ReturnType<typeof flushSheetLog>> | null> {
+	const configured = sheetsClient();
+	if (!configured.ok) return null;
+
+	const timeBudgetMs = Math.min(SHEET_BUDGET_MS, requestDeadline - Date.now());
+	if (timeBudgetMs < MIN_SHEET_BUDGET_MS) {
+		console.warn('[sheets] skipping the checkout log this run — the catalog used the budget');
+		return null;
+	}
+
+	try {
+		const targets = await loadVanSheetTargets(db);
+		if (targets.length === 0) return null;
+		const { vanSheetTabName } = await loadSettings(db);
+		return await flushSheetLog(db, {
+			now: new Date(),
+			client: configured.client,
+			targets,
+			tabName: vanSheetTabName,
+			timeBudgetMs,
+			channelId,
+		});
+	} catch (err) {
+		// The log is a copy. A failure here must not fail a sync whose own rows
+		// are already written and correct — the events stay unstamped and the
+		// next run retries them.
+		console.error('[sheets] checkout log failed:', err instanceof Error ? err.message : err);
 		return null;
 	}
 }
@@ -248,6 +300,19 @@ export const POST: RequestHandler = async ({ url }) => {
 				})
 			: null;
 
+		// The campaign's own spreadsheets (specs/011-turf-checkout-sheet).
+		//
+		// After the reconciliation, and that ordering is load-bearing: a re-cut
+		// has just released somebody's claim and inserted a replacement, and
+		// draining before that ran would append rows describing a ledger
+		// mid-repair — into an append-only log that cannot take them back.
+		//
+		// Before geometry because geometry is the piece that routinely gets cut
+		// short, and a campaign staffer watching their sheet notices a missing
+		// row sooner than anyone notices a turf drawn as a pin. It needs no VAN
+		// call, so it is unaffected by a missing or rate-limited key.
+		const sheetLog = await runSheetLog(requestDeadline, turfChannelId);
+
 		// Geometry runs after the catalog because the catalog is what fills the
 		// queue: a turf cut minutes ago gets its shape on this run rather than
 		// the next one. It is also the half that is safe to cut short — an
@@ -267,6 +332,11 @@ export const POST: RequestHandler = async ({ url }) => {
 			...(refresh?.warnings ?? []),
 			...(doorsWarning ? [doorsWarning] : []),
 			...(geometry?.warnings ?? []),
+			// `sheetLog.warnings` is advisory — a created tab, an unrouted
+			// region. Failures that need an operator are posted by flushSheetLog
+			// itself through postAlert, which is what keeps them to one message
+			// per ongoing problem; including them here would say it twice.
+			...(sheetLog?.warnings ?? []),
 		];
 		if (notices.length > 0) {
 			try {
@@ -296,6 +366,7 @@ export const POST: RequestHandler = async ({ url }) => {
 			doorDeltas,
 			doorsWarning,
 			refresh: refresh ?? { disabled: true },
+			sheetLog: sheetLog ?? { disabled: true },
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
