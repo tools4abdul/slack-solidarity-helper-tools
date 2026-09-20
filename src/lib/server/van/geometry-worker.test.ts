@@ -144,6 +144,34 @@ describe('runGeometryQueue', () => {
 		expect(queuePatches.at(-1)!.status).toBe('done');
 	});
 
+	// The scheduled sync leaves this alone (2, the polite default); the backlog
+	// drain script raises it, which is only safe because the VAN client keeps
+	// its own cap on calls to VAN itself.
+	it('runs more turfs at once when asked, and never fewer than one', async () => {
+		async function widthOf(concurrency: number | undefined, items: number): Promise<number> {
+			let inFlight = 0;
+			let peak = 0;
+			const rows = Array.from({ length: items }, (_, i) => pendingRow({ mapRouteId: 100 + i }));
+			const turfs = rows.map((r) => ({ mapRouteId: r.mapRouteId, routeSize: 76 }));
+			const { db } = makeDb(rows, turfs);
+			const fetchFn = async () => {
+				inFlight += 1;
+				peak = Math.max(peak, inFlight);
+				// Yield, so overlapping work actually overlaps in the event loop.
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				inFlight -= 1;
+				return new Response(SQUARE_CSV, { status: 200 });
+			};
+			await runGeometryQueue(db, makeClient(), { ...OPTIONS, fetchFn, concurrency });
+			return peak;
+		}
+
+		expect(await widthOf(undefined, 6)).toBe(2);
+		expect(await widthOf(5, 6)).toBe(5);
+		// A nonsense value must not stall the run.
+		expect(await widthOf(0, 3)).toBe(1);
+	});
+
 	// The webhook URL is built per turf, and VAN keeps it forever — so what goes
 	// into it is a privacy-relevant decision, not a formatting one. Asserting the
 	// turf id reaches the builder is what stops it silently going back to one

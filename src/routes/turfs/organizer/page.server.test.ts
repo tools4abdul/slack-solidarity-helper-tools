@@ -8,12 +8,19 @@ const mockDriftTurfs = vi.hoisted(() => vi.fn());
 const mockDriftClaims = vi.hoisted(() => vi.fn());
 const mockDriftVisibility = vi.hoisted(() => vi.fn());
 
+const mockGeometryProgress = vi.hoisted(() => vi.fn());
+
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
 vi.mock('$lib/server/van/drift-store.js', () => ({
 	loadDriftTurfs: mockDriftTurfs,
 	loadDriftClaims: mockDriftClaims,
 	loadDriftVisibility: mockDriftVisibility,
+}));
+// Campaign-wide, so it takes no query and every test gets the same quiet
+// "nothing outstanding" answer unless it says otherwise.
+vi.mock('$lib/server/van/geometry-progress-store.js', () => ({
+	loadGeometryProgress: mockGeometryProgress,
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({
 	COMPLETION_LOOKBACK: 200,
@@ -89,6 +96,13 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+	mockGeometryProgress.mockResolvedValue({
+		eligible: 0,
+		shaped: 0,
+		centroidOnly: 0,
+		pending: 0,
+		failed: 0,
+	});
 	mockHoldings.mockResolvedValue([holdingRow()]);
 	mockCompletions.mockResolvedValue([completionRow()]);
 	mockDriftTurfs.mockResolvedValue([]);
@@ -370,5 +384,28 @@ describe('/turfs/organizer drift pane', () => {
 		mockDriftTurfs.mockResolvedValue([driftTurf()]);
 		mockDriftClaims.mockResolvedValue([{ ...liveClaim, expiresAt: iso(NOW.getTime() - HOUR) }]);
 		expect((await run(event(ADMIN))).drift.items).toEqual([]);
+	});
+});
+
+describe('/turfs/organizer geometry line', () => {
+	it('carries the counts and a sentence about them', async () => {
+		mockGeometryProgress.mockResolvedValue({
+			eligible: 2188,
+			shaped: 1842,
+			centroidOnly: 4,
+			pending: 342,
+			failed: 0,
+		});
+		const data = await run(event(ADMIN));
+		expect(data.geometry).toMatchObject({ eligible: 2188, shaped: 1842, pending: 342 });
+		expect(data.geometry.label).toContain('1,842 of 2,188 turfs mapped as shapes');
+	});
+
+	// Campaign-wide: the queue drains in one pass for everyone, so scoping it to
+	// the selected chapter would report a denominator the worker does not use.
+	it('is not scoped to the chapter filter', async () => {
+		await run(event(ADMIN, 'chapter=71'));
+		expect(mockGeometryProgress).toHaveBeenCalledWith(expect.anything());
+		expect(mockGeometryProgress.mock.calls[0]).toHaveLength(1);
 	});
 });

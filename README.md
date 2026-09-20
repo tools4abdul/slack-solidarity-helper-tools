@@ -746,6 +746,16 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 
 4. Trigger a sync: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET"`.
 
+5. Watch the turf shapes fill in. The catalog lands immediately, but every turf needs its own VAN export job before it can be drawn as a shape rather than a pin, and the scheduled sync only has a few minutes per run for that:
+
+   ```bash
+   npm run van:geometry                  # how far the queue has got, and what is stuck
+   npm run van:drain                     # drain it now: 30 minutes, 2 turfs at a time
+   npm run van:drain -- --minutes 60 --concurrency 4
+   ```
+
+   `van:geometry` is read-only. `van:drain` runs the same worker the sync endpoint runs, with the time a Fly request cannot give it, and takes the **same** `sync_locks` lock — so it refuses to start while a scheduled sync is mid-run rather than submitting a second export job per turf. Ctrl-C releases the lock and leaves every row resumable. `/turfs/organizer` shows the same progress in a line while any of it is outstanding.
+
 `CAMPAIGN_TIME_ZONE` sets the clock everything campaign-facing is bucketed and rendered in — the canvassing board's day buckets, the doors projection's knocking hours, the activity history's timestamps, and the overnight window the turf refresh sweep runs in. It takes an IANA name (`America/Chicago`), defaults to `America/Detroit`, and falls back to that default with a `[campaign-time]` warning if the runtime does not recognise the value. It is one clock for the whole campaign, not per chapter.
 
 Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` prints — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without it; only hull geometry is blocked.

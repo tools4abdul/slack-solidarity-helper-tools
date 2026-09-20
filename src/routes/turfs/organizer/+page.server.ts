@@ -21,6 +21,8 @@ import {
 	loadDriftTurfs,
 	loadDriftVisibility,
 } from '$lib/server/van/drift-store.js';
+import { loadGeometryProgress } from '$lib/server/van/geometry-progress-store.js';
+import { geometryProgressLabel } from '$lib/van/geometry-progress.js';
 import { driftReport } from '$lib/van/turf-drift.js';
 import { campaignDayLabel, campaignTimeLabel } from '$lib/campaign-time.js';
 import { relativeSince } from '$lib/components/settings/format-relative.js';
@@ -83,15 +85,18 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// the same instant even if a claim lands between the queries.
 	const now = new Date();
 
-	const [holdingRows, completionRows, driftTurfs, driftClaims, driftVisibility] = await Promise.all(
-		[
+	const [holdingRows, completionRows, driftTurfs, driftClaims, driftVisibility, geometry] =
+		await Promise.all([
 			loadCurrentHoldings(db, query),
 			loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
 			loadDriftTurfs(db, query),
 			loadDriftClaims(db, query),
 			loadDriftVisibility(db),
-		],
-	);
+			// Campaign-wide rather than per chapter: the queue is drained in one
+			// pass for everyone, so scoping it to the selected chapter would
+			// report a different denominator than the work actually left.
+			loadGeometryProgress(db),
+		]);
 
 	const holdings: HoldingView[] = currentHoldings(holdingRows, now).map((h) => ({
 		...h,
@@ -123,6 +128,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// (see door-delta-store.ts), which on a key without refresh access is
 		// forever — so the empty state has to keep saying "not checked" rather
 		// than "all clear".
+		// Why the map is part shapes and part pins after a big sync — the line is
+		// only shown while there is something to explain (see the page).
+		geometry: {
+			...geometry,
+			label: geometryProgressLabel(geometry),
+		},
 		deltaChecked: anyDeltaMeasured(completionRows),
 		completionsExamined: completionRows.length,
 	};
