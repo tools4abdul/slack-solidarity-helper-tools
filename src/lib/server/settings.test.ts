@@ -212,6 +212,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			vanTurfMaxConcurrentClaims: 2,
 			// Off with no row: a re-cut can leave turf unclaimable.
 			vanRegionRefreshEnabled: false,
+			vanSheetTabName: 'Turf Checkouts',
 		});
 
 		// Restore the module-level mock for subsequent tests.
@@ -511,6 +512,7 @@ describe('loadSettings — Story 2 (typed contract under DB-override)', () => {
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
 				'vanRegionRefreshEnabled',
+				'vanSheetTabName',
 			].sort(),
 		);
 	});

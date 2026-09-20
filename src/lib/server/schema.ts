@@ -348,6 +348,14 @@ export const appConfig = sqliteTable(
 		// unclaimable turf, and a nightly sweep would do it to every mapped folder
 		// every night, including shared folders other organizers cut.
 		vanRegionRefreshEnabled: integer('van_region_refresh_enabled', { mode: 'boolean' }),
+		// The tab the checkout log is appended to, in every one of the campaign's
+		// spreadsheets. One name for all of them: the app creates the tab and its
+		// header row on first write, so there is nothing to keep in step by hand,
+		// and a per-sheet name would be a dozen more chances to typo. NULL or ''
+		// means DEFAULT_SHEET_TAB_NAME in $lib/van/sheet-log.ts.
+		//
+		// Which spreadsheet a row goes to is van_sheet_targets, not this.
+		vanSheetTabName: text('van_sheet_tab_name'),
 		// Theme overrides as JSON: {"color-bg":{"light":"#fbf0e4"}}. One column
 		// rather than ~60, because adding a field to this table is a nine-step
 		// checklist across six files and a palette would be unmaintainable that
@@ -758,6 +766,65 @@ export const vanChapterFolders = sqliteTable(
 	(table) => [primaryKey({ columns: [table.chapterId, table.folderId] })],
 );
 
+// Which of the campaign's spreadsheets a turf's checkout rows belong in.
+//
+// The campaign keeps about a dozen, named for the region and place they cover —
+// `R01A_Alger CR`, `R09A_Detroit CR`, `R10C_WesternWayne CR`. Routing has to be
+// decided from a turf's VAN region name, because that name is the only
+// geography the catalog has (van_turfs has no county column, and centroid_lat
+// is null until an export job has run). Neither half of the name is enough on
+// its own: R01A spans Alger and Houghton, which have a spreadsheet each, and
+// R10C has two spreadsheets inside Wayne separated only by which cities they
+// cover.
+//
+// So this is a rule list, matched by longest normalised prefix — `R10C_Wayne_Taylor`
+// beats a bare `R10C` catch-all. `prefix_key` is the normalisation (lowercase
+// alphanumerics, see van/region-name.ts) and is the primary key, so two rules
+// cannot disagree about the same ground: the settings route refuses the second.
+//
+// An INPUT, like van_chapter_folders above. No rows means the sheet log is off,
+// which is what the spec asks for — an unconfigured feature does nothing and
+// raises no alerts.
+export const vanSheetTargets = sqliteTable('van_sheet_targets', {
+	prefixKey: text('prefix_key').primaryKey(),
+	/** The rule as the admin typed it, for display. `prefix_key` is what
+	 *  matches. */
+	prefix: text('prefix').notNull(),
+	/** What the spreadsheet is called, so an alert can name it without a Google
+	 *  round-trip. */
+	label: text('label').notNull(),
+	/** From the spreadsheet's URL. Several rules may point at one spreadsheet —
+	 *  the two R10C rules do. */
+	spreadsheetId: text('spreadsheet_id').notNull(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
+// Whether each spreadsheet is currently writable, and what the operator has
+// already been told about it.
+//
+// Keyed by spreadsheet rather than by rule because that is the unit that breaks:
+// someone unshares one sheet, or renames the app's tab in it, and both R10C
+// rules pointing at it fail together.
+//
+// `alerted_error` is the idempotency key, in the shape van/drift-alert.ts uses
+// and for the reason spelled out there: an alert that repeats every half hour
+// gets the channel muted, which costs the campaign the FIRST alert about the
+// next real problem. A successful write DELETES the row, which is what makes a
+// recurrence audible — without that, a sheet that broke in March, was fixed, and
+// breaks again in October stays silent forever.
+export const vanSheetHealth = sqliteTable('van_sheet_health', {
+	spreadsheetId: text('spreadsheet_id').primaryKey(),
+	/** The most recent failure, as the operator would need to read it. */
+	lastError: text('last_error').notNull(),
+	lastFailedAt: text('last_failed_at').notNull(),
+	/** The error text that was last posted to Slack. Null when a problem is
+	 *  known but has not been announced yet — stamped only after Slack accepts
+	 *  the message. */
+	alertedError: text('alerted_error'),
+});
+
 // One row per VAN Map Route.
 //
 // `mapRouteId` is VAN's own identifier and it is NOT stable across a refresh —
@@ -912,12 +979,38 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  Slack outage retries on the next tick instead of silently swallowing
 		 *  the one message that stops turf being lost. */
 		expiryWarnedAt: text('expiry_warned_at'),
+		/** When the "Checked out" row for this claim reached the campaign's
+		 *  Google Sheet, and when its ending row did.
+		 *
+		 *  Same stamp-only-on-success shape as expiryWarnedAt above, and the same
+		 *  reason: a write Google did not confirm must be retried, not forgotten.
+		 *
+		 *  These two columns are the whole of the sheet log's bookkeeping. The
+		 *  events are DERIVED from this table rather than enqueued by the code
+		 *  paths that end a claim — there are six of those today (endClaim, the
+		 *  lapsed-claim clear inside claimTurf, sweepExpiredClaims, blocklist.ts,
+		 *  the retirement batch in sync.ts, and refresh-reconcile) and hooking
+		 *  each one is how the seventh gets missed. A path added later is logged
+		 *  without being told this feature exists.
+		 *
+		 *  NULL means "not sent yet". Rows predating the feature were stamped by
+		 *  the migration, so switching it on does not replay the campaign's
+		 *  history into their spreadsheets. */
+		sheetClaimSentAt: text('sheet_claim_sent_at'),
+		sheetEndSentAt: text('sheet_end_sent_at'),
 	},
 	(table) => [
 		uniqueIndex('van_turf_checkouts_one_active')
 			.on(table.mapRouteId)
 			.where(sql`${table.releasedAt} IS NULL AND ${table.completedAt} IS NULL`),
 		index('van_turf_checkouts_holder').on(table.slackUserId),
+		// The drain's candidate read. Partial, because the rows it wants are the
+		// few that have not been sent — once a canvass season's worth of
+		// checkouts are stamped, a full index would be almost entirely dead
+		// weight pointing at rows this query never asks for.
+		index('van_turf_checkouts_sheet_pending')
+			.on(table.claimedAt)
+			.where(sql`${table.sheetClaimSentAt} IS NULL OR ${table.sheetEndSentAt} IS NULL`),
 	],
 );
 

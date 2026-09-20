@@ -109,6 +109,37 @@ export function campaignTimeLabel(iso: string): string {
 	return date ? TIME_LABEL.format(date) : '';
 }
 
+/** `en-CA` again for ISO order, with a 24-hour clock so the string sorts. */
+const SHEET_STAMP = new Intl.DateTimeFormat('en-CA', {
+	timeZone: CAMPAIGN_TIME_ZONE,
+	year: 'numeric',
+	month: '2-digit',
+	day: '2-digit',
+	hour: '2-digit',
+	minute: '2-digit',
+	hourCycle: 'h23',
+});
+
+/**
+ * Campaign-local timestamp for a spreadsheet cell: `2026-09-19 14:07`.
+ *
+ * Its own formatter rather than `campaignDayKey` + `campaignTimeLabel` because
+ * those compose to "2026-09-19 2:07 PM", which sorts wrongly in a column people
+ * sort — 10 AM lands above 2 PM. The spec says readers sort by this column, so
+ * the 24-hour form is the requirement rather than a preference.
+ *
+ * Returns '' for an unparseable timestamp, matching campaignDayKey: a blank
+ * cell reads as "unknown" to anyone scanning the sheet, where a fabricated date
+ * would not.
+ */
+export function campaignSheetStamp(iso: string): string {
+	const date = parse(iso);
+	if (!date) return '';
+	// Intl renders this as "2026-09-19, 14:07"; the comma helps nobody in a
+	// spreadsheet cell and stops Sheets reading it as a datetime.
+	return SHEET_STAMP.format(date).replace(', ', ' ');
+}
+
 const HOUR = new Intl.DateTimeFormat('en-GB', {
 	timeZone: CAMPAIGN_TIME_ZONE,
 	hour: '2-digit',

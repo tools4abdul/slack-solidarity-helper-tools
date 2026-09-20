@@ -268,12 +268,15 @@ INTERNAL_CRON_SECRET=long-random-string           # required for /api/internal/*
 APP_URL=https://your-app.fly.dev
 SOLIDARITY_API_TOKEN=your-solidarity-api-token-here
 SOLIDARITY_CHAPTER_CHANNEL_MAP='[{"chapterId":123,"channelId":"C012AB3CD","name":"Washtenaw County"}]'
+GOOGLE_SHEETS_SERVICE_ACCOUNT='{"client_email":"…@….iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n…"}'
 PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 ```
 
 `SLACK_GROWTH_REPORT_RANKING_ALPHA` tunes the ranking formula `newJoins / (existing + 1)^α`. `α = 1` is pure relative growth (small chapters dominate); `α = 0` is pure absolute count; `0.7` is a middle ground where small chapters still tend to win but large ones can compete.
 
 `REPORT_EXCLUDED_CHAPTER_IDS` is a comma-separated list of solidarity.tech chapter IDs to omit from the dashboard charts AND the weekly growth report — useful for test chapters or internal-only ones. Leave empty (or unset) to include everything.
+
+`GOOGLE_SHEETS_SERVICE_ACCOUNT` is the whole downloaded service-account JSON key, on one line, and is optional — without it the turf checkout log does nothing and says nothing. It is a credential, so it is a deployment secret rather than a `/settings` field; _which_ spreadsheets it writes to is a setting, because that changes without a deploy. Literal `\n` escapes inside `private_key` are handled, since that is what survives a trip through a shell. See [the checkout log](#the-checkout-log-in-the-campaigns-spreadsheets) for the rest of the setup.
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
@@ -746,6 +749,48 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 `CAMPAIGN_TIME_ZONE` sets the clock everything campaign-facing is bucketed and rendered in — the canvassing board's day buckets, the doors projection's knocking hours, the activity history's timestamps, and the overnight window the turf refresh sweep runs in. It takes an IANA name (`America/Chicago`), defaults to `America/Detroit`, and falls back to that default with a `[campaign-time]` warning if the runtime does not recognise the value. It is one clock for the whole campaign, not per chapter.
 
 Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` prints — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without it; only hull geometry is blocked.
+
+#### The checkout log in the campaign's spreadsheets
+
+Campaign staff track canvassing in Google Sheets they own. When this is configured, every turf checkout and every way one ends is appended as a row to the right one of those spreadsheets, so nobody has to ask the app — or the volunteer — who has what.
+
+| When | Event | Turf | Region | List # | Volunteer | Checkout ID |
+| ---- | ----- | ---- | ------ | ------ | --------- | ----------- |
+
+Six events reach it: `Checked out`, `Released`, `Completed`, `Expired`, `Released (blocked)`, `Released (turf re-cut)`, plus `Released (no doors left)` from the reconciliation. The checkout row and its ending row share a **Checkout ID**, which is what pairs them — and what identifies a duplicate in the one case duplicates are possible (see below). **When** is in the campaign's own clock and written 24-hour so the column sorts.
+
+**The events are derived from the ledger, not pushed by the code that writes it.** Six paths end a checkout today — a volunteer releasing or completing, the expiry sweep, the lapsed-claim clear inside a claim, an admin block, and VAN retiring the turf — and a seventh is a matter of time. So nothing hooks them: two stamp columns on `van_turf_checkouts` record what has reached the sheet, and the drain asks the table what it still owes. A path added later is logged without being told this feature exists.
+
+**It cannot slow down or undo a claim.** Nothing is written on the request path. The drain runs inside the scheduled VAN sync, which already has the schedule, the lock and a time budget, so a Google outage costs lag and never a claim — the volunteer gets their list number at the same speed whether or not Google is reachable. Rows are stamped **only after Google confirms the append**, so a failure retries on the next run rather than vanishing. The one duplicate that is possible is a crash between Google accepting rows and the stamp landing; the next run re-sends that batch, and Checkout ID plus Event is what tells the copies apart. That trade is deliberate — stamping first would lose rows silently on the same crash, and a log nobody can trust to be complete is not worth keeping.
+
+**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So **Settings → Checkout spreadsheets** takes a list of name prefixes and the longest match wins:
+
+```
+R01A_Alger              → R01A_Alger CR
+R01A_Houghton           → R01A_Houghton CR
+R10C                    → R10C_Downriver CR      ← a whole code, one sheet
+R10C_Wayne_Woodhaven    → R10C_Woodhaven CR      ← one city carved out of it
+```
+
+`npm run van:regions` lists every region name the key can see, `-- --prefixes` groups them by leading code, and `-- --flat` prints one per line. Read-only, and it works before the first catalog sync.
+
+Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an underscored rule. **A region matching no rule has its checkouts held, not dropped** — they flow in as soon as a rule covers them, and the count and the unmatched region names ride out in the turf channel's alert. `/turfs/sheet-map` (admin) shows where every region routes, which regions route nowhere, and which rules match nothing; twelve overlapping prefixes over a few hundred region names is not something anyone can verify by reading the settings table, and a row in the wrong campaign's spreadsheet looks exactly like a correct one.
+
+**Setup**, once:
+
+1. Create a Google service account, download its JSON key, and put the whole thing in `GOOGLE_SHEETS_SERVICE_ACCOUNT` (a Fly secret — it is a credential, so unlike the spreadsheets it is not a setting).
+2. Share **every** spreadsheet with the service account's `…iam.gserviceaccount.com` address as an Editor. The settings page prints the address once the secret is set.
+3. Add the routing rules under **Settings → Checkout spreadsheets** — a region-name prefix and the spreadsheet's URL, two fields. The sheet's own name is read from Google on save and stored beside the id, so it can never drift from the sheet it names; when the credential or the share is not in place yet the id stands in, and re-saving any rule for that sheet backfills the real name. Rules can be written before the credential exists.
+4. Run `npm run sheets:check` — read-only. It mints a token and reports, per spreadsheet, whether it is reachable and whether it already has the app's tab. An unshared sheet answers 403, which is by far the most common way a dozen-spreadsheet setup ends up half-done.
+5. Open `/turfs/sheet-map` and confirm nothing is unrouted.
+
+The app writes to **one tab of its own** in each spreadsheet — `Turf Checkouts` unless changed at Settings → App config — and creates it with its header row on the first write. It never reads or touches any other tab; the campaign's own layouts are not its business. Nothing typed into the sheet is ever read back.
+
+With no credential, or with no rules, the feature does nothing and says nothing: an integration nobody set up should be silent rather than reassuring. When writes do start failing, the turf channel gets **one** alert per problem, naming the spreadsheet, the error and how many events are waiting — and it announces again once the problem clears and comes back, which is what stops a channel that repeats itself from being muted.
+
+A re-cut turf is worth knowing about: when VAN replaces a route under a live claim, the reconciliation moves the volunteer onto the replacement, and that shows up as a fresh `Checked out` row for turf nobody clicked on. That is correct — it is a different cut with a different list number. Note also that the list number in a row is the one issued **at that moment**; if VAN later reissues it, the volunteer is DMed the new one and the sheet keeps the original, because the log is append-only.
+
+See [PRIVACY.md](PRIVACY.md) § "Turf checkout" — this is the one place a MiniVAN list number goes beyond the person it was issued to, and those spreadsheets are outside anything this app can delete.
 
 ### `GET /turfs`
 

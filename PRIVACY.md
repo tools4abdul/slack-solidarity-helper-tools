@@ -83,6 +83,26 @@ Being blocked from turf checkout stores your Slack ID, display name, the reason 
 and who set it (`van_blocked_users`). The reason is shown to other organisers; it is
 deliberately **not** repeated to you in the DM telling you your turf was released.
 
+**Turf checkouts are also copied into the campaign's own Google Sheets**, when an organiser has
+configured that. One row is appended each time a turf is checked out and again when that ends,
+carrying **the time, what happened, the turf name, its VAN region, the MiniVAN list number you
+were issued, and your Slack display name**. Your Slack ID, your email, the reason behind a block
+and anything about a voter are never written there.
+
+Two things follow from this that are worth being explicit about:
+
+- **Those spreadsheets are the campaign's, not this app's.** Anyone the campaign has shared one
+  with can read every row in it, including your name beside the turf you walked. This app cannot
+  see who that is and cannot take a row back once it is written — the log is append-only by
+  design, so that a re-cut turf can never overwrite somebody else's row.
+- **It is the one place a list number goes beyond the person it was issued to.** Everywhere else
+  the app treats that number as a credential — it is what pulls the doors down in MiniVAN — and
+  withholds it from organiser pages and keeps it out of logs. Writing it to a sheet the campaign
+  already uses to run canvasses was a deliberate decision, taken because the sheet is how they
+  track which lists are out.
+
+Nothing in those sheets is ever read back into the app.
+
 If an organiser hands turf out inside VAN rather than through this app, VAN reports who it went
 to, and **the canvasser names on that export are stored** against the turf
 (`van_turfs.van_distributed_to`). That is what marks a turf as already assigned so nobody claims
@@ -188,6 +208,11 @@ Nothing in the code enforces that date. It is a commitment the Tools for Abdul t
 by hand, not a scheduled job, and this document is the record of it. The retention below
 describes what happens **until** then.
 
+**One exception, stated plainly: the campaign's Google Sheets are outside this.** The turf
+checkout rows copied into them (see § "Turf checkout") live in spreadsheets the campaign owns,
+and deleting this app's own records does not touch them. Clearing those is the campaign's to do,
+and asking for it means asking them, not us.
+
 | Data                                | Retention                                                                                                                                                                       |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Sessions                            | 8 hours, then deleted on next access                                                                                                                                            |
@@ -195,6 +220,7 @@ describes what happens **until** then.
 | Help-to-join queue (`requests`)     | Until removed by an admin, and in any case the election; no automatic expiry                                                                                                    |
 | Notes and warnings                  | Kept until the election. Warning numbering is a running count, so deleting one before then silently renumbers the rest — early removal is a deliberate act, not routine cleanup |
 | Turf checkout ledger                | Kept until the election, as the record of who had which turf when                                                                                                               |
+| Turf rows copied to campaign sheets | Not ours to delete — they live in the campaign's own spreadsheets and outlast this app's records                                                                                |
 | Retired turf rows                   | Kept while the campaign runs, so a live claim still renders                                                                                                                     |
 | Slack invite sightings              | Kept after a link is removed — deleting them would erase the record of the fix. Names pages, not people                                                                         |
 | Daily signup / door-knock snapshots | Kept indefinitely. These are counts per (date, chapter), not per person                                                                                                         |

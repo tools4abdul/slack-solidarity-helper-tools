@@ -179,6 +179,16 @@ export const VAN_DATABASE_MODE = get('VAN_DATABASE_MODE').trim();
 // the catalog sync runs without it and only geometry is skipped.
 export const VAN_EXPORT_JOB_TYPE_ID = intEnv('VAN_EXPORT_JOB_TYPE_ID', 0);
 
+// The service-account key the turf checkout log signs in to Google Sheets with
+// (see src/lib/server/google-env.ts and specs/011-turf-checkout-sheet/spec.md).
+// The whole JSON key file, as one value.
+//
+// A credential, so it is a deployment secret rather than a /settings field —
+// unlike which spreadsheets it writes to, which an admin edits without a
+// deploy. Optional: with it unset the sheet log does nothing and says nothing,
+// which is what an unconfigured integration should do.
+export const GOOGLE_SHEETS_SERVICE_ACCOUNT = get('GOOGLE_SHEETS_SERVICE_ACCOUNT');
+
 // Basemap tiles for the turf map. Defaults to CARTO's keyless Positron
 // endpoint, which is what the demo has always used.
 //

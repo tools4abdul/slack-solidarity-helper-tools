@@ -295,6 +295,13 @@
       "when": 1789832926207,
       "tag": "0041_clear_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1789880527808,
+      "tag": "0042_soft_sphinx",
+      "breakpoints": true
     }
   ]
 }

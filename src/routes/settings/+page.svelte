@@ -13,6 +13,7 @@
 	import ZipExcludedChaptersEditor from '$lib/components/settings/ZipExcludedChaptersEditor.svelte';
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
 	import VanChapterFoldersEditor from '$lib/components/settings/VanChapterFoldersEditor.svelte';
+	import VanSheetTargetsEditor from '$lib/components/settings/VanSheetTargetsEditor.svelte';
 	import VanBlocklistEditor from '$lib/components/settings/VanBlocklistEditor.svelte';
 	import ThemeEditor from '$lib/components/settings/ThemeEditor.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
@@ -244,6 +245,21 @@
 					mappings={data.vanChapterFolderMappings}
 				/>
 			{/if}
+		</section>
+
+		<section
+			id={SECTION_IDS.vanSheetTargets}
+			data-settings-anchor={SECTION_IDS.vanSheetTargets}
+			tabindex="-1"
+		>
+			<h2>Checkout spreadsheets</h2>
+			{#if data.errors.vanSheetTargets}
+				<p class="error">{data.errors.vanSheetTargets}</p>
+			{/if}
+			<VanSheetTargetsEditor
+				targets={data.vanSheetTargets}
+				serviceAccountEmail={data.sheetsServiceAccountEmail}
+			/>
 		</section>
 
 		<section

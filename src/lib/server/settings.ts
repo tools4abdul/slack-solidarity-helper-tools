@@ -10,6 +10,9 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
+import { normaliseSheetKey, orderSheetTargets, type SheetTarget } from '../van/sheet-routing.js';
+import { DEFAULT_SHEET_TAB_NAME } from '../van/sheet-log.js';
+
 import {
 	chapterChannelMap,
 	coalitionChannelMap,
@@ -22,6 +25,7 @@ import {
 	infoCommands,
 	vanChapterFolders,
 	vanBlockedUsers,
+	vanSheetTargets,
 } from './schema.js';
 import {
 	SOLIDARITY_CHAPTER_CHANNEL_MAP,
@@ -50,6 +54,7 @@ export {
 	infoCommands,
 	vanChapterFolders,
 	vanBlockedUsers,
+	vanSheetTargets,
 };
 
 export type {
@@ -165,6 +170,10 @@ export interface Settings {
 	/** Whether the sync may ask VAN to re-cut map regions. Off unless an admin
 	 *  turns it on — see the note on app_config.vanRegionRefreshEnabled. */
 	vanRegionRefreshEnabled: boolean;
+	/** The tab the turf checkout log is appended to, in every one of the
+	 *  campaign's spreadsheets. Resolved, so callers never re-decide what a
+	 *  NULL means. */
+	vanSheetTabName: string;
 }
 
 export interface Editor {
@@ -196,6 +205,8 @@ export type AppConfigPatch = Partial<{
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
 	vanRegionRefreshEnabled: boolean;
+	/** Which tab the turf checkout log writes to. '' restores the default. */
+	vanSheetTabName: string;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
@@ -344,6 +355,9 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
 		// Strictly true: NULL, and anything a hand edit left behind, is off.
 		vanRegionRefreshEnabled: cfg?.vanRegionRefreshEnabled === true,
+		// NULL and '' both mean the built-in name. Resolved here so the drain
+		// and the settings page cannot disagree about which tab is "the" tab.
+		vanSheetTabName: cfg?.vanSheetTabName?.trim() || DEFAULT_SHEET_TAB_NAME,
 	};
 }
 
@@ -794,6 +808,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'vanTurfClaimTtlHours',
 	'vanTurfMaxConcurrentClaims',
 	'vanRegionRefreshEnabled',
+	'vanSheetTabName',
 	'themeTokens',
 ]);
 
@@ -1073,6 +1088,100 @@ export async function deleteVanChapterFolders(
 	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, chapterId));
 	console.log(
 		`[van] deleted van_chapter_folders chapter_id=${chapterId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+/**
+ * The spreadsheet routing rules, longest prefix first.
+ *
+ * Kept out of `loadSettings` for the same reason `loadVanChapterFolders` is:
+ * the sync reads this on every tick and `loadSettings` pulls nine tables for an
+ * admin page nobody visits often.
+ *
+ * Returned pre-ordered so callers cannot forget — `matchSheetTarget` does not
+ * sort, and an unordered list silently returns a shorter match over a longer
+ * one, which is a checkout row in the wrong campaign's spreadsheet.
+ */
+export async function loadVanSheetTargets(db: Database): Promise<SheetTarget[]> {
+	const rows = await db.select().from(vanSheetTargets);
+	return orderSheetTargets(
+		rows.map((row) => ({
+			prefix: row.prefix,
+			prefixKey: row.prefixKey,
+			label: row.label,
+			spreadsheetId: row.spreadsheetId,
+		})),
+	);
+}
+
+/**
+ * Add or update one routing rule, keyed by its normalised prefix.
+ *
+ * The key is derived here rather than taken from the caller, so the uniqueness
+ * constraint and the matcher cannot disagree about what "the same rule" means:
+ * `R10C_Wayne` and `r10c.wayne` are one rule, and the second save edits the
+ * first rather than quietly shadowing it.
+ *
+ * `label` is the spreadsheet's name as Google reports it, resolved by the route
+ * — it is never typed. Because several rules may point at one spreadsheet, the
+ * label is written to every rule sharing that id, not just this one: two rules
+ * naming the same sheet differently would make a Slack alert about that sheet
+ * depend on which rule happened to match first.
+ */
+export async function saveVanSheetTarget(
+	db: Database,
+	entry: { prefix: string; label: string; spreadsheetId: string },
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	const prefixKey = normaliseSheetKey(entry.prefix);
+	const row = {
+		prefixKey,
+		prefix: entry.prefix.trim(),
+		label: entry.label.trim(),
+		spreadsheetId: entry.spreadsheetId.trim(),
+		lastEditedBy: editor.id,
+		lastEditedByName: editor.name,
+		lastEditedAt,
+	};
+	await db
+		.insert(vanSheetTargets)
+		.values(row)
+		.onConflictDoUpdate({
+			target: vanSheetTargets.prefixKey,
+			set: {
+				prefix: row.prefix,
+				label: row.label,
+				spreadsheetId: row.spreadsheetId,
+				lastEditedBy: row.lastEditedBy,
+				lastEditedByName: row.lastEditedByName,
+				lastEditedAt: row.lastEditedAt,
+			},
+		});
+	// Keep every rule for this spreadsheet naming it the same way. Also what
+	// backfills a label that fell back to the bare id because Google was
+	// unreachable the first time: re-saving any rule for that sheet fixes them
+	// all at once.
+	await db
+		.update(vanSheetTargets)
+		.set({ label: row.label })
+		.where(eq(vanSheetTargets.spreadsheetId, row.spreadsheetId));
+	// The spreadsheet id is not a secret, but it is the whole address of a
+	// campaign document — logged so a mis-routed row can be traced to the edit
+	// that caused it.
+	console.log(
+		`[van] saved van_sheet_targets prefix=${row.prefix} sheet=${row.spreadsheetId} by ${editor.id} (${editor.name})`,
+	);
+}
+
+export async function deleteVanSheetTarget(
+	db: Database,
+	prefixKey: string,
+	editor: Editor,
+): Promise<void> {
+	await db.delete(vanSheetTargets).where(eq(vanSheetTargets.prefixKey, prefixKey));
+	console.log(
+		`[van] deleted van_sheet_targets prefix_key=${prefixKey} by ${editor.id} (${editor.name})`,
 	);
 }
 

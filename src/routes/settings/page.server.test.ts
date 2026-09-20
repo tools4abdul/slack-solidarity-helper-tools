@@ -7,7 +7,10 @@ vi.mock('$lib/server/settings.js', () => ({
 	loadSettings: vi.fn(),
 	loadVanChapterFolders: vi.fn(),
 	loadVanBlockedUsers: vi.fn(),
+	loadVanSheetTargets: vi.fn(),
 }));
+
+vi.mock('$lib/server/google-env.js', () => ({ sheetsServiceAccountEmail: () => null }));
 
 vi.mock('$lib/server/autocomplete-sources.js', () => ({
 	getSlackChannels: vi.fn(),
@@ -22,7 +25,12 @@ vi.mock('$lib/server/slack.js', () => ({ slack: {} }));
 vi.mock('$lib/server/env.js', () => ({ SOLIDARITY_API_TOKEN: 'test-token' }));
 
 import { load, type SettingsPageData } from './+page.server.js';
-import { loadSettings, loadVanChapterFolders, loadVanBlockedUsers } from '$lib/server/settings.js';
+import {
+	loadSettings,
+	loadVanChapterFolders,
+	loadVanBlockedUsers,
+	loadVanSheetTargets,
+} from '$lib/server/settings.js';
 import {
 	getSlackChannels,
 	getSlackUsers,
@@ -67,6 +75,7 @@ const settingsFixture = {
 	vanTurfClaimTtlHours: 48,
 	vanTurfMaxConcurrentClaims: 2,
 	vanRegionRefreshEnabled: false,
+	vanSheetTabName: 'Turf Checkouts',
 };
 
 function makeEvent(overrides: {
@@ -94,6 +103,9 @@ beforeEach(() => {
 	// state — no chapter mapped yet means no turf published.
 	vi.mocked(loadVanChapterFolders).mockResolvedValue([]);
 	vi.mocked(loadVanBlockedUsers).mockResolvedValue([]);
+	// Empty is the normal pre-launch state here too — no rules means the
+	// checkout sheet log is off.
+	vi.mocked(loadVanSheetTargets).mockResolvedValue([]);
 	vi.mocked(getSlackChannels).mockResolvedValue({
 		items: [{ id: 'C1', name: 'general', isPrivate: false }],
 		stale: false,

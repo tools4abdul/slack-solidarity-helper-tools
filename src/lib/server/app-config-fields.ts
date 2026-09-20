@@ -115,6 +115,32 @@ function booleanField(label: string): FieldValidator<boolean> {
 	};
 }
 
+/**
+ * A Google Sheets tab name. `''` restores the built-in default.
+ *
+ * Tighter than a plain bounded text field because this string is interpolated
+ * into an A1 range (`'Turf Checkouts'!A:G`). Apostrophes are what end the
+ * quoting early, and while sheets.ts doubles them on the way out, a name
+ * carrying one is far more likely to be a mis-paste than a deliberate choice.
+ * Newlines and brackets are rejected for the same reason: Sheets will not
+ * accept them in a tab name, so taking one here only moves the failure to the
+ * first sync, where nobody is watching.
+ */
+function sheetTabNameField(label: string): FieldValidator<string> {
+	return (value) => {
+		if (typeof value !== 'string') return fail(`${label} must be a string`);
+		const trimmed = value.trim();
+		if (trimmed === '') return { ok: true, value: '' };
+		if (trimmed.length > SHEET_TAB_NAME_MAX_LENGTH) {
+			return fail(`${label} must be ${SHEET_TAB_NAME_MAX_LENGTH} characters or fewer`);
+		}
+		if (/['[\]:\\/?*\n\r]/.test(trimmed)) {
+			return fail(`${label} cannot contain ' [ ] : \\ / ? * or a line break`);
+		}
+		return { ok: true, value: trimmed };
+	};
+}
+
 /** ISO datetime, re-serialized to canonical form so every reader gets the same
  *  format. `''` clears the countdown. */
 function isoDateTimeField(label: string): FieldValidator<string> {
@@ -179,6 +205,8 @@ function dmTemplateField(
 
 const COUNTDOWN_LABEL_MAX_LENGTH = 80;
 const CONTACT_FIELD_MAX_LENGTH = 200;
+// Google's own limit on a sheet name is 100 characters.
+const SHEET_TAB_NAME_MAX_LENGTH = 100;
 // Slack renders a section block's text up to 3000 chars; keep the stored
 // template within that so a saved message can never be rejected at send time.
 const DM_TEMPLATE_MAX_LENGTH = 3000;
@@ -270,6 +298,7 @@ export const APP_CONFIG_FIELDS: {
 		MAX_CONCURRENT_CLAIMS,
 	),
 	vanRegionRefreshEnabled: booleanField('vanRegionRefreshEnabled'),
+	vanSheetTabName: sheetTabNameField('vanSheetTabName'),
 
 	themeTokens: themeTokensField('themeTokens'),
 

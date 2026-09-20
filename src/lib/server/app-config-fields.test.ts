@@ -43,6 +43,7 @@ describe('the table', () => {
 				'vanTurfClaimTtlHours',
 				'vanTurfMaxConcurrentClaims',
 				'vanRegionRefreshEnabled',
+				'vanSheetTabName',
 				'doorTickerColumnsPerSecond',
 				'siteName',
 				'countdownLabel',
@@ -52,7 +53,7 @@ describe('the table', () => {
 				'themeTokens',
 			]),
 		);
-		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(19);
+		expect(APP_CONFIG_FIELD_KEYS).toHaveLength(20);
 	});
 });
 
