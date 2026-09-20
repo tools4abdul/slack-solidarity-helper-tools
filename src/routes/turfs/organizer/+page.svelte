@@ -64,6 +64,13 @@
 		{/if}
 	</ul>
 
+	{#if data.geometry.pending > 0 || data.geometry.failed > 0}
+		<!-- Turf shapes are derived one export job per turf, so after a big
+		     catalog sync the map is honestly half pins for a while. Shown only
+		     while that is true, so it does not become furniture. -->
+		<p class="callout is-quiet">Turf shapes: {data.geometry.label}</p>
+	{/if}
+
 	{#if data.summary.expiringUnwarned > 0}
 		<!-- The one line that means someone has to act personally: about to lapse
 		     AND the automatic reminder has not reached them. -->

@@ -50,7 +50,11 @@ export const MAX_ATTEMPTS = 4;
 
 /** Work items in flight. The VAN client already caps ITS OWN concurrency at 2,
  *  but the blob download goes straight to Azure and bypasses that limiter
- *  entirely, so the cap is repeated here over whole items. */
+ *  entirely, so the cap is repeated here over whole items.
+ *
+ *  The default for the scheduled sync, where politeness matters more than
+ *  speed. `options.concurrency` raises it for a one-off backlog drain run from
+ *  a script — the VAN client's own limiter still bounds calls to VAN itself. */
 const MAX_CONCURRENCY = 2;
 
 /** Whole-run budget, under the 10-minute lock in the van-sync route and well
@@ -86,6 +90,9 @@ export interface GeometryWorkerOptions {
 	timeBudgetMs?: number;
 	/** Cap on items per run. Null means "as many as the budget allows". */
 	maxItems?: number | null;
+	/** Items in flight. Defaults to MAX_CONCURRENCY; a drain script raises it.
+	 *  Clamped to at least 1, so a bad value cannot stall the run entirely. */
+	concurrency?: number;
 	/** Injected for tests, and used for the Azure download — which must NOT go
 	 *  through the VAN client, since that would attach our Basic credentials to
 	 *  a request to a different host. */
@@ -436,7 +443,8 @@ export async function runGeometryQueue(
 	// two — a batch waits for its slowest member before starting the next pair,
 	// which on a queue of 200 with one slow export wastes most of the budget.
 	let cursor = 0;
-	const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
+	const width = Math.max(1, Math.floor(options.concurrency ?? MAX_CONCURRENCY));
+	const workers = Array.from({ length: Math.min(width, queue.length) }, async () => {
 		while (cursor < queue.length) {
 			if (Date.now() >= deadline) {
 				result.budgetLapsed = true;

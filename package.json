@@ -22,6 +22,8 @@
 		"van:regions": "tsx --env-file=.env.local scripts/van-regions.ts",
 		"van:sync": "tsx --env-file=.env.local scripts/van-sync-once.ts",
 		"van:e2e": "tsx --env-file=.env.local scripts/van-e2e.ts",
+		"van:geometry": "tsx --env-file=.env.local scripts/van-geometry-status.ts",
+		"van:drain": "tsx --env-file=.env.local scripts/van-geometry-drain.ts",
 		"sheets:check": "tsx --env-file=.env.local scripts/sheets-check.ts"
 	},
 	"license": "MIT",

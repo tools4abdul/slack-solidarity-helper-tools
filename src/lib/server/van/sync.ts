@@ -29,6 +29,12 @@ type Db = ReturnType<typeof drizzle>;
 
 const DEFAULT_TIME_BUDGET_MS = 4 * 60 * 1000;
 
+/** Statements per libsql batch on the catalog's two hot write paths. Big enough
+ *  that a statewide sync is tens of round trips rather than thousands, small
+ *  enough that one request stays a sane size — a batch is held in memory whole
+ *  at both ends. */
+const WRITE_BATCH_SIZE = 100;
+
 export interface CatalogSyncResult {
 	foldersSynced: number;
 	foldersSkipped: number;
@@ -239,11 +245,27 @@ export async function runCatalogSync(
 		};
 	}
 
-	for (const row of plan.upserts) {
-		await db
-			.insert(vanTurfs)
-			.values(row)
-			.onConflictDoUpdate({ target: vanTurfs.mapRouteId, set: row });
+	// Written in batches, not one statement at a time.
+	//
+	// A statewide catalog is a couple of thousand routes, and the database is
+	// remote: one round trip per row spent the endpoint's whole request budget
+	// before geometry got a turn, which showed up as a queue that stopped
+	// draining ("skipping geometry this run — the catalog used the request
+	// budget") and, on the worst runs, as folders skipped entirely. libsql sends
+	// a batch as one round trip, so the same writes cost tens of trips instead
+	// of thousands.
+	//
+	// Batched in chunks rather than all at once: a batch is an implicit
+	// transaction and the whole thing is held in memory on both ends, so one
+	// statement per route across 2,000+ routes is a multi-megabyte request. The
+	// exposure a chunk boundary creates is unchanged from before — a reader can
+	// see some turfs' new door counts beside others' old ones, which the UI
+	// already labels with the timestamp those counts came from.
+	for (const rows of chunked(plan.upserts, WRITE_BATCH_SIZE)) {
+		const statements = rows.map((row) =>
+			db.insert(vanTurfs).values(row).onConflictDoUpdate({ target: vanTurfs.mapRouteId, set: row }),
+		);
+		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
 
 	// The retirement group, written as ONE atomic batch.
@@ -372,32 +394,37 @@ export async function runCatalogSync(
 	//
 	// A settled row therefore stays settled until VAN re-cuts the turf, and
 	// clearing a `failed` row by hand is the deliberate way to force a retry.
-	for (const item of plan.geometryQueue) {
-		await db
-			.insert(vanGeometryQueue)
-			.values({
-				mapRouteId: item.mapRouteId,
-				savedListId: item.savedListId,
-				status: 'pending',
-				attempts: 0,
-			})
-			.onConflictDoUpdate({
-				target: vanGeometryQueue.mapRouteId,
-				set: {
+	// Batched for the same reason as the upserts above: one queue row per turf
+	// is another round trip per turf, on the same hot path.
+	for (const items of chunked(plan.geometryQueue, WRITE_BATCH_SIZE)) {
+		const statements = items.map((item) =>
+			db
+				.insert(vanGeometryQueue)
+				.values({
+					mapRouteId: item.mapRouteId,
 					savedListId: item.savedListId,
 					status: 'pending',
 					attempts: 0,
-					// Cleared together: a job id, error or timestamp from the
-					// previous saved list describes work that no longer exists.
-					exportJobId: null,
-					lastError: null,
-					requestedAt: null,
-					completedAt: null,
-				},
-				// Refers to the EXISTING row, so this is "the stored saved list
-				// differs from the one VAN just reported".
-				where: ne(vanGeometryQueue.savedListId, item.savedListId),
-			});
+				})
+				.onConflictDoUpdate({
+					target: vanGeometryQueue.mapRouteId,
+					set: {
+						savedListId: item.savedListId,
+						status: 'pending',
+						attempts: 0,
+						// Cleared together: a job id, error or timestamp from the
+						// previous saved list describes work that no longer exists.
+						exportJobId: null,
+						lastError: null,
+						requestedAt: null,
+						completedAt: null,
+					},
+					// Refers to the EXISTING row, so this is "the stored saved list
+					// differs from the one VAN just reported".
+					where: ne(vanGeometryQueue.savedListId, item.savedListId),
+				}),
+		);
+		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
 
 	// Written last, and only on a real run: a dry run reports what WOULD happen,
