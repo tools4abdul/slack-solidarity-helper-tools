@@ -19,6 +19,7 @@ import { and, desc, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { CompletionRow, HoldingRow } from '../../van/turf-holdings.js';
+import { visibleToChapter } from './chapter-visibility.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -34,7 +35,9 @@ export interface HoldingsQuery {
 }
 
 function chapterFilter(chapterId: number | null): SQL | undefined {
-	return chapterId === null ? undefined : eq(vanTurfs.chapterId, chapterId);
+	// The chapter's FOLDERS, not the label on the row: a folder mapped to
+	// several chapters is visible to all of them (chapter-visibility.ts).
+	return visibleToChapter(chapterId);
 }
 
 /**

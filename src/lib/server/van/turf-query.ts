@@ -26,6 +26,7 @@ import type { ClaimOptions, ClaimSnapshot } from '../../van/checkout.js';
 import type { BoundingBox, LatLng } from '../../van/geometry.js';
 import { selectNearest, TURFS_PER_PAYLOAD, withinBounds } from '../../van/turf-paging.js';
 import { toTurfView, type TurfView } from '../../van/turf-view.js';
+import { visibleToChapter } from './chapter-visibility.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -101,7 +102,9 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		.from(vanTurfs)
 		.where(
 			and(
-				eq(vanTurfs.chapterId, chapterId),
+				// Every folder this chapter is mapped to, so turf in a folder shared
+				// by several chapters appears for each of them.
+				visibleToChapter(chapterId),
 				mapRouteIds ? inArray(vanTurfs.mapRouteId, mapRouteIds) : undefined,
 				myRouteIds.length > 0
 					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.mapRouteId, myRouteIds))
