@@ -116,7 +116,16 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// budget. A volunteer zoomed out to the whole county is still asking for a
 	// box, and without the second cap that box is the chapter.
 	const candidates = bounds ? withinBounds(rows, bounds) : rows;
-	const { selected, omitted } = selectNearest(candidates, { location, limit, offset });
+	// The viewer's own turf is pinned to the first page: it carries their list
+	// number, and it must not be sorted — or boxed — out of the one view that
+	// shows it. `myRouteIds` is only populated when the caller asked for held
+	// turf, so this changes nothing for callers that did not.
+	const { selected, omitted } = selectNearest(candidates, {
+		location,
+		limit,
+		offset,
+		alwaysInclude: myRouteIds,
+	});
 
 	const claims = await claimsFor(
 		db,

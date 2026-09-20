@@ -11,6 +11,7 @@
 	// component renders what it was given and posts actions back.
 
 	import '$lib/components/turfs/turf-page.css';
+	import { tick } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
@@ -249,6 +250,31 @@
 	 *  reload — the point is to rehearse the flow, not to persist anything. */
 	let demoStatus = $state<Record<number, 'held-by-you' | 'available'>>({});
 
+	/**
+	 * Bring a just-claimed turf's card into view and put focus on it.
+	 *
+	 * The list number is the whole point of claiming — it is what loads the
+	 * doors in MiniVAN — and it is rendered at the TOP of the page while the
+	 * button that issues it is in a row that may be far down a long list. On a
+	 * phone that leaves someone looking at an unchanged screen wondering whether
+	 * the tap worked.
+	 *
+	 * Focus moves with the scroll rather than the scroll happening alone: a
+	 * screen-reader user gets no benefit from a viewport change, and moving
+	 * focus is what announces the card and puts the copy button next in the tab
+	 * order. `preventScroll` leaves the scrolling to `scrollIntoView`, whose
+	 * behaviour respects the reduced-motion preference below.
+	 */
+	async function revealClaimedTurf(mapRouteId: number): Promise<void> {
+		// The card does not exist until the claim has re-rendered the list.
+		await tick();
+		const card = document.getElementById(`my-turf-${mapRouteId}`);
+		if (!card) return;
+		const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+		card.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+		card.focus({ preventScroll: true });
+	}
+
 	async function act(turf: TurfView, action: 'claim' | 'release' | 'complete') {
 		// Checked first and returning early, so a demo action can never reach
 		// the network. The fabricated route ids would almost certainly 404
@@ -256,8 +282,10 @@
 		// worth resting a write path on.
 		if (data.demo) {
 			demoStatus[turf.mapRouteId] = action === 'claim' ? 'held-by-you' : 'available';
-			if (action === 'claim') selectedId = turf.mapRouteId;
-			else delete copied[turf.mapRouteId];
+			if (action === 'claim') {
+				selectedId = turf.mapRouteId;
+				await revealClaimedTurf(turf.mapRouteId);
+			} else delete copied[turf.mapRouteId];
 			return;
 		}
 
@@ -288,6 +316,9 @@
 			// door count come back from the server rather than being patched
 			// locally into something the server never said.
 			await invalidateAll();
+			// After the reload, so the card scrolled to is the one the server
+			// confirmed rather than an optimistic one that might not survive it.
+			if (action === 'claim') await revealClaimedTurf(turf.mapRouteId);
 		} catch {
 			error = "Couldn't reach the server. Check your signal and try again.";
 		} finally {
@@ -431,7 +462,9 @@
 		{/if}
 
 		{#each myTurfs as turf (turf.mapRouteId)}
-			<section class="my-turfs" aria-label="Your turf">
+			<!-- tabindex -1: not in the tab order, but focusable so a claim can
+			     move focus here and a screen reader announces the list number. -->
+			<section class="my-turfs" id="my-turf-{turf.mapRouteId}" aria-label="Your turf" tabindex="-1">
 				<article class="code-card">
 					<header>
 						<h2>{turf.name}</h2>

@@ -9,20 +9,34 @@
 //
 // Pure, so the cap and the ordering can be tested without a DB or a browser,
 // and shared by the page load and /api/turfs so the two cannot disagree about
-// what "the nearest 150" means.
+// what "the nearest N" means.
 
 import { haversineMeters, type BoundingBox, type LatLng } from './geometry.js';
 
 /**
  * Rows per payload.
  *
- * Chosen against the 6.2b measurement rather than by feel: ~800 bytes a row,
- * so 150 rows is ~120 KB — heavy but survivable on cell data, and roughly what
- * fits on screen at a neighbourhood zoom plus room to pan before the next
- * fetch. The number is a budget, not a limit on how much turf exists; a
- * chapter with more sends `omitted` and the client pages by viewport.
+ * A budget, not a limit on how much turf exists: a chapter with more sends
+ * `omitted` and the client pages by viewport as the volunteer drags the map.
+ *
+ * Raised from 150 once real turf existed to measure, against 2,191 synced
+ * turfs and 400 real hulls rather than 6.2b's estimate:
+ *
+ *   - **The wire cost is small.** A row is ~611 bytes (a hull averages 10
+ *     vertices, ~325 bytes), so 500 rows is ~300 KB of JSON — but this JSON
+ *     compresses about 7x and production serves `content-encoding: zstd`, so
+ *     ~40 KB actually crosses the network. 6.2b's ~800 KB was raw bytes.
+ *   - **Holding more costs the map almost nothing.** TurfMap culls per frame
+ *     with two projections a turf, draws anything under PIN_BELOW_PX as a pin,
+ *     and only puts on-screen items in the DOM. Measured with 1,000 turfs
+ *     loaded at a neighbourhood zoom: 20 on screen, 0.11 ms a frame on a
+ *     laptop — call it 0.5 ms on a mid-range phone, against 16.7 ms at 60 fps.
+ *
+ * 600 covers every chapter this campaign has cut (the largest is ~600) without
+ * paging, while staying well inside both budgets. The ceiling that matters is
+ * the first parse, not the panning.
  */
-export const TURFS_PER_PAYLOAD = 150;
+export const TURFS_PER_PAYLOAD = 600;
 
 /**
  * What every selector needs to place a turf.
@@ -74,6 +88,13 @@ function pointOf(row: Locatable): LatLng | null {
  * mapped and its distance is unknowable, but it is real, claimable turf, and
  * on a key without export-job access it is *all* the turf there is.
  *
+ * `alwaysInclude` pins rows the viewer must see whatever the budget says —
+ * their own checked-out turf. Without it a volunteer who claimed turf across
+ * the county, or whose chapter has more turf than a payload holds, opens the
+ * page and finds no card and no list number: the turf is real, still theirs,
+ * and simply sorted past the cut. Pinned rows ride at the front, are never cut
+ * by the limit, and are not counted as `omitted` — they are being shown.
+ *
  * `offset` walks further down that same ordering, for the Slack command's
  * paging. It lives here rather than in the caller because this function is the
  * one place that decides what "the nearest N" means: the map pages by viewport
@@ -84,7 +105,12 @@ function pointOf(row: Locatable): LatLng | null {
  */
 export function selectNearest<T extends Locatable>(
 	rows: readonly T[],
-	options: { location?: LatLng | null; limit?: number; offset?: number } = {},
+	options: {
+		location?: LatLng | null;
+		limit?: number;
+		offset?: number;
+		alwaysInclude?: Iterable<number>;
+	} = {},
 ): Selection<T> {
 	const { location = null, limit = TURFS_PER_PAYLOAD } = options;
 	// Negative, fractional and NaN offsets all reach this from a Slack button
@@ -112,9 +138,23 @@ export function selectNearest<T extends Locatable>(
 		ordered.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
+	// Pinned only on the FIRST page. Repeating them on every page of the Slack
+	// list would hand the same turf back under each "More" press, and the page
+	// the volunteer is on by then is a list they are browsing, not the answer to
+	// "where is my turf".
+	const pinnedIds = new Set(options.alwaysInclude ?? []);
+	const pinned =
+		offset === 0 && pinnedIds.size > 0
+			? ordered.filter((row) => pinnedIds.has(row.mapRouteId))
+			: [];
+	const rest =
+		pinned.length > 0 ? ordered.filter((row) => !pinnedIds.has(row.mapRouteId)) : ordered;
+	// Pinned rows spend the budget too, so a payload never exceeds the cap.
+	const room = Math.max(0, limit - pinned.length);
+
 	return {
-		selected: ordered.slice(offset, offset + limit),
-		omitted: Math.max(0, ordered.length - (offset + limit)),
+		selected: [...pinned, ...rest.slice(offset, offset + room)],
+		omitted: Math.max(0, rest.length - (offset + room)),
 	};
 }
 
