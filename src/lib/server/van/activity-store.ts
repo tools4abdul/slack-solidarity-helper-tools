@@ -25,6 +25,7 @@ import {
 	type ActivityRange,
 	type ActivityRow,
 } from '../../van/turf-activity.js';
+import { visibleToChapter } from './chapter-visibility.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -56,9 +57,8 @@ function scopeWhere(query: ActivityQuery): SQL {
 		stampInRange(vanTurfCheckouts.completedAt, query.range),
 	) as SQL;
 
-	return (
-		query.chapterId === null ? touched : and(eq(vanTurfs.chapterId, query.chapterId), touched)
-	) as SQL;
+	const chapter = visibleToChapter(query.chapterId);
+	return (chapter ? and(chapter, touched) : touched) as SQL;
 }
 
 /** `sum(case when … then 1 else 0 end)`, which counts events rather than rows —

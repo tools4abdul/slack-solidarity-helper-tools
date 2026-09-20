@@ -22,6 +22,7 @@ import {
 import { toTurfView } from '$lib/van/turf-view.js';
 import type { ClaimSnapshot } from '$lib/van/checkout.js';
 import { demoTurfs, DEMO_CHAPTERS } from '$lib/van/demo-turfs.js';
+import { visibleToChapter } from '$lib/server/van/chapter-visibility.js';
 
 // Turf inside a map viewport, for paging a chapter too large to serialise in
 // one payload (plan.md 6.2b — a 1,000-turf chapter is ~800 KB).
@@ -130,7 +131,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const rows = await db
 		.select()
 		.from(vanTurfs)
-		.where(and(eq(vanTurfs.chapterId, chapterId), isNull(vanTurfs.retiredAt)));
+		.where(and(visibleToChapter(chapterId), isNull(vanTurfs.retiredAt)));
 
 	// Bounded twice: by the viewport, then by the payload budget. A volunteer
 	// zoomed out to the whole county is still asking for a box, and without the

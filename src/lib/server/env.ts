@@ -95,6 +95,13 @@ export const REDIRECT_URI = `${APP_URL}/auth/slack/callback`;
 
 export const SOLIDARITY_API_TOKEN = get('SOLIDARITY_API_TOKEN');
 
+// USPS state codes the campaign's turf is in, comma-separated (`MI`, or
+// `MI,OH`). Optional: it only scopes the county lookup that places VAN regions
+// on the folder map, and with it unset the page infers the states from the
+// region names themselves. Set it when a county name is ambiguous enough to be
+// worth pinning — there are 31 Washington Counties.
+export const CAMPAIGN_STATES = get('CAMPAIGN_STATES');
+
 // Mobilize v1 API credentials, shared by both syncs (events out, attendees back).
 //
 // The key must have write ("restricted") access granted by Mobilize — creating

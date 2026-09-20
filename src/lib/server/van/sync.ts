@@ -132,32 +132,53 @@ export async function runCatalogSync(
 	let foldersSkipped = 0;
 	const warnings: string[] = [];
 
+	// One entry per FOLDER, not per chapter-folder pair.
+	//
+	// A folder mapped to eleven chapters used to be fetched eleven times and to
+	// produce eleven upserts per route — all keyed by `mapRouteId` alone, so the
+	// last chapter written won and the other ten saw none of that folder's turf.
+	// Visibility now comes from the mapping at query time (chapter-visibility.ts),
+	// so the catalog reads each folder once and stores one row per turf.
+	//
+	// The chapter carried here is the first one mapped to the folder, in mapping
+	// order. It is the row's display label — who can SEE the turf is every
+	// chapter in `chapters`, which this loop no longer has to care about.
+	const folderOwners = new Map<number, { chapterId: number; chapterName: string }>();
 	for (const mapping of mappings) {
 		for (const folderId of mapping.folderIds) {
-			if (Date.now() > deadline) {
-				foldersSkipped++;
-				continue;
-			}
-			try {
-				const regions = await client.mapRegions(folderId);
-				folders.push({
-					folderId,
-					folderName: folderNames.get(folderId) ?? '',
+			if (!folderOwners.has(folderId)) {
+				folderOwners.set(folderId, {
 					chapterId: mapping.chapterId,
 					chapterName: mapping.chapterName,
-					regions,
 				});
-			} catch (err) {
-				// One unreadable folder must not retire another chapter's turf,
-				// so it is skipped rather than contributing an empty region list.
-				foldersSkipped++;
-				const detail =
-					err instanceof VanError && err.isAuthFailure
-						? `${err.message} — check the key's tier for this folder`
-						: errMessage(err);
-				warnings.push(`Folder ${folderId} (${mapping.chapterName}) failed to sync: ${detail}`);
-				console.error(`[van] folder ${folderId} sync failed:`, detail);
 			}
+		}
+	}
+
+	for (const [folderId, owner] of folderOwners) {
+		if (Date.now() > deadline) {
+			foldersSkipped++;
+			continue;
+		}
+		try {
+			const regions = await client.mapRegions(folderId);
+			folders.push({
+				folderId,
+				folderName: folderNames.get(folderId) ?? '',
+				chapterId: owner.chapterId,
+				chapterName: owner.chapterName,
+				regions,
+			});
+		} catch (err) {
+			// One unreadable folder must not retire another chapter's turf,
+			// so it is skipped rather than contributing an empty region list.
+			foldersSkipped++;
+			const detail =
+				err instanceof VanError && err.isAuthFailure
+					? `${err.message} — check the key's tier for this folder`
+					: errMessage(err);
+			warnings.push(`Folder ${folderId} (${owner.chapterName}) failed to sync: ${detail}`);
+			console.error(`[van] folder ${folderId} sync failed:`, detail);
 		}
 	}
 

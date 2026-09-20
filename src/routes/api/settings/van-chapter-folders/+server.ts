@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import {
 	saveVanChapterFolders,
+	saveVanFolderChapters,
 	deleteVanChapterFolders,
 	type Editor,
 } from '$lib/server/settings.js';
@@ -19,14 +20,26 @@ import {
 // integers but NOT checked against VAN — there is no key to check with yet, and
 // a wrong id simply yields no turf rather than anything unsafe. Story 2 adds a
 // "this folder returned nothing" warning once the sync can look.
+//
+// `action: "save-folder"` is the same mapping edited from the other side, by
+// `/turfs/folder-map`: one FOLDER, its whole chapter list submitted at once.
+// It exists because the question you can answer while looking at a map of a
+// folder's turf is "who should see this", and answering it through the
+// chapter-first shape would mean re-submitting every other folder that chapter
+// has. The write is scoped to the one folder, so the two directions cannot
+// clobber each other.
 interface ChapterFoldersBody {
 	action?: unknown;
 	chapterId?: unknown;
 	chapterName?: unknown;
 	folderIds?: unknown;
+	folderId?: unknown;
+	chapters?: unknown;
 }
 
 const MAX_FOLDERS_PER_CHAPTER = 50;
+const MAX_CHAPTERS_PER_FOLDER = 50;
+const MAX_CHAPTER_NAME_LENGTH = 200;
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
@@ -43,18 +56,63 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return json({ error: 'invalid JSON body' }, { status: 400 });
 	}
 
-	const { action, chapterId, chapterName, folderIds } = body;
-	if (action !== 'save' && action !== 'remove') {
-		return json({ error: 'action must be "save" or "remove"' }, { status: 400 });
-	}
-	if (typeof chapterId !== 'number' || !Number.isInteger(chapterId) || chapterId <= 0) {
-		return json({ error: 'chapterId must be a positive integer' }, { status: 400 });
+	const { action, chapterId, chapterName, folderIds, folderId, chapters } = body;
+	if (action !== 'save' && action !== 'remove' && action !== 'save-folder') {
+		return json({ error: 'action must be "save", "remove" or "save-folder"' }, { status: 400 });
 	}
 
 	const editor: Editor = {
 		id: locals.session.slackUserId,
 		name: locals.session.slackUserName ?? locals.session.slackUserId,
 	};
+
+	if (action === 'save-folder') {
+		if (typeof folderId !== 'number' || !Number.isInteger(folderId) || folderId <= 0) {
+			return json({ error: 'folderId must be a positive integer' }, { status: 400 });
+		}
+		if (!Array.isArray(chapters)) {
+			return json({ error: 'chapters must be an array' }, { status: 400 });
+		}
+		if (chapters.length > MAX_CHAPTERS_PER_FOLDER) {
+			return json(
+				{ error: `A folder can map to at most ${MAX_CHAPTERS_PER_FOLDER} chapters.` },
+				{ status: 400 },
+			);
+		}
+		const entries: Array<{ chapterId: number; chapterName: string }> = [];
+		for (const item of chapters) {
+			const chapter = item as { chapterId?: unknown; chapterName?: unknown };
+			if (
+				typeof chapter?.chapterId !== 'number' ||
+				!Number.isInteger(chapter.chapterId) ||
+				chapter.chapterId <= 0
+			) {
+				return json({ error: 'every chapterId must be a positive integer' }, { status: 400 });
+			}
+			// The name is stored denormalised, so it is bounded here rather than
+			// trusted: it reaches /settings and the turf page as a label.
+			if (
+				typeof chapter.chapterName !== 'string' ||
+				chapter.chapterName.trim() === '' ||
+				chapter.chapterName.length > MAX_CHAPTER_NAME_LENGTH
+			) {
+				return json(
+					{
+						error: `every chapterName must be a non-empty string under ${MAX_CHAPTER_NAME_LENGTH} characters`,
+					},
+					{ status: 400 },
+				);
+			}
+			entries.push({ chapterId: chapter.chapterId, chapterName: chapter.chapterName.trim() });
+		}
+
+		await saveVanFolderChapters(db, { folderId, chapters: entries }, editor);
+		return json({ ok: true });
+	}
+
+	if (typeof chapterId !== 'number' || !Number.isInteger(chapterId) || chapterId <= 0) {
+		return json({ error: 'chapterId must be a positive integer' }, { status: 400 });
+	}
 
 	if (action === 'remove') {
 		await deleteVanChapterFolders(db, chapterId, editor);

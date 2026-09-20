@@ -14,6 +14,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanSyncState, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import type { ClaimSnapshot } from '../../van/checkout.js';
 import type { DriftTurfRow, DriftVisibility } from '../../van/turf-drift.js';
+import { visibleToChapter } from './chapter-visibility.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -23,7 +24,9 @@ export interface DriftQuery {
 }
 
 function chapterFilter(chapterId: number | null): SQL | undefined {
-	return chapterId === null ? undefined : eq(vanTurfs.chapterId, chapterId);
+	// The chapter's FOLDERS, not the label on the row: a folder mapped to
+	// several chapters is visible to all of them (chapter-visibility.ts).
+	return visibleToChapter(chapterId);
 }
 
 /** Every turf in scope, claimed or not. Retired rows come back and the pure

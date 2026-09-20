@@ -32,12 +32,19 @@ beforeEach(async () => {
 	await client.execute({
 		sql: `INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
 		      VALUES (100, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?),
-		             (200, 1, 1, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
+		             (200, 1, 2, 72, 'Wayne County', 'Detroit East', 'Turf 02', 180, ?, ?),
 		             (300, 1, 1, 71, 'Washtenaw County', 'Ypsilanti', 'Retired turf', 90, ?, ?),
 		             (400, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 04', 200, ?, ?),
 		             (500, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 05', 210, ?, ?)`,
 		args: Array.from({ length: 10 }, () => NOW.toISOString()),
 	});
+	// Chapter 71 sees folder 1, chapter 72 sees folder 2 — visibility comes from
+	// this mapping now, not from van_turfs.chapter_id (chapter-visibility.ts).
+	await client.execute(
+		`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (71, 1, 'Washtenaw County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z'),
+		        (72, 2, 'Wayne County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z')`,
+	);
 	// The third turf is retired — history about it must still read.
 	await client.execute(
 		`UPDATE van_turfs SET retired_at = '2026-08-20T00:00:00.000Z' WHERE map_route_id = 300`,

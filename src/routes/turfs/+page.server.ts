@@ -27,6 +27,7 @@ import { demoTurfs, DEMO_CHAPTERS, DEMO_LOCATIONS } from '$lib/van/demo-turfs.js
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
 import type { ClaimSnapshot } from '$lib/van/checkout.js';
 import type { LatLng } from '$lib/van/geometry.js';
+import { visibleToChapter } from '$lib/server/van/chapter-visibility.js';
 
 // The volunteer turf page.
 //
@@ -249,7 +250,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		.from(vanTurfs)
 		.where(
 			and(
-				eq(vanTurfs.chapterId, chapter.chapterId),
+				visibleToChapter(chapter.chapterId),
 				myRouteIds.length > 0
 					? or(isNull(vanTurfs.retiredAt), inArray(vanTurfs.mapRouteId, myRouteIds))
 					: isNull(vanTurfs.retiredAt),

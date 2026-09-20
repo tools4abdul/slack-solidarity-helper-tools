@@ -1024,6 +1024,47 @@ export async function saveVanChapterFolders(
 	);
 }
 
+/**
+ * Replace one FOLDER's chapter list wholesale — the same table, edited from the
+ * other side.
+ *
+ * `/turfs/folder-map` asks "who should see this folder", because that is the
+ * question you can answer while looking at where a folder's turf actually is;
+ * /settings asks "which folders does this chapter get". Both write
+ * van_chapter_folders, and scoping the delete to one folder is what lets them
+ * coexist: editing folder 68299 cannot disturb a chapter's other folders.
+ */
+export async function saveVanFolderChapters(
+	db: Database,
+	entry: {
+		folderId: number;
+		chapters: ReadonlyArray<{ chapterId: number; chapterName: string }>;
+	},
+	editor: Editor,
+): Promise<void> {
+	const lastEditedAt = new Date().toISOString();
+	await db.delete(vanChapterFolders).where(eq(vanChapterFolders.folderId, entry.folderId));
+
+	// First spelling of a chapter id wins, so a duplicated pick cannot violate
+	// the (chapter_id, folder_id) primary key.
+	const unique = new Map(entry.chapters.map((c) => [c.chapterId, c.chapterName]));
+	if (unique.size > 0) {
+		await db.insert(vanChapterFolders).values(
+			[...unique].map(([chapterId, chapterName]) => ({
+				chapterId,
+				folderId: entry.folderId,
+				chapterName,
+				lastEditedBy: editor.id,
+				lastEditedByName: editor.name,
+				lastEditedAt,
+			})),
+		);
+	}
+	console.log(
+		`[van] saved van_chapter_folders folder_id=${entry.folderId} chapters=${[...unique.keys()].join(',') || '(none)'} by ${editor.id} (${editor.name})`,
+	);
+}
+
 export async function deleteVanChapterFolders(
 	db: Database,
 	chapterId: number,

@@ -24,16 +24,24 @@ beforeEach(async () => {
 
 	// Several turfs, because the partial unique index allows only one ACTIVE
 	// claim per route — a fixture with three live claims needs three turfs.
-	for (const [id, chapter, chapterName, name] of [
-		[100, 71, 'Washtenaw County', 'Turf 01'],
-		[200, 71, 'Washtenaw County', 'Turf 02'],
-		[300, 72, 'Wayne County', 'Turf 03'],
+	for (const [id, folder, chapter, chapterName, name] of [
+		[100, 1, 71, 'Washtenaw County', 'Turf 01'],
+		[200, 1, 71, 'Washtenaw County', 'Turf 02'],
+		[300, 2, 72, 'Wayne County', 'Turf 03'],
 	] as const) {
 		await client.execute(
 			`INSERT INTO van_turfs (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name, name, door_count, first_seen_at, last_seen_at)
-			 VALUES (${id}, 1, 1, ${chapter}, '${chapterName}', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
+			 VALUES (${id}, 1, ${folder}, ${chapter}, '${chapterName}', 'Ann Arbor', '${name}', 250, '${iso(NOW.getTime())}', '${iso(NOW.getTime())}')`,
 		);
 	}
+
+	// Chapter 71 sees folder 1, chapter 72 sees folder 2 — visibility comes from
+	// this mapping now, not from van_turfs.chapter_id (chapter-visibility.ts).
+	await client.execute(
+		`INSERT INTO van_chapter_folders (chapter_id, folder_id, chapter_name, last_edited_by, last_edited_by_name, last_edited_at)
+		 VALUES (71, 1, 'Washtenaw County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z'),
+		        (72, 2, 'Wayne County', 'U_ADMIN', 'Alice', '2026-01-01T00:00:00.000Z')`,
+	);
 });
 
 async function checkout(over: Record<string, string | number | null> = {}) {

@@ -109,6 +109,35 @@ describe('runCatalogSync', () => {
 		expect(inserted[0]).toMatchObject({ mapRouteId: 100, chapterId: 71 });
 	});
 
+	// The bug this replaced: a folder mapped to several chapters was fetched
+	// once per chapter and upserted once per chapter, every row keyed by
+	// mapRouteId alone — so the last chapter written silently owned the folder
+	// and the others saw none of its turf. Visibility is a query-time join on
+	// the mapping now (chapter-visibility.ts), so the catalog reads each folder
+	// exactly once and writes one row per turf.
+	it('reads a shared folder once and writes one row per turf', async () => {
+		const client = makeClient();
+		const spy = vi.spyOn(client, 'mapRegions');
+		const { db, inserted } = makeDb();
+
+		const result = await runCatalogSync(db, client, [
+			{ chapterId: 71, chapterName: 'Kalamazoo', folderIds: [1152] },
+			{ chapterId: 72, chapterName: 'Allegan', folderIds: [1152] },
+			{ chapterId: 73, chapterName: 'Calhoun', folderIds: [1152] },
+		]);
+
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(result.foldersSynced).toBe(1);
+		expect(result.turfsUpserted).toBe(1);
+		// `inserted` also carries the geometry-queue and sync-state writes, so
+		// count the turf rows specifically: one, not one per chapter.
+		const turfRows = inserted.filter((row) => (row as { chapterId?: number }).chapterId);
+		expect(turfRows).toHaveLength(1);
+		// The label is the first chapter mapped to the folder; who can SEE it is
+		// every chapter in the mapping, which this row does not encode.
+		expect(turfRows[0]).toMatchObject({ mapRouteId: 100, chapterId: 71 });
+	});
+
 	it('does nothing but warn when no chapter is mapped to a folder', async () => {
 		const client = makeClient();
 		const spy = vi.spyOn(client, 'mapRegions');

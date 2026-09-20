@@ -737,7 +737,9 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 
    This is read-only. It never writes to VAN or to the database.
 
-3. Map the folder ids it printed to chapters under **Settings → Chapter → VAN folders**.
+3. Map folders to chapters. Either **Settings → Chapter → VAN folders** (chapter-first), or **`/turfs/folder-map`** (folder-first, beside a map of where each folder's turf is). A folder may be mapped to several chapters, and its turf is then visible to all of them.
+
+   That map places each region from its name (`R04C_Livingston_BrightonCity003` → Livingston County) against the Census county list, so it needs no geometry and no particular state. It works out which state(s) the names are in; set `CAMPAIGN_STATES=MI` (comma-separated USPS codes) to pin that instead — worth doing where county names are ambiguous, since 31 states have a Washington County.
 
 4. Trigger a sync: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET"`.
 
