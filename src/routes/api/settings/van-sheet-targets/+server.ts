@@ -8,6 +8,8 @@ import {
 	type Editor,
 } from '$lib/server/settings.js';
 import { normaliseSheetKey } from '$lib/van/sheet-routing.js';
+import { sheetsClient } from '$lib/server/google-env.js';
+import { DEFAULT_SHEET_TAB_NAME } from '$lib/van/sheet-log.js';
 
 // Which spreadsheet each region's turf checkouts are logged to.
 //
@@ -22,17 +24,23 @@ import { normaliseSheetKey } from '$lib/van/sheet-routing.js';
 // the spreadsheet id, which is validated for shape but NOT checked against
 // Google: there may be no credential yet, and a wrong id surfaces as a failed
 // write with an operator alert rather than as anything unsafe.
+//
+// The spreadsheet's NAME is read from Google here rather than typed, and stored
+// alongside the id. Stored, not fetched on demand, because the one place it
+// really matters is the alert that says a spreadsheet cannot be written to —
+// which fires exactly when Google will not tell us its name. A name we could
+// only look up while things are working is a name we would never have when it
+// counts. When the lookup fails (no credential yet, sheet not shared yet) the
+// id stands in, and re-saving any rule for that sheet backfills the real one.
 
 interface SheetTargetBody {
 	action?: unknown;
 	prefix?: unknown;
-	label?: unknown;
 	spreadsheetId?: unknown;
 	prefixKey?: unknown;
 }
 
 const MAX_PREFIX_LENGTH = 120;
-const MAX_LABEL_LENGTH = 120;
 /** Google's ids are 44 chars today; the cap is loose because the length is not
  *  documented as stable and a too-tight check would reject a valid sheet. */
 const MAX_SPREADSHEET_ID_LENGTH = 200;
@@ -47,6 +55,31 @@ const SPREADSHEET_ID = /^[A-Za-z0-9_-]{20,}$/;
 function extractSpreadsheetId(raw: string): string {
 	const match = raw.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
 	return (match?.[1] ?? raw).trim();
+}
+
+/**
+ * The spreadsheet's name as Google reports it, or the id when it cannot be
+ * read.
+ *
+ * Never throws and never blocks the save: a rule an admin can write before the
+ * credential exists is the whole reason this page works pre-launch, and an
+ * unreachable sheet is a thing to alert about later rather than a reason to
+ * refuse the rule now.
+ */
+async function resolveLabel(spreadsheetId: string): Promise<string> {
+	const configured = sheetsClient();
+	if (!configured.ok) return spreadsheetId;
+	try {
+		const res = await configured.client.describe({
+			spreadsheetId,
+			// `describe` wants a tab to report on; the title is what we are after
+			// and comes back regardless of whether that tab exists.
+			tabName: DEFAULT_SHEET_TAB_NAME,
+		});
+		return res.ok && res.value.title.trim() !== '' ? res.value.title.trim() : spreadsheetId;
+	} catch {
+		return spreadsheetId;
+	}
 }
 
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -83,7 +116,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	const prefix = typeof body.prefix === 'string' ? body.prefix.trim() : '';
-	const label = typeof body.label === 'string' ? body.label.trim() : '';
 	const spreadsheetId =
 		typeof body.spreadsheetId === 'string' ? extractSpreadsheetId(body.spreadsheetId) : '';
 
@@ -102,12 +134,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			{ status: 400 },
 		);
 	}
-	if (label === '' || label.length > MAX_LABEL_LENGTH) {
-		return json(
-			{ error: `label must be a non-empty string under ${MAX_LABEL_LENGTH} characters` },
-			{ status: 400 },
-		);
-	}
 	if (
 		spreadsheetId === '' ||
 		spreadsheetId.length > MAX_SPREADSHEET_ID_LENGTH ||
@@ -119,6 +145,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		);
 	}
 
-	await saveVanSheetTarget(db, { prefix, label, spreadsheetId }, editor);
+	await saveVanSheetTarget(
+		db,
+		{ prefix, label: await resolveLabel(spreadsheetId), spreadsheetId },
+		editor,
+	);
 	return json({ ok: true, targets: await loadVanSheetTargets(db) });
 };

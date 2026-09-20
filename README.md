@@ -763,14 +763,16 @@ Six events reach it: `Checked out`, `Released`, `Completed`, `Expired`, `Release
 
 **It cannot slow down or undo a claim.** Nothing is written on the request path. The drain runs inside the scheduled VAN sync, which already has the schedule, the lock and a time budget, so a Google outage costs lag and never a claim — the volunteer gets their list number at the same speed whether or not Google is reachable. Rows are stamped **only after Google confirms the append**, so a failure retries on the next run rather than vanishing. The one duplicate that is possible is a crash between Google accepting rows and the stamp landing; the next run re-sends that batch, and Checkout ID plus Event is what tells the copies apart. That trade is deliberate — stamping first would lose rows silently on the same crash, and a log nobody can trust to be complete is not worth keeping.
 
-**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of it is enough alone — `R01A` spans two counties with a spreadsheet each, and `R10C` has two spreadsheets inside one county separated only by which cities they cover — so **Settings → Checkout spreadsheets** takes a list of name prefixes and the longest match wins:
+**Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So **Settings → Checkout spreadsheets** takes a list of name prefixes and the longest match wins:
 
 ```
-R01A_Alger           → R01A_Alger CR
-R01A_Houghton        → R01A_Houghton CR
-R10C_Wayne_Taylor    → R10C_Downriver CR
-R10C                 → R10C_WesternWayne CR   ← catch-all for the rest of R10C
+R01A_Alger              → R01A_Alger CR
+R01A_Houghton           → R01A_Houghton CR
+R10C                    → R10C_Downriver CR      ← a whole code, one sheet
+R10C_Wayne_Woodhaven    → R10C_Woodhaven CR      ← one city carved out of it
 ```
+
+`npm run van:regions` lists every region name the key can see, `-- --prefixes` groups them by leading code, and `-- --flat` prints one per line. Read-only, and it works before the first catalog sync.
 
 Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an underscored rule. **A region matching no rule has its checkouts held, not dropped** — they flow in as soon as a rule covers them, and the count and the unmatched region names ride out in the turf channel's alert. `/turfs/sheet-map` (admin) shows where every region routes, which regions route nowhere, and which rules match nothing; twelve overlapping prefixes over a few hundred region names is not something anyone can verify by reading the settings table, and a row in the wrong campaign's spreadsheet looks exactly like a correct one.
 
@@ -778,7 +780,7 @@ Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an
 
 1. Create a Google service account, download its JSON key, and put the whole thing in `GOOGLE_SHEETS_SERVICE_ACCOUNT` (a Fly secret — it is a credential, so unlike the spreadsheets it is not a setting).
 2. Share **every** spreadsheet with the service account's `…iam.gserviceaccount.com` address as an Editor. The settings page prints the address once the secret is set.
-3. Add the routing rules under **Settings → Checkout spreadsheets**. They can be filled in before the credential exists.
+3. Add the routing rules under **Settings → Checkout spreadsheets** — a region-name prefix and the spreadsheet's URL, two fields. The sheet's own name is read from Google on save and stored beside the id, so it can never drift from the sheet it names; when the credential or the share is not in place yet the id stands in, and re-saving any rule for that sheet backfills the real name. Rules can be written before the credential exists.
 4. Run `npm run sheets:check` — read-only. It mints a token and reports, per spreadsheet, whether it is reachable and whether it already has the app's tab. An unshared sheet answers 403, which is by far the most common way a dozen-spreadsheet setup ends up half-done.
 5. Open `/turfs/sheet-map` and confirm nothing is unrouted.
 

@@ -44,12 +44,9 @@
 	let dismissTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let draftPrefix = $state('');
-	let draftLabel = $state('');
 	let draftSheet = $state('');
 
-	const canAdd = $derived(
-		draftPrefix.trim() !== '' && draftLabel.trim() !== '' && draftSheet.trim() !== '',
-	);
+	const canAdd = $derived(draftPrefix.trim() !== '' && draftSheet.trim() !== '');
 
 	function scheduleDismiss(): void {
 		if (dismissTimer !== null) clearTimeout(dismissTimer);
@@ -88,12 +85,12 @@
 	function addTarget(): void {
 		if (!canAdd) return;
 		const prefix = draftPrefix.trim();
-		const label = draftLabel.trim();
 		const spreadsheetId = draftSheet.trim();
 		draftPrefix = '';
-		draftLabel = '';
 		draftSheet = '';
-		void post({ action: 'save', prefix, label, spreadsheetId });
+		// No name: the server reads the spreadsheet's own title from Google and
+		// stores it, so the two can never disagree.
+		void post({ action: 'save', prefix, spreadsheetId });
 	}
 
 	function removeTarget(prefixKey: string): void {
@@ -109,12 +106,33 @@
 <div class="van-sheet-targets-editor">
 	<SettingsRow label="Region → checkout spreadsheet" {status} {error}>
 		{#if rows.length > 0}
+			<!-- Visual only: this is a list, not a table, so a screen reader gets
+			     nothing from column positions. The remove button names the rule it
+			     would delete, which is what actually carries the context there. -->
+			<div class="target-header" aria-hidden="true">
+				<span>Region name prefix</span>
+				<span>Spreadsheet</span>
+				<span></span>
+			</div>
 			<ul class="target-list">
 				{#each rows as row (row.prefixKey)}
 					<li class="target-row">
 						<code class="prefix">{row.prefix}</code>
-						<span class="label">{row.label}</span>
-						<code class="sheet-id" title={row.spreadsheetId}>{row.spreadsheetId}</code>
+						<!-- The id is the href and the tooltip rather than a column of its
+						     own: it identifies the sheet to the app, but it tells a person
+						     nothing, and a 44-character string is most of the row. -->
+						<a
+							class="sheet"
+							class:unresolved={row.label === row.spreadsheetId}
+							href="https://docs.google.com/spreadsheets/d/{row.spreadsheetId}"
+							target="_blank"
+							rel="noreferrer"
+							title={row.label === row.spreadsheetId
+								? `${row.spreadsheetId} — name not read from Google yet; save this rule again to retry`
+								: row.spreadsheetId}
+						>
+							{row.label}
+						</a>
 						<DeleteConfirmButton
 							label="Remove"
 							description="Remove the rule for {row.prefix}? Checkouts it covers stop reaching {row.label} and wait for a new rule."
@@ -129,16 +147,9 @@
 			<input
 				class="field"
 				type="text"
-				placeholder="R10C_Wayne_Taylor"
+				placeholder="Region name prefix"
 				aria-label="Region name prefix"
 				bind:value={draftPrefix}
-			/>
-			<input
-				class="field"
-				type="text"
-				placeholder="R10C_Downriver CR"
-				aria-label="Spreadsheet name"
-				bind:value={draftLabel}
 			/>
 			<input
 				class="field"
@@ -155,6 +166,15 @@
 			/>
 			<button class="add-button" type="button" disabled={!canAdd} onclick={addTarget}>Add</button>
 		</div>
+
+		<p class="note">
+			The <strong>region name prefix</strong> is matched against the start of a turf's VAN region
+			name, ignoring case and whether it is written with dots or underscores — so
+			<code>R10C</code> covers <code>R10C_Wayne_TaylorCity004_9.18</code>, and a longer
+			<code>R01A_Alger</code> covers only that county's share of R01A. Run
+			<code>npm run van:regions</code> to list the names to write rules against. The spreadsheet's own
+			name is read from Google when you save and shown above; until it can be reached, its id stands in.
+		</p>
 
 		<p class="note">
 			The longest matching prefix wins, so a rule for one city beats a catch-all for its region
@@ -193,15 +213,31 @@
 		gap: 8px;
 	}
 
+	.target-header,
 	.target-row {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
 		align-items: center;
 		gap: 10px;
 	}
 
-	.prefix,
-	.sheet-id {
+	.target-header {
+		margin-bottom: 6px;
+		padding-bottom: 4px;
+		border-bottom: 1px solid var(--color-border);
+		color: var(--color-text-muted);
+		font-size: 0.85em;
+		font-weight: 600;
+	}
+
+	/* The header spans a column the remove button occupies, so reserve the same
+	   width rather than letting the three labels drift out of line with the
+	   values under them. */
+	.target-header > span:last-child {
+		min-width: 4.5rem;
+	}
+
+	.prefix {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.9em;
 		overflow: hidden;
@@ -209,18 +245,26 @@
 		white-space: nowrap;
 	}
 
-	.sheet-id {
-		color: var(--color-text-muted);
-	}
-
-	.label {
+	.sheet {
 		font-weight: 600;
 		overflow-wrap: anywhere;
 	}
 
+	/* Still showing an id means the name could not be read. Monospace and muted
+	   so it reads as a fallback rather than as a sheet someone named that. */
+	.sheet.unresolved {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.85em;
+		font-weight: 400;
+		color: var(--color-text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.add-target {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
 		gap: 10px;
 	}
 
@@ -265,12 +309,21 @@
 	}
 
 	@media (max-width: 560px) {
+		/* The row collapses to two columns with the id wrapped underneath, so the
+		   header no longer describes what is beneath it. */
+		.target-header {
+			display: none;
+		}
+
 		.target-row,
 		.add-target {
 			grid-template-columns: 1fr auto;
 		}
 
-		.sheet-id,
+		/* Full width on its own line, so a long sheet name is not squeezed into
+		   an auto column beside the prefix. Same shape the chapter → folder
+		   editor uses for its folder-id input. */
+		.sheet,
 		.field {
 			grid-column: 1 / -1;
 		}

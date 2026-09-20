@@ -38,76 +38,80 @@
 
 	{#if !data.configured}
 		<p class="notice">
-			No rules are configured yet, so the checkout log is off. Add one under
+			No rules are configured yet, so the checkout log is off. Every region the catalog has synced
+			is listed below — write rules covering them under
 			<a href="{resolve('/settings')}#van-sheet-targets">Settings → Checkout spreadsheets</a>.
 		</p>
 	{:else}
 		<p class="totals">
 			{totals.turfs} turf(s) across {totals.regions} region(s) → {totals.sheets} spreadsheet(s)
 		</p>
+	{/if}
 
-		{#if data.unrouted.length > 0}
-			<section class="problem">
-				<h2>{data.unrouted.length} region(s) route nowhere</h2>
-				<p>
-					Checkouts in these regions are <strong>held, not dropped</strong> — they will be written as
-					soon as a rule covers them. Add a rule whose prefix matches the start of the name.
-				</p>
+	{#if data.unrouted.length > 0}
+		<section class="problem">
+			<h2>
+				{data.unrouted.length}
+				{data.configured ? 'region(s) route nowhere' : 'region(s) to write rules for'}
+			</h2>
+			<p>
+				Checkouts in these regions are <strong>held, not dropped</strong> — they will be written as soon
+				as a rule covers them. Add a rule whose prefix matches the start of the name.
+			</p>
+			<ul class="region-list">
+				{#each data.unrouted as region (region.regionName)}
+					<li>
+						<code>{region.regionName}</code> <span class="muted">{region.turfs} turf(s)</span>
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
+	{#if data.unusedRules.length > 0}
+		<section class="problem">
+			<h2>{data.unusedRules.length} rule(s) match nothing</h2>
+			<p>
+				These rules cover no region the catalog has synced. Usually that is a typo in the prefix;
+				occasionally it is turf VAN has not cut yet.
+			</p>
+			<ul class="region-list">
+				{#each data.unusedRules as rule (rule.prefix)}
+					<li><code>{rule.prefix}</code> <span class="muted">→ {rule.label}</span></li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
+	{#each data.groups as group (group.spreadsheetId)}
+		<section class="sheet">
+			<h2>{group.label}</h2>
+			<p class="sheet-meta">
+				{group.turfs} turf(s) in {group.regions.length} region(s) · matched by
+				{#each group.prefixes as prefix, i (prefix)}<code>{prefix}</code
+					>{#if i < group.prefixes.length - 1},
+					{/if}{/each}
+			</p>
+			<button
+				class="disclosure"
+				type="button"
+				aria-expanded={open[group.spreadsheetId] ?? false}
+				onclick={() => (open[group.spreadsheetId] = !(open[group.spreadsheetId] ?? false))}
+			>
+				{open[group.spreadsheetId] ? 'Hide' : 'Show'} regions
+			</button>
+			{#if open[group.spreadsheetId]}
 				<ul class="region-list">
-					{#each data.unrouted as region (region.regionName)}
+					{#each group.regions as region (region.regionName)}
 						<li>
-							<code>{region.regionName}</code> <span class="muted">{region.turfs} turf(s)</span>
+							<code>{region.regionName}</code>
+							<span class="muted">{region.turfs} turf(s)</span>
 						</li>
 					{/each}
 				</ul>
-			</section>
-		{/if}
-
-		{#if data.unusedRules.length > 0}
-			<section class="problem">
-				<h2>{data.unusedRules.length} rule(s) match nothing</h2>
-				<p>
-					These rules cover no region the catalog has synced. Usually that is a typo in the prefix;
-					occasionally it is turf VAN has not cut yet.
-				</p>
-				<ul class="region-list">
-					{#each data.unusedRules as rule (rule.prefix)}
-						<li><code>{rule.prefix}</code> <span class="muted">→ {rule.label}</span></li>
-					{/each}
-				</ul>
-			</section>
-		{/if}
-
-		{#each data.groups as group (group.spreadsheetId)}
-			<section class="sheet">
-				<h2>{group.label}</h2>
-				<p class="sheet-meta">
-					{group.turfs} turf(s) in {group.regions.length} region(s) · matched by
-					{#each group.prefixes as prefix, i (prefix)}<code>{prefix}</code
-						>{#if i < group.prefixes.length - 1},
-						{/if}{/each}
-				</p>
-				<button
-					class="disclosure"
-					type="button"
-					aria-expanded={open[group.spreadsheetId] ?? false}
-					onclick={() => (open[group.spreadsheetId] = !(open[group.spreadsheetId] ?? false))}
-				>
-					{open[group.spreadsheetId] ? 'Hide' : 'Show'} regions
-				</button>
-				{#if open[group.spreadsheetId]}
-					<ul class="region-list">
-						{#each group.regions as region (region.regionName)}
-							<li>
-								<code>{region.regionName}</code>
-								<span class="muted">{region.turfs} turf(s)</span>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</section>
-		{/each}
-	{/if}
+			{/if}
+		</section>
+	{/each}
 
 	<p class="note">
 		A region's name is the only geography VAN gives us, so this is what routing can see — never a

@@ -1121,6 +1121,12 @@ export async function loadVanSheetTargets(db: Database): Promise<SheetTarget[]> 
  * constraint and the matcher cannot disagree about what "the same rule" means:
  * `R10C_Wayne` and `r10c.wayne` are one rule, and the second save edits the
  * first rather than quietly shadowing it.
+ *
+ * `label` is the spreadsheet's name as Google reports it, resolved by the route
+ * — it is never typed. Because several rules may point at one spreadsheet, the
+ * label is written to every rule sharing that id, not just this one: two rules
+ * naming the same sheet differently would make a Slack alert about that sheet
+ * depend on which rule happened to match first.
  */
 export async function saveVanSheetTarget(
 	db: Database,
@@ -1152,6 +1158,14 @@ export async function saveVanSheetTarget(
 				lastEditedAt: row.lastEditedAt,
 			},
 		});
+	// Keep every rule for this spreadsheet naming it the same way. Also what
+	// backfills a label that fell back to the bare id because Google was
+	// unreachable the first time: re-saving any rule for that sheet fixes them
+	// all at once.
+	await db
+		.update(vanSheetTargets)
+		.set({ label: row.label })
+		.where(eq(vanSheetTargets.spreadsheetId, row.spreadsheetId));
 	// The spreadsheet id is not a secret, but it is the whole address of a
 	// campaign document — logged so a mis-routed row can be traced to the edit
 	// that caused it.

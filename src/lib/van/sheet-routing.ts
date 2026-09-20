@@ -7,22 +7,24 @@
 // centroid_lat is null until an export job has run for that route.
 //
 // Neither half of a region name is enough on its own, which is why this is a
-// rule list rather than a lookup on a parsed field:
+// rule list rather than a lookup on a parsed field. Verified against the live
+// key on 2026-09-20 (273 regions across 19 folders, `npm run van:regions`):
 //
-//   R01A spans two counties, Alger and Houghton, and each has its own sheet —
-//   so the region code alone routes both to the wrong place half the time.
+//   A code can span several counties. R01A covers Alger, Dickinson, Houghton,
+//   Marquette and Menominee, and the campaign keeps a sheet per county up
+//   there — so the code alone routes four of the five to the wrong place.
 //
-//   R10C has two sheets, Downriver and Western Wayne, both inside Wayne county
-//   and separated only by which cities they cover — so the county alone cannot
-//   tell them apart either, and "Downriver" never appears in a VAN name.
+//   A county can span several codes. Wayne alone appears under R09A, R10A,
+//   R10B, R10C, R10E, R10F, R10G and R10H, which are different sheets — so the
+//   county alone is no better.
 //
-// So an admin writes prefixes and the LONGEST match wins:
+// So an admin writes prefixes and the LONGEST match wins, which lets one rule
+// cover a whole code and a longer one carve an exception out of it:
 //
-//   R01A_Alger           → R01A_Alger CR
-//   R01A_Houghton        → R01A_Houghton CR
-//   R10C_Wayne_Taylor    → R10C_Downriver CR
-//   R10C_Wayne_Wyandotte → R10C_Downriver CR
-//   R10C                 → R10C_WesternWayne CR      ← catch-all for the rest
+//   R01A_Alger      → R01A_Alger CR
+//   R01A_Houghton   → R01A_Houghton CR
+//   R01A_Marquette  → R01A_Marquette CR
+//   R10C            → R10C_Downriver CR     ← whole code, one sheet
 //
 // A name that matches nothing returns null. It is NOT guessed at: routing a
 // checkout into the wrong campaign's spreadsheet looks exactly like routing it

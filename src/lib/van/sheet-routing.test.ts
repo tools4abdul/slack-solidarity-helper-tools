@@ -15,15 +15,20 @@ function target(prefix: string, label: string, spreadsheetId = `id-${label}`): S
 	return { prefix, prefixKey: normaliseSheetKey(prefix), label, spreadsheetId };
 }
 
-/** The campaign's real configuration, in miniature. */
+/** The campaign's real configuration, in miniature. Every region name in this
+ *  file is one the live key returned on 2026-09-20 (`npm run van:regions`). */
 const TARGETS = orderSheetTargets([
+	// R01A spans five counties with a sheet each, which is what a code-only
+	// rule cannot express.
 	target('R01A_Alger', 'R01A_Alger CR'),
 	target('R01A_Houghton', 'R01A_Houghton CR'),
+	target('R01A_Marquette', 'R01A_Marquette CR'),
+	// Wayne spans many codes, which is what a county-only rule cannot express.
 	target('R09A', 'R09A_Detroit CR'),
 	target('R10A', 'R10A_Dearborn CR'),
-	target('R10C_Wayne_Taylor', 'R10C_Downriver CR'),
-	target('R10C_Wayne_Wyandotte', 'R10C_Downriver CR'),
-	target('R10C', 'R10C_WesternWayne CR'),
+	target('R10C', 'R10C_Downriver CR'),
+	// A longer rule carving one city out of a code that otherwise has one sheet.
+	target('R10C_Wayne_Woodhaven', 'R10C_Woodhaven CR'),
 ]);
 
 describe('normaliseSheetKey', () => {
@@ -53,38 +58,52 @@ describe('matchSheetTarget', () => {
 		);
 	});
 
-	// The first collision: one region code, two counties, a sheet each. A rule
-	// list keyed on the code alone would send both to whichever was entered
-	// first.
-	it('separates two counties that share a region code', () => {
+	// The first collision: one region code, five counties, a sheet each. A rule
+	// list keyed on the code alone would send all of them to whichever was
+	// entered first.
+	it('separates counties that share a region code', () => {
 		expect(matchSheetTarget('R01A_Alger_MunisingTwp001_9.11', TARGETS)?.label).toBe(
 			'R01A_Alger CR',
 		);
-		expect(matchSheetTarget('R01A_Houghton_HancockCity002_9.11', TARGETS)?.label).toBe(
+		expect(matchSheetTarget('R01A_Houghton_HoughtonCity002_9.11', TARGETS)?.label).toBe(
 			'R01A_Houghton CR',
 		);
-	});
-
-	// The second collision: one code AND one county, two sheets, separated only
-	// by which cities each covers. This is what longest-match buys.
-	it('prefers a city rule over the catch-all for the same code', () => {
-		expect(matchSheetTarget('R10C_Wayne_TaylorCity004_9.11', TARGETS)?.label).toBe(
-			'R10C_Downriver CR',
-		);
-		expect(matchSheetTarget('R10C_Wayne_WyandotteCity002_9.11', TARGETS)?.label).toBe(
-			'R10C_Downriver CR',
+		expect(matchSheetTarget('R01A_Marquette_IshpemingCity001_9.19', TARGETS)?.label).toBe(
+			'R01A_Marquette CR',
 		);
 	});
 
-	it('falls back to the catch-all for a city with no rule of its own', () => {
-		expect(matchSheetTarget('R10C_Wayne_LivoniaCity007_9.11', TARGETS)?.label).toBe(
-			'R10C_WesternWayne CR',
+	// The mirror of it: one county, many codes, different sheets. Routing on a
+	// parsed county would collapse all of these into one.
+	it('separates region codes that share a county', () => {
+		expect(matchSheetTarget('R09A_Wayne_DetroitCityWd06Pct151_8_7', TARGETS)?.label).toBe(
+			'R09A_Detroit CR',
+		);
+		expect(matchSheetTarget('R10A_Wayne_DearbornCity022_9.11', TARGETS)?.label).toBe(
+			'R10A_Dearborn CR',
+		);
+		expect(matchSheetTarget('R10C_Wayne_TaylorCity004_9.18', TARGETS)?.label).toBe(
+			'R10C_Downriver CR',
+		);
+	});
+
+	// What longest-match buys: a city rule carves an exception out of the code
+	// that otherwise owns it, without the code's own rule having to change.
+	it('prefers a longer city rule over the rule for its code', () => {
+		expect(matchSheetTarget('R10C_Wayne_WoodhavenCity003_9.11', TARGETS)?.label).toBe(
+			'R10C_Woodhaven CR',
+		);
+	});
+
+	it('falls back to the code rule for a city with no rule of its own', () => {
+		expect(matchSheetTarget('R10C_Wayne_TaylorCity005_9.11', TARGETS)?.label).toBe(
+			'R10C_Downriver CR',
 		);
 	});
 
 	it('matches a dot-separated name against an underscore-separated rule', () => {
-		expect(matchSheetTarget('R10C.Wayne.TaylorCity004.9.11', TARGETS)?.label).toBe(
-			'R10C_Downriver CR',
+		expect(matchSheetTarget('R10C.Wayne.WoodhavenCity003.9.11', TARGETS)?.label).toBe(
+			'R10C_Woodhaven CR',
 		);
 	});
 
@@ -113,13 +132,13 @@ describe('orderSheetTargets', () => {
 	it('puts the longest key first, which is what makes matching deterministic', () => {
 		const ordered = orderSheetTargets([
 			target('R10C', 'catch-all'),
-			target('R10C_Wayne_Taylor', 'city'),
+			target('R10C_Wayne_Woodhaven', 'city'),
 		]);
 		expect(ordered[0]?.label).toBe('city');
 	});
 
 	it('does not mutate the list it was given', () => {
-		const input = [target('R10C', 'catch-all'), target('R10C_Wayne_Taylor', 'city')];
+		const input = [target('R10C', 'catch-all'), target('R10C_Wayne_Woodhaven', 'city')];
 		orderSheetTargets(input);
 		expect(input[0]?.label).toBe('catch-all');
 	});
@@ -127,10 +146,10 @@ describe('orderSheetTargets', () => {
 	// The failure this ordering prevents, stated as a test so the requirement
 	// survives a refactor of matchSheetTarget.
 	it('an UNORDERED list routes to the shorter rule — why callers must not skip it', () => {
-		const unordered = [target('R10C', 'catch-all'), target('R10C_Wayne_Taylor', 'city')];
-		expect(matchSheetTarget('R10C_Wayne_TaylorCity004', unordered)?.label).toBe('catch-all');
-		expect(matchSheetTarget('R10C_Wayne_TaylorCity004', orderSheetTargets(unordered))?.label).toBe(
-			'city',
-		);
+		const unordered = [target('R10C', 'catch-all'), target('R10C_Wayne_Woodhaven', 'city')];
+		expect(matchSheetTarget('R10C_Wayne_WoodhavenCity003', unordered)?.label).toBe('catch-all');
+		expect(
+			matchSheetTarget('R10C_Wayne_WoodhavenCity003', orderSheetTargets(unordered))?.label,
+		).toBe('city');
 	});
 });
