@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GET } from './+server.js';
+import { TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 
 const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockSettings = vi.hoisted(() => vi.fn());
@@ -121,7 +122,7 @@ describe('GET /api/turfs', () => {
 
 		it('caps the demo payload like the real endpoint', async () => {
 			const body = await (await GET(event(ADMIN, BIG))).json();
-			expect(body.turfs.length).toBeLessThanOrEqual(150);
+			expect(body.turfs.length).toBeLessThanOrEqual(TURFS_PER_PAYLOAD);
 			expect(body.total).toBe(1000);
 		});
 
@@ -204,7 +205,7 @@ describe('GET /api/turfs', () => {
 		});
 
 		it('still stops a bbox walk once the request budget runs out', async () => {
-			// The 150-row cap is a payload budget, not an access control: without
+			// The payload cap is a budget, not an access control: without
 			// this, walking the grid pulls a whole chapter a screen at a time.
 			vi.spyOn(console, 'warn').mockImplementation(() => {});
 			const walker = { ...VOLUNTEER, slackUserId: 'U_WALKER' };
@@ -219,13 +220,14 @@ describe('GET /api/turfs', () => {
 	});
 
 	it('caps the response and reports the chapter total', async () => {
+		const total = TURFS_PER_PAYLOAD + 50;
 		stubQueries(
-			Array.from({ length: 200 }, (_, i) =>
-				turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(3, '0')}` }),
+			Array.from({ length: total }, (_, i) =>
+				turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
 			),
 		);
 		const body = await (await GET(event(VOLUNTEER, INSIDE))).json();
-		expect(body.turfs).toHaveLength(150);
-		expect(body.total).toBe(200);
+		expect(body.turfs).toHaveLength(TURFS_PER_PAYLOAD);
+		expect(body.total).toBe(total);
 	});
 });

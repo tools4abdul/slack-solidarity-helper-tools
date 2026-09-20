@@ -9,20 +9,34 @@
 //
 // Pure, so the cap and the ordering can be tested without a DB or a browser,
 // and shared by the page load and /api/turfs so the two cannot disagree about
-// what "the nearest 150" means.
+// what "the nearest N" means.
 
 import { haversineMeters, type BoundingBox, type LatLng } from './geometry.js';
 
 /**
  * Rows per payload.
  *
- * Chosen against the 6.2b measurement rather than by feel: ~800 bytes a row,
- * so 150 rows is ~120 KB — heavy but survivable on cell data, and roughly what
- * fits on screen at a neighbourhood zoom plus room to pan before the next
- * fetch. The number is a budget, not a limit on how much turf exists; a
- * chapter with more sends `omitted` and the client pages by viewport.
+ * A budget, not a limit on how much turf exists: a chapter with more sends
+ * `omitted` and the client pages by viewport as the volunteer drags the map.
+ *
+ * Raised from 150 once real turf existed to measure, against 2,191 synced
+ * turfs and 400 real hulls rather than 6.2b's estimate:
+ *
+ *   - **The wire cost is small.** A row is ~611 bytes (a hull averages 10
+ *     vertices, ~325 bytes), so 500 rows is ~300 KB of JSON — but this JSON
+ *     compresses about 7x and production serves `content-encoding: zstd`, so
+ *     ~40 KB actually crosses the network. 6.2b's ~800 KB was raw bytes.
+ *   - **Holding more costs the map almost nothing.** TurfMap culls per frame
+ *     with two projections a turf, draws anything under PIN_BELOW_PX as a pin,
+ *     and only puts on-screen items in the DOM. Measured with 1,000 turfs
+ *     loaded at a neighbourhood zoom: 20 on screen, 0.11 ms a frame on a
+ *     laptop — call it 0.5 ms on a mid-range phone, against 16.7 ms at 60 fps.
+ *
+ * 500 covers every chapter this campaign has cut (the largest is ~300) without
+ * paging, while staying well inside both budgets. The ceiling that matters is
+ * the first parse, not the panning.
  */
-export const TURFS_PER_PAYLOAD = 150;
+export const TURFS_PER_PAYLOAD = 500;
 
 /**
  * What every selector needs to place a turf.

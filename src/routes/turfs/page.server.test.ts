@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { load } from './+page.server.js';
+import { TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
 
 const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockSettings = vi.hoisted(() => vi.fn());
@@ -213,14 +214,17 @@ describe('/turfs load', () => {
 
 	describe('payload budget', () => {
 		it('caps the payload and reports the chapter total', async () => {
+			// Sized off the constant, so raising the budget does not turn this
+			// into a test of a number nobody chose.
+			const total = TURFS_PER_PAYLOAD + 50;
 			stubQueries(
-				Array.from({ length: 400 }, (_, i) =>
-					turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(3, '0')}` }),
+				Array.from({ length: total }, (_, i) =>
+					turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
 				),
 			);
 			const result = await run(event(VOLUNTEER, 'chapter=71'));
-			expect(result.turfs).toHaveLength(150);
-			expect(result.total).toBe(400);
+			expect(result.turfs).toHaveLength(TURFS_PER_PAYLOAD);
+			expect(result.total).toBe(total);
 		});
 
 		// A total, not a remainder: "showing N of T" cannot drift as the
@@ -259,7 +263,7 @@ describe('/turfs load', () => {
 		it('throttles repeated loads of ONE chapter, which the chapter limiter lets through', async () => {
 			// Re-opening a chapter already seen is free by design, so the chapter
 			// limiter never fires here. Without the request budget on this load,
-			// `?chapter=N&zip=XXXXX` in a loop walks a whole chapter 150 turfs at
+			// `?chapter=N&zip=XXXXX` in a loop walks a whole chapter a payload at
 			// a time for nothing — the API route has always charged for it.
 			const { MAX_REQUESTS } = await import('$lib/van/request-budget.js');
 			mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
