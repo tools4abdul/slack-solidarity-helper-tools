@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { and, eq, isNull, inArray } from 'drizzle-orm';
+import { and, isNull, inArray } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
