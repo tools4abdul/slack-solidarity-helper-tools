@@ -49,6 +49,58 @@ describe('selectNearest', () => {
 		expect(omitted).toBe(250);
 	});
 
+	describe('alwaysInclude', () => {
+		const many = (n: number) =>
+			Array.from({ length: n }, (_, i) => turf(i, `Turf ${String(i).padStart(3, '0')}`, 42, -83));
+
+		it('keeps a pinned row that the cap would have dropped', () => {
+			const rows = [...many(200), turf(999, 'Zzz last by name', 42, -83)];
+			const { selected } = selectNearest(rows, { limit: 150, alwaysInclude: [999] });
+			expect(selected[0]!.mapRouteId).toBe(999);
+			expect(selected).toHaveLength(150);
+		});
+
+		it('does not hand the same row back twice', () => {
+			// The pinned row also sorts into the page on its own merits.
+			const rows = many(5);
+			const { selected } = selectNearest(rows, { limit: 5, alwaysInclude: [2] });
+			expect(selected.filter((t) => t.mapRouteId === 2)).toHaveLength(1);
+			expect(selected).toHaveLength(5);
+		});
+
+		it('does not count a shown row as omitted', () => {
+			const rows = [...many(200), turf(999, 'Zzz last by name', 42, -83)];
+			const { omitted } = selectNearest(rows, { limit: 150, alwaysInclude: [999] });
+			// 200 unpinned rows, 149 of them served.
+			expect(omitted).toBe(51);
+		});
+
+		// Repeating it under every "More" press would hand the volunteer the
+		// same turf on page after page.
+		it('pins only on the first page, so Slack paging does not repeat it', () => {
+			const rows = many(300);
+			const page2 = selectNearest(rows, { limit: 150, offset: 150, alwaysInclude: [0] });
+			expect(page2.selected.some((t) => t.mapRouteId === 0)).toBe(false);
+			expect(page2.selected).toHaveLength(150);
+		});
+
+		it('ignores ids that are not in the rows at all', () => {
+			const rows = many(3);
+			const { selected } = selectNearest(rows, { alwaysInclude: [12_345] });
+			expect(selected).toHaveLength(3);
+		});
+
+		it('changes nothing when no ids are pinned', () => {
+			const rows = many(200);
+			const plain = selectNearest(rows, { limit: 150 });
+			const empty = selectNearest(rows, { limit: 150, alwaysInclude: [] });
+			expect(empty.selected.map((t) => t.mapRouteId)).toEqual(
+				plain.selected.map((t) => t.mapRouteId),
+			);
+			expect(empty.omitted).toBe(plain.omitted);
+		});
+	});
+
 	it('reports nothing omitted when the chapter fits', () => {
 		const rows = [turf(1, 'Only', 42, -83)];
 		expect(selectNearest(rows).omitted).toBe(0);

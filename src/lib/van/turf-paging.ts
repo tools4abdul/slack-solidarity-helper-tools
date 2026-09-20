@@ -32,11 +32,11 @@ import { haversineMeters, type BoundingBox, type LatLng } from './geometry.js';
  *     loaded at a neighbourhood zoom: 20 on screen, 0.11 ms a frame on a
  *     laptop — call it 0.5 ms on a mid-range phone, against 16.7 ms at 60 fps.
  *
- * 500 covers every chapter this campaign has cut (the largest is ~300) without
+ * 600 covers every chapter this campaign has cut (the largest is ~600) without
  * paging, while staying well inside both budgets. The ceiling that matters is
  * the first parse, not the panning.
  */
-export const TURFS_PER_PAYLOAD = 500;
+export const TURFS_PER_PAYLOAD = 600;
 
 /**
  * What every selector needs to place a turf.
@@ -88,6 +88,13 @@ function pointOf(row: Locatable): LatLng | null {
  * mapped and its distance is unknowable, but it is real, claimable turf, and
  * on a key without export-job access it is *all* the turf there is.
  *
+ * `alwaysInclude` pins rows the viewer must see whatever the budget says —
+ * their own checked-out turf. Without it a volunteer who claimed turf across
+ * the county, or whose chapter has more turf than a payload holds, opens the
+ * page and finds no card and no list number: the turf is real, still theirs,
+ * and simply sorted past the cut. Pinned rows ride at the front, are never cut
+ * by the limit, and are not counted as `omitted` — they are being shown.
+ *
  * `offset` walks further down that same ordering, for the Slack command's
  * paging. It lives here rather than in the caller because this function is the
  * one place that decides what "the nearest N" means: the map pages by viewport
@@ -98,7 +105,12 @@ function pointOf(row: Locatable): LatLng | null {
  */
 export function selectNearest<T extends Locatable>(
 	rows: readonly T[],
-	options: { location?: LatLng | null; limit?: number; offset?: number } = {},
+	options: {
+		location?: LatLng | null;
+		limit?: number;
+		offset?: number;
+		alwaysInclude?: Iterable<number>;
+	} = {},
 ): Selection<T> {
 	const { location = null, limit = TURFS_PER_PAYLOAD } = options;
 	// Negative, fractional and NaN offsets all reach this from a Slack button
@@ -126,9 +138,23 @@ export function selectNearest<T extends Locatable>(
 		ordered.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
+	// Pinned only on the FIRST page. Repeating them on every page of the Slack
+	// list would hand the same turf back under each "More" press, and the page
+	// the volunteer is on by then is a list they are browsing, not the answer to
+	// "where is my turf".
+	const pinnedIds = new Set(options.alwaysInclude ?? []);
+	const pinned =
+		offset === 0 && pinnedIds.size > 0
+			? ordered.filter((row) => pinnedIds.has(row.mapRouteId))
+			: [];
+	const rest =
+		pinned.length > 0 ? ordered.filter((row) => !pinnedIds.has(row.mapRouteId)) : ordered;
+	// Pinned rows spend the budget too, so a payload never exceeds the cap.
+	const room = Math.max(0, limit - pinned.length);
+
 	return {
-		selected: ordered.slice(offset, offset + limit),
-		omitted: Math.max(0, ordered.length - (offset + limit)),
+		selected: [...pinned, ...rest.slice(offset, offset + room)],
+		omitted: Math.max(0, rest.length - (offset + room)),
 	};
 }
 

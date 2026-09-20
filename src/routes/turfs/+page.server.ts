@@ -259,7 +259,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	// Cut rows BEFORE building views: a turf left out of the payload should
 	// never be serialised at all, not serialised and then filtered.
-	const { selected } = selectNearest(rows, { location, limit: TURFS_PER_PAYLOAD });
+	//
+	// The viewer's own turf is pinned rather than left to the distance sort: it
+	// carries their MiniVAN list number, and a volunteer who claimed turf on the
+	// far side of the chapter would otherwise open the page to no card at all.
+	const { selected } = selectNearest(rows, {
+		location,
+		limit: TURFS_PER_PAYLOAD,
+		alwaysInclude: myRouteIds,
+	});
 
 	// Claims are fetched for exactly the turf being served. Scoping by
 	// mapRouteId rather than pulling the whole ledger keeps a chapter's page

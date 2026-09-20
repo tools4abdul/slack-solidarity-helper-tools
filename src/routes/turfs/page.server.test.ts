@@ -227,6 +227,41 @@ describe('/turfs load', () => {
 			expect(result.total).toBe(total);
 		});
 
+		// The bug this closes: a volunteer claims turf, the page reloads, and the
+		// turf they are holding sorts past the cut — so the card carrying their
+		// MiniVAN list number is simply absent, and stays absent until they pan
+		// the map back over it.
+		it('keeps the viewer’s own turf in the payload however far down it sorts', async () => {
+			const mine = 99_999;
+			const rows = [
+				...Array.from({ length: TURFS_PER_PAYLOAD + 50 }, (_, i) =>
+					turfRow({ mapRouteId: i, name: `Turf ${String(i).padStart(4, '0')}` }),
+				),
+				// Last by name, so the cap would drop it.
+				turfRow({ mapRouteId: mine, name: 'Zzz far-away turf' }),
+			];
+			stubQueries(rows, [
+				{
+					mapRouteId: mine,
+					slackUserId: 'U_VOL',
+					slackUserName: 'Dana',
+					claimedAt: '2026-08-22T09:00:00.000Z',
+					expiresAt: '2099-01-01T00:00:00.000Z',
+					releasedAt: null,
+					completedAt: null,
+				},
+			]);
+
+			const result = await run(event(VOLUNTEER, 'chapter=71'));
+			const held = result.turfs.find(
+				(t: { mapRouteId: number; status: string }) => t.mapRouteId === mine,
+			);
+			expect(held?.status).toBe('held-by-you');
+			// It is pinned to the front, and the payload still respects the cap.
+			expect(result.turfs[0]!.mapRouteId).toBe(mine);
+			expect(result.turfs).toHaveLength(TURFS_PER_PAYLOAD);
+		});
+
 		// A total, not a remainder: "showing N of T" cannot drift as the
 		// volunteer pans, whereas "M more" describes whichever viewport
 		// answered last.
