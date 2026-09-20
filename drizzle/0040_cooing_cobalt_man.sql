@@ -1,0 +1,1 @@
+ALTER TABLE `app_config` ADD `van_region_refresh_enabled` integer;

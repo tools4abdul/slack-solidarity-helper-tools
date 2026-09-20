@@ -162,6 +162,9 @@ export interface Settings {
 	vanTurfClaimTtlHours: number;
 	/** Turfs one volunteer may hold at once. */
 	vanTurfMaxConcurrentClaims: number;
+	/** Whether the sync may ask VAN to re-cut map regions. Off unless an admin
+	 *  turns it on — see the note on app_config.vanRegionRefreshEnabled. */
+	vanRegionRefreshEnabled: boolean;
 }
 
 export interface Editor {
@@ -192,6 +195,7 @@ export type AppConfigPatch = Partial<{
 	doorTickerColumnsPerSecond: number;
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
+	vanRegionRefreshEnabled: boolean;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.
 	 *  Validated by themeTokensField before it ever reaches here. */
@@ -338,6 +342,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		doorTickerColumnsPerSecond,
 		vanTurfClaimTtlHours: claimOptions.ttlHours,
 		vanTurfMaxConcurrentClaims: claimOptions.maxConcurrentClaims,
+		// Strictly true: NULL, and anything a hand edit left behind, is off.
+		vanRegionRefreshEnabled: cfg?.vanRegionRefreshEnabled === true,
 	};
 }
 
@@ -787,6 +793,7 @@ const APP_CONFIG_ALLOWED_KEYS = new Set<keyof AppConfigPatch>([
 	'doorTickerColumnsPerSecond',
 	'vanTurfClaimTtlHours',
 	'vanTurfMaxConcurrentClaims',
+	'vanRegionRefreshEnabled',
 	'themeTokens',
 ]);
 
@@ -803,7 +810,7 @@ export async function saveAppConfig(
 
 	// null and undefined both mean "leave as-is" — strip both before composing
 	// the values payload and the on-conflict set clause.
-	const definedFields: Record<string, string | number> = {};
+	const definedFields: Record<string, string | number | boolean> = {};
 	for (const key of APP_CONFIG_ALLOWED_KEYS) {
 		const v = patch[key];
 		if (v !== undefined && v !== null) {
@@ -819,7 +826,7 @@ export async function saveAppConfig(
 		lastEditedByName: editor.name,
 		lastEditedAt,
 	};
-	const set: Record<string, string | number> = {
+	const set: Record<string, string | number | boolean> = {
 		...definedFields,
 		lastEditedBy: editor.id,
 		lastEditedByName: editor.name,

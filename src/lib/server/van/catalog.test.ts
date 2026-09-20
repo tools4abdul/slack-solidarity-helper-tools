@@ -124,6 +124,56 @@ describe('planCatalogSync', () => {
 			expect(plan.upserts[0]!.printedListNumber).toBe('11111111-22222');
 		});
 
+		it('records when the issued list was generated, from either source', () => {
+			const list = (number: string, dateCreated: string) => ({
+				number,
+				name: 'City of Cambridge Turf 01',
+				listSize: 400,
+				folders: [{ folderId: 1152, name: 'Middlesex Turf' }],
+				dateCreated,
+				createdBy: null,
+			});
+			// Route-level date wins when the route carries one.
+			const fromRoute = planCatalogSync({
+				...base,
+				folders: [
+					folder([
+						region([
+							route({
+								printedList: { number: '35536745-88712', dateCreated: '2026-08-01T10:00:00Z' },
+							}),
+						]),
+					]),
+				],
+			});
+			expect(fromRoute.upserts[0]!.printedListCreatedAt).toBe('2026-08-01T10:00:00Z');
+
+			// Otherwise it comes from /printedLists, by the number being issued.
+			const fromList = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				printedLists: [list('35536745-88712', '2026-08-02T10:00:00Z')],
+			});
+			expect(fromList.upserts[0]!.printedListCreatedAt).toBe('2026-08-02T10:00:00Z');
+
+			// No number, no date — even when a list with another number has one.
+			const none = planCatalogSync({
+				...base,
+				folders: [folder([region([route({ printedList: null })])])],
+			});
+			expect(none.upserts[0]!.printedListCreatedAt).toBeNull();
+		});
+
+		it('never touches the expiry-warning stamp, so a sync cannot re-arm a warning', () => {
+			const plan = planCatalogSync({
+				...base,
+				existing: [existingRow({ listExpiryWarnedFor: '2026-08-01T10:00:00Z' })],
+				folders: [folder([region([route()])])],
+			});
+			// Absent from the row, so the upsert's SET leaves the column alone.
+			expect('listExpiryWarnedFor' in plan.upserts[0]!).toBe(false);
+		});
+
 		it('trusts the route and warns when the two disagree', () => {
 			const plan = planCatalogSync({
 				...base,

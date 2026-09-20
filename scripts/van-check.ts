@@ -149,7 +149,43 @@ async function checkMode(mode: VanDatabaseMode, verbose: boolean): Promise<ModeS
 	console.log(`\n${'═'.repeat(64)}\nmode ${mode} — ${MODE_NAMES[mode]}\n${'═'.repeat(64)}`);
 	const client = createVanClient({ appName, apiKey, databaseMode: mode });
 
-	console.log('Tier 1');
+	console.log('Key profile');
+	// Which committee the key belongs to — the only place VAN says so. Folders,
+	// lists and turf never carry a committee, so this is how to tell whether a
+	// folder someone names is missing because it isn't shared or because it
+	// lives in a different committee altogether.
+	await probe('GET /apiKeyProfiles', async () => {
+		type Profile = Record<string, unknown>;
+		const body = await client.get<Profile[] | { items?: Profile[] } | Profile>('/apiKeyProfiles');
+		// VAN's docs show a bare array; the live API has answered with something
+		// else, so accept a page envelope or a single object as well.
+		const profiles: Profile[] = Array.isArray(body)
+			? body
+			: Array.isArray((body as { items?: Profile[] })?.items)
+				? (body as { items: Profile[] }).items
+				: body
+					? [body as Profile]
+					: [];
+		for (const p of profiles) {
+			for (const field of [
+				'committeeId',
+				'committeeName',
+				'databaseName',
+				'keyType',
+				'userFirstName',
+				'userLastName',
+				'username',
+				'apiKeyTypeName',
+			]) {
+				if (p[field] != null && p[field] !== '') {
+					console.log(`         ${field.padEnd(15)} ${String(p[field])}`);
+				}
+			}
+		}
+		return profiles;
+	});
+
+	console.log('\nTier 1');
 	const folders = await probe('GET /folders', () => client.folders());
 	if (folders) {
 		if (folders.length === 0) {

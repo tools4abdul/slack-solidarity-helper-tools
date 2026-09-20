@@ -12,6 +12,7 @@ import { exportCallbackUrl } from '$lib/server/van/webhook-token.js';
 import { sweepExpiredClaims } from '$lib/server/van/checkout-store.js';
 import { sendExpiryWarnings } from '$lib/server/van/expiry-warning-store.js';
 import { sendDriftAlerts } from '$lib/server/van/drift-alert-store.js';
+import { sendListExpiryAlerts } from '$lib/server/van/list-expiry-alert-store.js';
 import { runRefreshSweep, settleRefreshes } from '$lib/server/van/refresh.js';
 import { reconcileClaims } from '$lib/server/van/reconcile-store.js';
 import { stampDoorDeltas } from '$lib/server/van/door-delta-store.js';
@@ -183,7 +184,11 @@ export const POST: RequestHandler = async ({ url }) => {
 		// than one mid-repair.
 		// One read for both: the reconciliation needs the claim TTL and the drift
 		// alert needs the channel, and they run back to back.
-		const { vanTurfClaimTtlHours, slackTurfChannelId: turfChannelId } = await loadSettings(db);
+		const {
+			vanTurfClaimTtlHours,
+			slackTurfChannelId: turfChannelId,
+			vanRegionRefreshEnabled,
+		} = await loadSettings(db);
 		const reconciled = await reconcileClaims(db, {
 			now,
 			appUrl: APP_URL,
@@ -217,13 +222,31 @@ export const POST: RequestHandler = async ({ url }) => {
 			appUrl: APP_URL,
 		});
 
+		// MiniVAN list numbers that expire within five days. After the catalog,
+		// which is what records each list's creation date — and it makes no VAN
+		// call, so it runs whatever the time budget says.
+		const listExpiry = await sendListExpiryAlerts(db, {
+			now,
+			channelId: turfChannelId,
+			appUrl: APP_URL,
+		});
+
 		// Ask VAN to re-cut what is due (Story 4.2/4.4). Last of the VAN calls
 		// that matter, because its effect lands on a later tick: the POST returns
 		// straight away and the new counts arrive with a future catalog read.
-		const refresh = await runRefreshSweep(db, configured.client, {
-			now,
-			timeBudgetMs: Math.min(REFRESH_BUDGET_MS, requestDeadline - Date.now()),
-		});
+		//
+		// Only when an admin has turned it on. A re-cut replaces every route in
+		// the region, and nothing yet shows the replacements keep a printed list
+		// number — without one they are unclaimable until someone regenerates the
+		// lists in VAN by hand (see app_config.vanRegionRefreshEnabled). Completed
+		// turf still records its want while this is off; the sweep sends it once
+		// the switch is on.
+		const refresh = vanRegionRefreshEnabled
+			? await runRefreshSweep(db, configured.client, {
+					now,
+					timeBudgetMs: Math.min(REFRESH_BUDGET_MS, requestDeadline - Date.now()),
+				})
+			: null;
 
 		// Geometry runs after the catalog because the catalog is what fills the
 		// queue: a turf cut minutes ago gets its shape on this run rather than
@@ -241,7 +264,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		const notices = [
 			...result.degraded,
 			...result.warnings,
-			...refresh.warnings,
+			...(refresh?.warnings ?? []),
 			...(doorsWarning ? [doorsWarning] : []),
 			...(geometry?.warnings ?? []),
 		];
@@ -267,11 +290,12 @@ export const POST: RequestHandler = async ({ url }) => {
 			expiryWarningsSent: warnings.sent,
 			expiryWarningsFailed: warnings.failed,
 			drift,
+			listExpiry,
 			refreshesSettled,
 			reconciled,
 			doorDeltas,
 			doorsWarning,
-			refresh,
+			refresh: refresh ?? { disabled: true },
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
