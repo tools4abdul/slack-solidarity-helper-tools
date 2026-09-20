@@ -254,7 +254,7 @@ export function totalEvents(counts: ActivityCounts): number {
  * Group events into calendar days for rendering.
  *
  * The day key is supplied per event by the caller rather than derived here,
- * because "which day" is a campaign-local question (America/Detroit) and this
+ * because "which day" is a campaign-local question and this
  * module has no timezone of its own — deriving it from the ISO string would
  * silently bucket a 9pm knock into tomorrow.
  */

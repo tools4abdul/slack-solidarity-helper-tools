@@ -743,6 +743,8 @@ A volunteer whose whole TTL is shorter than six hours is warned immediately. Tha
 
 4. Trigger a sync: `curl -X POST "$APP_URL/api/internal/van-sync?key=$INTERNAL_CRON_SECRET"`.
 
+`CAMPAIGN_TIME_ZONE` sets the clock everything campaign-facing is bucketed and rendered in — the canvassing board's day buckets, the doors projection's knocking hours, the activity history's timestamps, and the overnight window the turf refresh sweep runs in. It takes an IANA name (`America/Chicago`), defaults to `America/Detroit`, and falls back to that default with a `[campaign-time]` warning if the runtime does not recognise the value. It is one clock for the whole campaign, not per chapter.
+
 Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` prints — pick the type that can export `VAddressLatitude` / `VAddressLongitude`. EveryAction issues these ids per developer, so the `101` in VAN's docs is an example and hardcoding it produces a 400. The catalog sync runs fine without it; only hull geometry is blocked.
 
 ### `GET /turfs`
