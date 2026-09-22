@@ -30,8 +30,17 @@ import {
 	TURF_CLAIM_ACTION_ID,
 	TURF_PAGE_ACTION_ID,
 	TURF_RELEASE_ACTION_ID,
+	TURF_RELEASE_MINE_ACTION_ID,
+	TURF_COMPLETE_ACTION_ID,
 } from '$lib/server/van/turf-command.js';
-import { claimFromSlack, releaseFromSlack, turfListMessage } from '$lib/server/van/turf-slack.js';
+import {
+	claimFromSlack,
+	completeFromSlack,
+	myTurfMessage,
+	releaseFromSlack,
+	releaseMineFromSlack,
+	turfListMessage,
+} from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
 // Everything Slack sends back from an interactive surface:
@@ -189,6 +198,8 @@ async function handleBlockActions(payload: SlackPayload): Promise<Response> {
 		(a) =>
 			a.action_id === TURF_CLAIM_ACTION_ID ||
 			a.action_id === TURF_RELEASE_ACTION_ID ||
+			a.action_id === TURF_RELEASE_MINE_ACTION_ID ||
+			a.action_id === TURF_COMPLETE_ACTION_ID ||
 			a.action_id === TURF_PAGE_ACTION_ID,
 	);
 	if (turfAction) return handleTurfAction(payload, turfAction);
@@ -264,12 +275,26 @@ function handleTurfAction(
 			location: decoded.location ?? null,
 		};
 
+		// Every branch needing a mapRouteId checks for one: the value came back
+		// from a client, so "the button said complete but named no turf" is a
+		// request that has to land somewhere sane rather than throw.
+		const routeId = decoded.mapRouteId;
 		const message =
-			action.action_id === TURF_CLAIM_ACTION_ID && decoded.mapRouteId !== undefined
-				? await claimFromSlack(db, { ...ctx, mapRouteId: decoded.mapRouteId })
-				: action.action_id === TURF_RELEASE_ACTION_ID && decoded.mapRouteId !== undefined
-					? await releaseFromSlack(db, { ...ctx, mapRouteId: decoded.mapRouteId })
-					: await turfListMessage(db, ctx);
+			action.action_id === TURF_CLAIM_ACTION_ID && routeId !== undefined
+				? await claimFromSlack(db, { ...ctx, mapRouteId: routeId })
+				: action.action_id === TURF_RELEASE_ACTION_ID && routeId !== undefined
+					? await releaseFromSlack(db, { ...ctx, mapRouteId: routeId })
+					: action.action_id === TURF_RELEASE_MINE_ACTION_ID && routeId !== undefined
+						? await releaseMineFromSlack(db, { ...ctx, mapRouteId: routeId })
+						: action.action_id === TURF_COMPLETE_ACTION_ID && routeId !== undefined
+							? await completeFromSlack(db, { ...ctx, mapRouteId: routeId })
+							: // A mine-list button that lost its turf id redraws the mine
+								// list, not the nearby one — landing somewhere unrelated to
+								// where the tap happened is its own small betrayal.
+								action.action_id === TURF_RELEASE_MINE_ACTION_ID ||
+								  action.action_id === TURF_COMPLETE_ACTION_ID
+								? await myTurfMessage(db, ctx)
+								: await turfListMessage(db, ctx);
 
 		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
 	})().catch((err) => {

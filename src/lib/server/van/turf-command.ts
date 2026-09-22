@@ -9,12 +9,18 @@
 // Two things this module is responsible for, both of which are the reason it is
 // one module rather than inlined into the two routes that call it:
 //
-//   1. The MiniVAN list number appears in exactly ONE builder —
-//      buildClaimedBlocks — and never in the list. It is the credential: it is
-//      what pulls the doors down in MiniVAN, so putting it on a browsable list
-//      would let anyone load any turf regardless of who holds it. toTurfView
-//      already nulls it on turf you don't hold; this file must not reintroduce
-//      it by reading a raw row.
+//   1. The MiniVAN list number appears in exactly TWO builders —
+//      buildClaimedBlocks and buildMineBlocks — and never in the browsable
+//      list. It is the credential: it is what pulls the doors down in MiniVAN,
+//      so putting it on a list of turf you do not hold would let anyone load
+//      any turf regardless of who has it. toTurfView already nulls it on turf
+//      you don't hold; this file must not reintroduce it by reading a raw row.
+//
+//      What makes those two safe is the same property in both: the reply is
+//      ephemeral (slack-response-url.ts hardcodes response_type), so it has
+//      exactly one recipient, and the rows behind it are scoped to that same
+//      person — the claim they just made, or `loadHoldingsFor(theirUserId)`. A
+//      third builder may only render it if BOTH still hold.
 //   2. Button values round-trip through Slack, which makes them untrusted
 //      input on the way back. decodeTurfAction validates rather than trusts,
 //      and the caller re-checks the chapter against settings anyway.
@@ -49,6 +55,13 @@ export const MAX_LOCATION_LENGTH = 120;
 export const TURF_CLAIM_ACTION_ID = 'van_turf_claim';
 export const TURF_RELEASE_ACTION_ID = 'van_turf_release';
 export const TURF_PAGE_ACTION_ID = 'van_turf_page';
+// The two buttons on /turfs-mine. Release gets its OWN id rather than reusing
+// TURF_RELEASE_ACTION_ID so the handler knows which list to redraw: giving turf
+// back from the nearby list should show the nearby list again, and giving it
+// back from "my turf" should show what you still hold. Same action, two places
+// to return to.
+export const TURF_RELEASE_MINE_ACTION_ID = 'van_turf_release_mine';
+export const TURF_COMPLETE_ACTION_ID = 'van_turf_complete';
 
 export type TurfArgument =
 	{ kind: 'none' } | { kind: 'zip'; zip: string } | { kind: 'address'; query: string };
@@ -368,7 +381,8 @@ export interface ClaimedInput {
 }
 
 /**
- * The one place a MiniVAN list number is rendered.
+ * One of the two places a MiniVAN list number is rendered; see the module
+ * header for the rule both obey. The other is `buildMineBlocks`.
  *
  * Only ever posted as an ephemeral to the person who claimed the turf — an
  * ephemeral has exactly one recipient by construction, which is what makes
@@ -400,14 +414,30 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 			{
 				type: 'section',
 				text: mrkdwn(
+					// Step 3 names MiniVAN rather than saying a bare "hit Sync".
+					// Read in Slack, an unqualified *Sync* invites the reader to look
+					// for a button in this message — there isn't one, and there cannot
+					// be: MiniVAN uploads canvass results to VAN itself, and the API
+					// exposes no way for this app to send them (plan.md §2 Constraint
+					// C). Someone who believes Slack synced for them has lost their
+					// morning's doors and will not find out for a week, when the
+					// unsynced nudge DM goes out. The web page's steps say the same
+					// thing in the same order; these two must not drift.
 					'*1.* Open MiniVAN on your phone\n' +
 						'*2.* Enter the list number above\n' +
-						'*3.* Knock, then hit *Sync* when you finish — that is what sends your results back',
+						'*3.* Knock the doors, then hit *Sync* in MiniVAN before you close the app\n\n' +
+						'Your answers only reach VAN when MiniVAN syncs. Skip it and the turf looks ' +
+						'unwalked, and someone else gets sent to the same doors.',
 				),
 			},
 			context(
 				`Yours for the next ${hours} hour${hours === 1 ? '' : 's'}. ` +
-					'If you do not get to it, give it back so someone else can.',
+					'If you do not get to it, give it back so someone else can.\n' +
+					// This message is gone as soon as it is scrolled past or replaced,
+					// and it is the only place the list number has ever appeared. Say
+					// how to get back to it.
+					'Lost this message? `/turfs-mine` brings back your list numbers ' +
+					'and lets you mark turf done.',
 			),
 			{
 				type: 'actions',
@@ -432,6 +462,133 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 				],
 			},
 		],
+	};
+}
+
+export interface MineTurf {
+	mapRouteId: number;
+	name: string;
+	regionName: string;
+	doorCount: number;
+	expiresAt: string;
+	chapterId: number;
+	/** Null on a claim made before the column existed. Rendered as a pointer to
+	 *  the turf page rather than as an empty code block. */
+	issuedListNumber: string | null;
+}
+
+export interface MineInput {
+	turfs: MineTurf[];
+	now: Date;
+	appUrl: string;
+}
+
+/**
+ * What you are holding, with the two things you can do about it.
+ *
+ * This exists because the claim message is the only place those actions lived,
+ * and a Slack message is gone the moment it is scrolled past or replaced. A
+ * volunteer who closed it had no way back to their own list number, and no way
+ * to mark turf done from Slack at all — that action was web-only.
+ *
+ * Renders the list number for the same reason buildClaimedBlocks does, under
+ * the same two conditions: an ephemeral reply, and rows scoped to the caller's
+ * own Slack id. See the module header.
+ */
+export function buildMineBlocks(input: MineInput): SlackMessage {
+	const { turfs, now, appUrl } = input;
+
+	if (turfs.length === 0) {
+		return {
+			text: 'You are not holding any turf right now.',
+			blocks: [
+				{
+					type: 'section',
+					text: mrkdwn(
+						'*You are not holding any turf right now.*\n' + 'Run `/turfs` to find some near you.',
+					),
+				},
+			],
+		};
+	}
+
+	const blocks: Block[] = [
+		{
+			type: 'section',
+			text: mrkdwn(`*Your turf* — ${turfs.length} checked out`),
+		},
+	];
+
+	for (const turf of turfs) {
+		const hours = hoursUntil(turf.expiresAt, now);
+		blocks.push({ type: 'divider' });
+		blocks.push({
+			type: 'section',
+			text: mrkdwn(
+				`*${escapeMrkdwn(turf.name)}*` +
+					(turf.regionName ? ` · ${escapeMrkdwn(turf.regionName)}` : '') +
+					`\n${turf.doorCount} doors · ` +
+					(hours === 0
+						? 'expires shortly'
+						: `yours for another ${hours} hour${hours === 1 ? '' : 's'}`),
+			),
+		});
+		blocks.push({
+			type: 'section',
+			text: mrkdwn(
+				turf.issuedListNumber
+					? `MiniVAN list number:\n\`\`\`${escapeMrkdwn(turf.issuedListNumber)}\`\`\``
+					: '_No list number was recorded for this claim — open the turf page for it._',
+			),
+		});
+		blocks.push({
+			type: 'actions',
+			elements: [
+				{
+					type: 'button',
+					text: { type: 'plain_text', text: 'Mark it done' },
+					action_id: TURF_COMPLETE_ACTION_ID,
+					value: encodeTurfAction({
+						mapRouteId: turf.mapRouteId,
+						chapterId: turf.chapterId,
+						offset: 0,
+					}),
+				},
+				{
+					type: 'button',
+					text: { type: 'plain_text', text: 'Give it back' },
+					action_id: TURF_RELEASE_MINE_ACTION_ID,
+					value: encodeTurfAction({
+						mapRouteId: turf.mapRouteId,
+						chapterId: turf.chapterId,
+						offset: 0,
+					}),
+				},
+				{
+					type: 'button',
+					text: { type: 'plain_text', text: 'Open the map' },
+					action_id: TURF_PAGE_ACTION_ID,
+					url: turfPageUrl(appUrl, turf.chapterId),
+				},
+			],
+		});
+	}
+
+	// The warning that prompted this command existing. "Mark it done" records
+	// that YOU walked it; it cannot move your answers off your phone, and a
+	// volunteer who taps it instead of syncing loses the morning without being
+	// told for a week (door-delta.ts sends the nudge). Last block, because it
+	// is the thing to read before tapping anything above it.
+	blocks.push(
+		context(
+			'*Sync MiniVAN first.* "Mark it done" records that you walked the turf — ' +
+				'it does not send your answers to VAN. Only MiniVAN can do that.',
+		),
+	);
+
+	return {
+		text: `You are holding ${turfs.length} turf${turfs.length === 1 ? '' : 's'}.`,
+		blocks,
 	};
 }
 

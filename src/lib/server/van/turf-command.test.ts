@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	buildChapterPickerBlocks,
 	buildClaimedBlocks,
+	buildMineBlocks,
 	buildTurfListBlocks,
 	decodeTurfAction,
 	encodeTurfAction,
@@ -12,6 +13,8 @@ import {
 	TURF_CLAIM_ACTION_ID,
 	TURF_PAGE_ACTION_ID,
 	TURF_RELEASE_ACTION_ID,
+	TURF_RELEASE_MINE_ACTION_ID,
+	TURF_COMPLETE_ACTION_ID,
 	turfPageUrl,
 	type Block,
 } from './turf-command.js';
@@ -354,6 +357,22 @@ describe('buildClaimedBlocks', () => {
 		expect(body).toContain('Sync');
 	});
 
+	// A bare "hit Sync" in a Slack message reads as an instruction to press
+	// something in that message. There is no such button and there cannot be —
+	// MiniVAN uploads to VAN itself. Someone who thinks Slack synced for them
+	// loses the doors they knocked, so the word never appears unqualified.
+	it('says where Sync is, and what happens if you skip it', () => {
+		const body = serialise(buildClaimedBlocks(input).blocks);
+		expect(body).toContain('Sync* in MiniVAN');
+		expect(body).toMatch(/only reach VAN when MiniVAN syncs/i);
+	});
+
+	it('offers no button that claims to sync', () => {
+		const actions = buildClaimedBlocks(input).blocks.filter((b) => b.type === 'actions');
+		const labels = serialise(actions).toLowerCase();
+		expect(labels).not.toContain('sync');
+	});
+
 	it('states the expiry in hours', () => {
 		expect(serialise(buildClaimedBlocks(input).blocks)).toContain('next 48 hours');
 	});
@@ -396,5 +415,92 @@ describe('buildChapterPickerBlocks', () => {
 	it('handles a workspace with no chapters configured', () => {
 		const { text } = buildChapterPickerBlocks([], APP_URL);
 		expect(text).toContain('No chapters');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// /turfs-mine
+// ---------------------------------------------------------------------------
+
+describe('buildMineBlocks', () => {
+	const turf = (over: Partial<Parameters<typeof buildMineBlocks>[0]['turfs'][number]> = {}) => ({
+		mapRouteId: 501,
+		name: 'Turf 01',
+		regionName: 'R06B_Washtenaw_AnnArbor',
+		doorCount: 120,
+		expiresAt: '2026-08-25T06:00:00.000Z',
+		chapterId: 71,
+		issuedListNumber: '35536745-88712',
+		...over,
+	});
+
+	const input = (turfs = [turf()]) => ({
+		turfs,
+		now: new Date('2026-08-23T06:00:00.000Z'),
+		appUrl: APP_URL,
+	});
+
+	it('names each turf, its doors and how long is left', () => {
+		const body = serialise(buildMineBlocks(input()).blocks);
+		expect(body).toContain('Turf 01');
+		expect(body).toContain('R06B_Washtenaw_AnnArbor');
+		expect(body).toContain('120 doors');
+		expect(body).toContain('48 hours');
+	});
+
+	// The reason the command exists: the claim message is gone once it scrolls
+	// away, and it was the only place this number had ever appeared.
+	it('shows the list number the holder was issued', () => {
+		expect(serialise(buildMineBlocks(input()).blocks)).toContain('35536745-88712');
+	});
+
+	it('says so rather than printing an empty block when no number was recorded', () => {
+		const body = serialise(buildMineBlocks(input([turf({ issuedListNumber: null })])).blocks);
+		expect(body).not.toContain('```');
+		expect(body).toMatch(/no list number/i);
+	});
+
+	// Counted as buttons, not as text: the warning block below the list also
+	// says "Mark it done", so a string match over the serialised message counts
+	// three for two turfs.
+	it('offers both actions for every turf held', () => {
+		const ids = buttons(buildMineBlocks(input([turf(), turf({ mapRouteId: 502 })])).blocks).map(
+			(b) => b.action_id,
+		);
+		expect(ids.filter((id) => id === TURF_COMPLETE_ACTION_ID)).toHaveLength(2);
+		expect(ids.filter((id) => id === TURF_RELEASE_MINE_ACTION_ID)).toHaveLength(2);
+	});
+
+	it('carries each turf to its own action', () => {
+		const blocks = buildMineBlocks(input([turf(), turf({ mapRouteId: 502 })])).blocks;
+		const actions = blocks.filter((b) => b.type === 'actions');
+		const ids = actions.map((b) =>
+			b.type === 'actions' ? decodeTurfAction(b.elements[0]?.value)?.mapRouteId : null,
+		);
+		expect(ids).toEqual([501, 502]);
+	});
+
+	// The whole point of the warning. Completing records that YOU walked it; it
+	// cannot move answers off the phone, and the volunteer most likely to tap it
+	// is the one who has not synced.
+	it('warns that marking done is not syncing', () => {
+		const body = serialise(buildMineBlocks(input()).blocks);
+		expect(body).toMatch(/does not send your answers to VAN/i);
+		expect(body).toMatch(/Sync MiniVAN first/i);
+	});
+
+	it('handles holding nothing without offering buttons', () => {
+		const message = buildMineBlocks(input([]));
+		expect(message.text).toMatch(/not holding any turf/i);
+		expect(message.blocks.some((b) => b.type === 'actions')).toBe(false);
+		expect(serialise(message.blocks)).toContain('/turfs');
+	});
+
+	it('says "expires shortly" rather than "0 hours"', () => {
+		const body = serialise(
+			buildMineBlocks(input([turf({ expiresAt: '2026-08-23T06:00:00.000Z' })])).blocks,
+		);
+		expect(body).toContain('expires shortly');
+		expect(body).not.toContain('0 hours');
 	});
 });

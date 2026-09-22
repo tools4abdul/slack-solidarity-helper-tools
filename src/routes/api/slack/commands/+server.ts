@@ -12,20 +12,22 @@ import { channelNameToId } from '$lib/server/slack-channel-names.js';
 import { loadUserToken, type TokenLookupFailure } from '$lib/server/user-tokens.js';
 import { normalizeCommandName, renderCommandList, renderInfoMessage } from '$lib/info-command.js';
 import { postToResponseUrl, respondToSlack } from '$lib/server/slack-response-url.js';
-import { turfListMessage } from '$lib/server/van/turf-slack.js';
+import { myTurfMessage, turfListMessage } from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
 // Slash commands. Four kinds:
 //
 //   /member-note          — opens the note/warning modal (see slack-modal.ts)
 //   /turfs                — nearest available turf, claimable in place
+//   /turfs-mine           — what you are holding, with its list numbers
 //                           (see van/turf-slack.ts)
 //   /list-commands        — every info command and its message, shown only to
 //                           the person who ran it
 //   anything else         — looked up in `info_commands`, the admin-defined
 //                           blurbs, and posted **as the person who typed it**
 //
-// Everything but /turfs is for admins and moderators (see slack-admin.ts);
+// Everything but /turfs and /turfs-mine is for admins and moderators (see
+// slack-admin.ts);
 // moderators exist precisely to use these commands without the web admin.
 //
 // /turfs is the ONLY command here open to everyone, and deliberately so: it
@@ -66,12 +68,53 @@ export const POST: RequestHandler = async ({ request }) => {
 		return handleTurfs({ slackUserId, channelId, commandText, responseUrl });
 	}
 
+	if (command === '/turfs-mine') {
+		return handleTurfsMine({ slackUserId, channelId, responseUrl });
+	}
+
 	if (command === '/list-commands') {
 		return handleListCommands(slackUserId, responseUrl);
 	}
 
 	return handleInfoCommand({ command, slackUserId, channelId });
 };
+
+// ---------------------------------------------------------------------------
+// /turfs-mine
+// ---------------------------------------------------------------------------
+
+/**
+ * What you are holding right now.
+ *
+ * Deferred like /turfs rather than answered inline: it is two reads plus an
+ * admin lookup, which is usually well inside Slack's three seconds and is not
+ * worth betting a timeout on when fly.toml still allows a cold boot.
+ *
+ * No argument is read. /turfs takes a ZIP or an address because it has to
+ * decide what is NEAR you; this command answers from rows that are already
+ * yours, so there is nothing for a location to change.
+ */
+function handleTurfsMine(args: {
+	slackUserId: string;
+	channelId: string | null;
+	responseUrl: string | null;
+}): Response {
+	const { slackUserId, channelId, responseUrl } = args;
+
+	void (async () => {
+		const message = await myTurfMessage(db, { slackUserId, channelId });
+		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
+	})().catch((err) => {
+		console.error(`${TURF_LOG} /turfs-mine failed for ${slackUserId}:`, errMessage(err));
+		respondToSlack(
+			responseUrl,
+			{ text: 'Could not look up your turf just now. Please try again.' },
+			{ replaceOriginal: true, logTag: TURF_LOG },
+		);
+	});
+
+	return ephemeral('Looking up your turf…');
+}
 
 // ---------------------------------------------------------------------------
 // /turfs

@@ -12,6 +12,8 @@ import {
 	tileUrl,
 	toWorld,
 	withTileApiKey,
+	scaleBarStep,
+	SCALE_STEPS,
 } from './tiles.js';
 import type { BoundingBox } from './geometry.js';
 
@@ -363,5 +365,58 @@ describe('withTileApiKey', () => {
 		expect(
 			tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, size: TILE_SIZE, key: 'k' }, template),
 		).toBe('https://basemaps.cartocdn.com/light_all/13/2482/3040@2x.png?key=a%20b%26c');
+	});
+});
+
+describe('scaleBarStep', () => {
+	// 1 px = 1 m keeps the arithmetic readable: the rung's metres are its pixels.
+	const ONE_M_PER_PX = 1;
+
+	it('picks the longest rung that fits the target width', () => {
+		expect(scaleBarStep(ONE_M_PER_PX, 900).label).toBe('0.5 mi');
+		expect(scaleBarStep(ONE_M_PER_PX, 2000).label).toBe('1 mi');
+		expect(scaleBarStep(ONE_M_PER_PX, 200).label).toBe('500 ft');
+	});
+
+	it('returns the drawn width of the rung it chose', () => {
+		const step = scaleBarStep(ONE_M_PER_PX, 2000);
+		expect(step.px).toBeCloseTo(1609.344, 3);
+	});
+
+	// The invariant that makes the bar honest: whatever rung it settles on, the
+	// line it draws is that rung's ground distance at this zoom. A width that
+	// disagreed with its own label would misread by however much it drifted.
+	it.each([1, 3, 12.5, 400])('draws the width its label claims, at %s m/px', (mpp) => {
+		const step = scaleBarStep(mpp, 500);
+		const rung = SCALE_STEPS.find((s) => s.label === step.label)!;
+		expect(step.px).toBeCloseTo(rung.metres / mpp, 6);
+	});
+
+	it('never draws wider than the target, except on the fallback rung', () => {
+		for (const mpp of [1, 3, 12.5, 400]) {
+			const step = scaleBarStep(mpp, 500);
+			if (step.label !== SCALE_STEPS[SCALE_STEPS.length - 1]!.label) {
+				expect(step.px).toBeLessThanOrEqual(500);
+			}
+		}
+	});
+
+	// Zoomed far in on a narrow phone, even the shortest rung overhangs. A bar
+	// slightly too wide beats a map with no scale on it.
+	it('falls back to the shortest rung rather than nothing', () => {
+		expect(scaleBarStep(ONE_M_PER_PX, 1).label).toBe('100 ft');
+	});
+
+	// The point of the change: a canvasser reads distances in feet and miles
+	// everywhere else in the app, and the bar must not be the exception.
+	it('never labels a rung in metric', () => {
+		for (const step of SCALE_STEPS) {
+			expect(step.label).toMatch(/\b(ft|mi)$/);
+		}
+	});
+
+	it('is ordered longest first, which is what makes find() pick the longest', () => {
+		const metres = SCALE_STEPS.map((s) => s.metres);
+		expect([...metres].sort((a, b) => b - a)).toEqual(metres);
 	});
 });

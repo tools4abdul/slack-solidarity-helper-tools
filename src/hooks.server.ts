@@ -8,6 +8,7 @@ import { parseThemeMode, themeAttribute, THEME_COOKIE } from '$lib/theme-mode.js
 import { errMessage } from '$lib/err-message.js';
 import { validateEnv } from '$lib/server/env.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
+import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
 
 export async function init() {
 	validateEnv();
@@ -17,6 +18,16 @@ export async function init() {
 	if (!dev && (env as Record<string, string | undefined>)['DEV_SLACK_USER_ID']) {
 		console.error(
 			'DEV_SLACK_USER_ID must not be set in production — it enables the dev-login auth bypass.',
+		);
+		process.exit(1);
+	}
+	// DEV_VIEW_AS demotes every session so you can see the app as a moderator or
+	// a plain member. It can only take permissions away, so a leak is not an
+	// escalation — but in production it would lock the real admins out of their
+	// own settings page, and silently. Same treatment as above: refuse to boot.
+	if (!dev && (env as Record<string, string | undefined>)['DEV_VIEW_AS']) {
+		console.error(
+			'DEV_VIEW_AS must not be set in production — it demotes every signed-in session.',
 		);
 		process.exit(1);
 	}
@@ -69,6 +80,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	} else {
 		event.locals.session = null;
+	}
+
+	// Borrowed permissions, for looking at the app the way a volunteer does.
+	//
+	// Applied here, once, rather than at each of the places that branch on a
+	// role: this is the single seam every request's session passes through, so
+	// there is no page that can forget to honour it and no second definition of
+	// what "a moderator" sees. Gated on `dev` in addition to the boot check, so
+	// the bundle that runs in production cannot reach it at all.
+	if (dev) {
+		const viewAs = parseDevViewAs((env as Record<string, string | undefined>)['DEV_VIEW_AS']);
+		if (viewAs) event.locals.session = applyDevViewAs(event.locals.session, viewAs);
 	}
 
 	// Inject the theme's custom properties into <head>. Done here rather than in

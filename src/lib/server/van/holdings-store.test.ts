@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { loadCurrentHoldings, loadRecentCompletions } from './holdings-store.js';
+import { loadCurrentHoldings, loadHoldingsFor, loadRecentCompletions } from './holdings-store.js';
 import { currentHoldings, suspectCompletions } from '../../van/turf-holdings.js';
 
 // A real in-memory libsql applying the REAL migrations, as in
@@ -180,5 +180,78 @@ describe('loadRecentCompletions', () => {
 
 	it('handles no completions', async () => {
 		expect(await loadRecentCompletions(db, allChapters)).toEqual([]);
+	});
+});
+
+describe('loadHoldingsFor', () => {
+	/** The claim-message path fills issued_list_number; the fixture above does
+	 *  not, so set it explicitly where the test is about the number. */
+	async function withList(mapRouteId: number, slackUserId: string, listNumber: string | null) {
+		await checkout({ map_route_id: mapRouteId, slack_user_id: slackUserId });
+		await client.execute(
+			`UPDATE van_turf_checkouts SET issued_list_number = ${
+				listNumber === null ? 'NULL' : `'${listNumber}'`
+			} WHERE map_route_id = ${mapRouteId} AND slack_user_id = '${slackUserId}'`,
+		);
+	}
+
+	// The property the whole command rests on. A command called "mine" that
+	// returned somebody else's claim would be handing out their list number.
+	it('returns only the caller’s own claims', async () => {
+		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ map_route_id: 200, slack_user_id: 'U_OTHER' });
+
+		const mine = await loadHoldingsFor(db, 'U_VOL');
+
+		expect(mine.map((r) => r.mapRouteId)).toEqual([100]);
+	});
+
+	it('crosses chapters, because holding turf in two counties is holding two turfs', async () => {
+		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL' });
+		await checkout({ map_route_id: 300, slack_user_id: 'U_VOL' });
+
+		const mine = await loadHoldingsFor(db, 'U_VOL');
+
+		expect(mine.map((r) => r.chapterId).sort()).toEqual([71, 72]);
+	});
+
+	it('carries the list number the holder was issued', async () => {
+		await withList(100, 'U_VOL', '35536745-88712');
+		expect((await loadHoldingsFor(db, 'U_VOL'))[0]?.issuedListNumber).toBe('35536745-88712');
+	});
+
+	it('returns null for a claim made before list numbers were recorded', async () => {
+		await withList(100, 'U_VOL', null);
+		expect((await loadHoldingsFor(db, 'U_VOL'))[0]?.issuedListNumber).toBeNull();
+	});
+
+	it.each([
+		['released', { released_at: iso(NOW.getTime() - HOUR), release_reason: 'volunteer' }],
+		['completed', { completed_at: iso(NOW.getTime() - HOUR) }],
+	])('leaves out a claim already %s', async (_label, over) => {
+		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL', ...over });
+		expect(await loadHoldingsFor(db, 'U_VOL')).toEqual([]);
+	});
+
+	// Matches loadCurrentHoldings: the sweep runs on a cron, so a lapsed claim
+	// is still unstamped between ticks and `isActive` is what decides. The query
+	// must not grow a second opinion.
+	it('still returns a lapsed-but-unswept claim, leaving isActive to judge it', async () => {
+		await checkout({
+			map_route_id: 100,
+			slack_user_id: 'U_VOL',
+			expires_at: iso(NOW.getTime() - HOUR),
+		});
+		expect(await loadHoldingsFor(db, 'U_VOL')).toHaveLength(1);
+	});
+
+	it('names the turf and its region so the reply needs no second read', async () => {
+		await checkout({ map_route_id: 100, slack_user_id: 'U_VOL' });
+		const [row] = await loadHoldingsFor(db, 'U_VOL');
+		expect(row).toMatchObject({ turfName: 'Turf 01', regionName: 'Ann Arbor', doorCount: 250 });
+	});
+
+	it('is empty for somebody holding nothing', async () => {
+		expect(await loadHoldingsFor(db, 'U_NOBODY')).toEqual([]);
 	});
 });
