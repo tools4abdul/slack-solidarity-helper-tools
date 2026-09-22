@@ -82,6 +82,64 @@ export async function loadCurrentHoldings(db: Db, query: HoldingsQuery): Promise
 		);
 }
 
+/** One of the caller's own claims, as `/turfs-mine` renders it. */
+export interface MyHoldingRow {
+	mapRouteId: number;
+	claimedAt: string;
+	expiresAt: string;
+	releasedAt: string | null;
+	completedAt: string | null;
+	turfName: string;
+	regionName: string;
+	chapterId: number;
+	doorCount: number;
+	/** The number this volunteer was issued. */
+	issuedListNumber: string | null;
+}
+
+/**
+ * The claims one volunteer is holding right now.
+ *
+ * Separate from `loadCurrentHoldings` rather than a parameter on it, because
+ * the two differ in what they are allowed to return: that one feeds an
+ * organizer board and deliberately omits the printed list number, since an
+ * organizer is not the holder. Here the caller IS the holder — the query is
+ * scoped to their own Slack id — so the number they were issued is theirs to
+ * see, exactly as it is in the claim message and on their own turf page.
+ *
+ * Folding the two together behind a flag would put that distinction one
+ * mistaken argument away from leaking a credential to a board.
+ *
+ * Expiry is NOT filtered here, matching loadCurrentHoldings: the sweep runs on
+ * a cron, so between ticks a lapsed claim is still unstamped, and `isActive` is
+ * the rule that decides. Two definitions of "live" would drift.
+ */
+export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHoldingRow[]> {
+	return db
+		.select({
+			mapRouteId: vanTurfCheckouts.mapRouteId,
+			claimedAt: vanTurfCheckouts.claimedAt,
+			expiresAt: vanTurfCheckouts.expiresAt,
+			releasedAt: vanTurfCheckouts.releasedAt,
+			completedAt: vanTurfCheckouts.completedAt,
+			issuedListNumber: vanTurfCheckouts.issuedListNumber,
+			turfName: vanTurfs.name,
+			regionName: vanTurfs.regionName,
+			chapterId: vanTurfs.chapterId,
+			doorCount: vanTurfs.doorCount,
+		})
+		.from(vanTurfCheckouts)
+		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
+		.where(
+			and(
+				eq(vanTurfCheckouts.slackUserId, slackUserId),
+				isNull(vanTurfCheckouts.releasedAt),
+				isNull(vanTurfCheckouts.completedAt),
+			),
+		)
+		.orderBy(vanTurfCheckouts.expiresAt);
+}
+
 /**
  * Recent completions, for the missed-sync check.
  *

@@ -33,6 +33,7 @@
 		createMapView,
 		fitZoom,
 		metresPerPixel,
+		scaleBarStep,
 		MAX_ZOOM,
 		MIN_ZOOM,
 		TILE_ATTRIBUTION,
@@ -42,6 +43,8 @@
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
 	import { shadeLabel, turfShade } from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
+	import { focusZoom, isBoxVisible } from '$lib/van/map-focus.js';
+	import { untrack } from 'svelte';
 	import type { MappableTurf } from '$lib/van/turf-view.js';
 
 	interface Props {
@@ -147,6 +150,47 @@
 		zoom = fitZoom(bounds, mapWidth, mapHeight, PADDING);
 		moved = true;
 	}
+
+	/** Enough edge that a turf counted as "on screen" is one you can actually
+	 *  read, rather than two pixels of hull against the frame. */
+	const FOCUS_MARGIN_PX = 24;
+
+	// Selecting a turf brings it into view — but only if it is not already
+	// there.
+	//
+	// The list and the map are two views of one selection, so reading down the
+	// list must not drag the camera along behind it; that would make the map
+	// useless for comparing a turf against its neighbours, which is most of
+	// what it is for. It also means clicking a turf ON the map never moves
+	// anything, since a turf you just clicked is by definition visible — the
+	// visibility test gets that for free rather than needing to know where the
+	// selection came from.
+	//
+	// Only `selectedId` is tracked. Everything the decision reads — the camera,
+	// the turf list, the element size — is untracked, because reading the view
+	// reactively would make this effect a feedback loop: it moves the camera,
+	// the camera invalidates the view, the effect runs again.
+	$effect(() => {
+		const id = selectedId;
+		if (id === null) return;
+		untrack(() => {
+			if (mapWidth === 0 || mapHeight === 0) return;
+			const turf = turfs.find((t) => t.mapRouteId === id);
+			if (!turf) return;
+
+			const nw = view.project({ lat: turf.bounds.maxLat, lng: turf.bounds.minLng });
+			const se = view.project({ lat: turf.bounds.minLat, lng: turf.bounds.maxLng });
+			const box = { minX: nw.x, minY: nw.y, maxX: se.x, maxY: se.y };
+			if (isBoxVisible(box, mapWidth, mapHeight, FOCUS_MARGIN_PX)) return;
+
+			// Padded so a turf that only just fits does not land flush against
+			// the frame, which reads as "still cut off".
+			const framed = fitZoom(padBounds(turf.bounds, 0.25), mapWidth, mapHeight, PADDING);
+			centre = boundsCentre(turf.bounds);
+			zoom = focusZoom(zoom ?? fitZoom(nearbyBounds, mapWidth, mapHeight, PADDING), framed);
+			moved = true;
+		});
+	});
 
 	const me = $derived(location ? view.project(location) : null);
 
@@ -612,18 +656,12 @@
 
 	// --- Scale bar ----------------------------------------------------------
 
-	const scale = $derived.by(() => {
-		const mpp = metresPerPixel(
-			view.unproject({ x: mapWidth / 2, y: mapHeight / 2 }).lat,
-			view.zoom,
-		);
-		const target = mapWidth / 4;
-		const choice = [2000, 1000, 500, 250, 100, 50].find((m) => m / mpp <= target) ?? 50;
-		return {
-			px: choice / mpp,
-			label: choice >= 1000 ? `${choice / 1000} km` : `${choice} m`,
-		};
-	});
+	const scale = $derived.by(() =>
+		scaleBarStep(
+			metresPerPixel(view.unproject({ x: mapWidth / 2, y: mapHeight / 2 }).lat, view.zoom),
+			mapWidth / 4,
+		),
+	);
 
 	/** True when at least one turf is off-screen — the only time offering
 	 *  "Show all" is meaningful. Falls out of the cull for free. */

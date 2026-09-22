@@ -209,6 +209,47 @@ export function metresPerPixel(lat: number, zoom: number): number {
 }
 
 /**
+ * The rungs a scale bar may land on, longest first.
+ *
+ * Imperial, to match every other distance this app shows a canvasser
+ * (`formatDistance`). Metres are kept alongside because the projection works in
+ * them — the label is the only thing that is imperial, so the bar's drawn
+ * length stays exact rather than accumulating a conversion error.
+ *
+ * The rungs themselves are the ones people read without doing arithmetic: whole
+ * and half miles at the top, then round hundreds of feet. A bar labelled
+ * "0.31 mi" is technically a scale and practically useless.
+ */
+export const SCALE_STEPS: readonly { metres: number; label: string }[] = [
+	{ metres: 8046.72, label: '5 mi' },
+	{ metres: 3218.688, label: '2 mi' },
+	{ metres: 1609.344, label: '1 mi' },
+	{ metres: 804.672, label: '0.5 mi' },
+	{ metres: 304.8, label: '1000 ft' },
+	{ metres: 152.4, label: '500 ft' },
+	{ metres: 60.96, label: '200 ft' },
+	{ metres: 30.48, label: '100 ft' },
+];
+
+/**
+ * The longest rung that still fits inside `targetPx`, with its drawn width.
+ *
+ * Falls back to the shortest rung rather than returning nothing: zoomed far
+ * enough in, even 100 ft is wider than a quarter of a narrow phone screen, and
+ * a bar that overhangs slightly is a better answer than a map with no scale on
+ * it at all.
+ */
+export function scaleBarStep(
+	metresPerPixelAtCentre: number,
+	targetPx: number,
+): { px: number; label: string } {
+	const step =
+		SCALE_STEPS.find((s) => s.metres / metresPerPixelAtCentre <= targetPx) ??
+		SCALE_STEPS[SCALE_STEPS.length - 1]!;
+	return { px: step.metres / metresPerPixelAtCentre, label: step.label };
+}
+
+/**
  * Basemap tile source.
  *
  * CARTO Positron: keyless, light enough that coloured turf polygons stay

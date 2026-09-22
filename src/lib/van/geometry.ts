@@ -221,8 +221,26 @@ export function boundsForNearest<T extends { centre: LatLng; bounds: BoundingBox
 	return unionBounds([soloBox, ...nearest.map((i) => i.bounds)]) ?? soloBox;
 }
 
-/** Metres → a short human string for turf cards ("400 m", "1.2 km"). */
+const FEET_PER_METRE = 3.280839895;
+const METRES_PER_MILE = 1609.344;
+
+/**
+ * Metres → a short human string for turf cards ("450 ft", "1.2 mi").
+ *
+ * Imperial, because every reader of this is a canvasser in Michigan deciding
+ * whether a turf is walkable from where they are standing. Distances are
+ * computed in metres throughout — `haversineMeters` and the hull maths stay
+ * metric — and converted only here, at the one point a number becomes words.
+ *
+ * The switch is at 1000 ft rather than at a round number of miles: below it,
+ * "down the street" is the useful answer and feet say it; above it, tenths of
+ * a mile are what anyone judges a drive or a walk by. Short distances round to
+ * 50 ft because the underlying position is a turf centroid and a phone's
+ * geolocation, neither of which is accurate to the foot — a precise-looking
+ * "437 ft" would be false precision.
+ */
 export function formatDistance(meters: number): string {
-	if (meters < 950) return `${Math.round(meters / 50) * 50} m`;
-	return `${(meters / 1000).toFixed(1)} km`;
+	const feet = meters * FEET_PER_METRE;
+	if (feet < 1000) return `${Math.round(feet / 50) * 50} ft`;
+	return `${(meters / METRES_PER_MILE).toFixed(1)} mi`;
 }

@@ -36,10 +36,13 @@ import { isSlackAdmin } from '../slack-admin.js';
 import { displayName } from '../slack-display-name.js';
 import { claimTurf, endClaim } from './checkout-store.js';
 import { loadChapterTurfs } from './turf-query.js';
+import { loadHoldingsFor } from './holdings-store.js';
+import { isActive } from '../../van/checkout.js';
 import { resolveLocation } from './zip-centroid.js';
 import {
 	buildChapterPickerBlocks,
 	buildClaimedBlocks,
+	buildMineBlocks,
 	buildTurfListBlocks,
 	parseTurfArgument,
 	plainMessage,
@@ -206,6 +209,126 @@ export async function releaseFromSlack(
 		? 'Given back. Thanks for saying so — someone else can take it now.'
 		: result.message;
 	return withNote(note, await buildList(db, gate, ctx, now));
+}
+
+/**
+ * The turf this volunteer is holding, with its list numbers and its actions.
+ *
+ * Deliberately a LIGHTER gate than the nearby list: no chapter to resolve, no
+ * location, no chapter rate limit. Those exist to stop one request revealing
+ * the shape of the field operation across chapters (see this file's header);
+ * this reads only rows that already belong to the caller, so there is nothing
+ * to compartmentalise. Asking for a chapter would also be wrong in substance —
+ * someone holding turf in two counties holds two turfs, and a command called
+ * "mine" that showed one of them would be lying.
+ *
+ * The blocklist still applies. A blocked volunteer has already had their turf
+ * released, so in practice this shows them an empty list, but the check stays
+ * because "blocked" gates reads as well as writes (van/access.ts) and this
+ * surface should not be the exception that discovers otherwise.
+ */
+export async function myTurfMessage(db: Db, ctx: TurfRequestContext): Promise<SlackMessage> {
+	const now = ctx.now ?? Date.now();
+
+	const viewer = { slackUserId: ctx.slackUserId, isAdmin: await isSlackAdmin(ctx.slackUserId) };
+	const blockedIds = await loadVanBlockedIds(db);
+	const access = turfAccess(viewer, blockedIds, SLACK_SUPERUSER_ID);
+	if (!access.allowed) return plainMessage(access.message);
+
+	return buildMineBlocks({
+		turfs: await mineFor(db, ctx.slackUserId, now),
+		now: new Date(now),
+		appUrl: APP_URL,
+	});
+}
+
+/**
+ * Give turf back from the "my turf" list, then show that list again.
+ *
+ * Same write as `releaseFromSlack` and a different reply: you came from your
+ * own holdings, so that is what you go back to. Redrawing the nearby list here
+ * would answer a question nobody asked and lose your place.
+ */
+export async function releaseMineFromSlack(
+	db: Db,
+	ctx: TurfRequestContext & { mapRouteId: number },
+): Promise<SlackMessage> {
+	const now = ctx.now ?? Date.now();
+	const result = await endClaim(db, {
+		mapRouteId: ctx.mapRouteId,
+		slackUserId: ctx.slackUserId,
+		now: new Date(now),
+		kind: 'release',
+	});
+	const note = result.ok
+		? 'Given back. Thanks for saying so — someone else can take it now.'
+		: result.message;
+	return withNote(note, await myTurfMessage(db, ctx));
+}
+
+/**
+ * Mark turf walked from Slack.
+ *
+ * `endClaim` scopes the write to the caller's own active claim, so a forged
+ * button value completes nothing that is not already theirs — the same
+ * guarantee the release path leans on.
+ *
+ * The confirmation says what completing does NOT do. This action is the one a
+ * volunteer is most likely to reach for INSTEAD of syncing, and the cost of
+ * that mistake is a morning of doors nobody finds out about until the unsynced
+ * nudge goes out days later.
+ */
+export async function completeFromSlack(
+	db: Db,
+	ctx: TurfRequestContext & { mapRouteId: number },
+): Promise<SlackMessage> {
+	const now = ctx.now ?? Date.now();
+	const result = await endClaim(db, {
+		mapRouteId: ctx.mapRouteId,
+		slackUserId: ctx.slackUserId,
+		now: new Date(now),
+		kind: 'complete',
+	});
+	const note = result.ok
+		? 'Marked walked. If MiniVAN has not synced yet, open it and hit *Sync* — ' +
+			'your answers only reach VAN from there.'
+		: result.message;
+	return withNote(note, await myTurfMessage(db, ctx));
+}
+
+/** The caller's live claims, newest expiry last.
+ *
+ *  `isActive` decides what counts as live rather than the query, because the
+ *  expiry sweep runs on a cron: between ticks a lapsed claim is still unstamped
+ *  in the table, and listing it would offer buttons for turf the volunteer no
+ *  longer holds. */
+async function mineFor(db: Db, slackUserId: string, now: number) {
+	const rows = await loadHoldingsFor(db, slackUserId);
+	const at = new Date(now);
+	return rows
+		.filter((row) =>
+			isActive(
+				{
+					mapRouteId: row.mapRouteId,
+					slackUserId,
+					slackUserName: '',
+					claimedAt: row.claimedAt,
+					expiresAt: row.expiresAt,
+					releasedAt: row.releasedAt,
+					completedAt: row.completedAt,
+				},
+				at,
+			),
+		)
+		.map((row) => ({
+			mapRouteId: row.mapRouteId,
+			name: row.turfName,
+			regionName: row.regionName,
+			doorCount: row.doorCount,
+			expiresAt: row.expiresAt,
+			chapterId: row.chapterId,
+			issuedListNumber: row.issuedListNumber,
+		}));
 }
 
 /** A sentence about what just happened, followed by the list again, so the next

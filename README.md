@@ -124,6 +124,34 @@ message — which has exactly one recipient by construction. It is never posted 
 channel, never DMed, and deliberately kept out of the notification fallback text, which is
 the one thing that renders on a locked phone.
 
+### The `/turfs-mine` command
+
+What you are holding, and the two things you can do about it. One block per turf: its name
+and region, its door count, how long you have left, **the MiniVAN list number you were
+issued**, and buttons for **Mark it done**, **Give it back** and **Open the map**.
+
+It exists because the claim reply was the only place any of that lived, and a Slack message
+is gone the moment it is scrolled past or replaced. A volunteer who closed it had no way
+back to their list number, and no way to mark turf walked from Slack at all — that action
+was web-only.
+
+Open to anyone in the workspace, minus the block list, on the same reasoning as `/turfs`.
+It takes no argument: `/turfs` needs a location to decide what is _near_ you, and this
+answers from rows that are already yours. For the same reason it is **not chapter-scoped** —
+someone holding turf in two counties is holding two turfs, and a "mine" that showed one of
+them would be lying.
+
+Showing the list number here is safe for the two reasons it is safe in the claim reply, and
+it needs both: the response is ephemeral, so it has exactly one recipient, and the query is
+scoped to the caller's own Slack id. These are the only two places in the app that render
+it.
+
+**"Mark it done" is not syncing, and the message says so.** Completing a turf records that
+_you_ walked it; only MiniVAN can send your answers to VAN. That warning sits at the bottom
+of the list, below the buttons, because the volunteer most likely to tap it is the one who
+has not synced — and the cost of that mistake is a morning of doors nobody hears about
+until the unsynced nudge DM goes out days later.
+
 **A typed address is never stored and never logged.** It is geocoded in memory, used to
 sort, and dropped; only the ZIP the geocoder matched it to is cached, in
 `van_zip_centroids`. Coordinates that ride along in a button value are rounded to three
@@ -179,7 +207,12 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
     - Usage hint: `[zip or address]`
     - Leave "Escape channels, users, and links" off — the argument is a place, not a mention
 
-12. Under **Slash Commands**, create one command per row you add on `/settings` → **Info commands**, e.g. `/info-phone`:
+12. Under **Slash Commands**, create `/turfs-mine`:
+    - Request URL: `https://your-app.fly.dev/api/slack/commands` (the same URL as `/member-note`)
+    - No usage hint — it takes no arguments
+    - Leave "Escape channels, users, and links" off
+
+13. Under **Slash Commands**, create one command per row you add on `/settings` → **Info commands**, e.g. `/info-phone`:
     - Request URL: `https://your-app.fly.dev/api/slack/commands` (the same URL as `/member-note`)
     - Leave "Escape channels, users, and links" off — these commands take no arguments
 
@@ -187,11 +220,11 @@ and posts the real answer to `response_url`, replacing the acknowledgement.
 
     Also create `/list-commands` once, with the same Request URL and escaping off. It replies — visible only to the admin who ran it — with every info command and the message it posts.
 
-13. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
+14. Under **Interactivity & Shortcuts**, enable interactivity and set the Request URL to:
     ```
     https://your-app.fly.dev/api/slack/interactivity
     ```
-14. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
+15. Under **Interactivity & Shortcuts → Shortcuts**, create two **message** shortcuts (the callback IDs must match exactly):
     - "Log member note" — callback ID `log_member_note`
     - "View member record" — callback ID `view_member_record`
 
@@ -316,9 +349,28 @@ A minimal `.env.local` for local development — no real Slack credentials neede
 TURSO_DATABASE_URL=file:local.db
 WEBHOOK_SECRET=any-local-secret
 DEV_SLACK_USER_ID=U012AB3CD
+DEV_VIEW_AS=            # blank, moderator, or member — see below
 ```
 
 `file:local.db` creates a local SQLite database in the project root (no Turso account needed). `DEV_SLACK_USER_ID` bypasses Slack OAuth — visiting `/pending` automatically creates a session for that user ID. Set it to your real Slack user ID so the allowlist check passes once you wire up real credentials.
+
+#### Seeing the app as somebody else
+
+Nearly every page branches on `isAdmin` or `isModerator`, and checking what a volunteer actually sees otherwise means a second Slack account or editing your own row and remembering to put it back. `DEV_VIEW_AS` demotes your own session for every request:
+
+| Value        | You get                                            |
+| ------------ | -------------------------------------------------- |
+| unset / `''` | Your real permissions                              |
+| `moderator`  | Moderator only — the Slack commands and `/members` |
+| `member`     | A signed-in volunteer with nothing elevated        |
+
+Restart `npm run dev` after changing it; it is read per request but the dev server loads `.env.local` at startup.
+
+**It can only take permissions away.** There is deliberately no `DEV_VIEW_AS=admin`, and any value it does not recognise leaves the session untouched — so no spelling of this variable grants anything to anybody, and the worst a typo does is show you your real permissions. It applies in one place, `hooks.server.ts`, which is the single seam every request's session passes through, so no page can forget to honour it.
+
+It is gated on dev mode, **and the app refuses to boot if it is set in production** — the same treatment `DEV_SLACK_USER_ID` gets, for a different reason: a leak here is not an escalation, but it would quietly lock the real admins out of their own settings page.
+
+It affects the **web app only**. Slack slash commands resolve their own permissions from the Slack identity that invoked them (`slack-admin.ts`), which this does not touch.
 
 The `team_join` welcome flow requires real Slack credentials and cannot be tested locally without a tunnelling tool (e.g. `ngrok`).
 
@@ -412,6 +464,7 @@ form-encoded.
 
 - `/member-note` opens the note modal via `views.open`. Admins and moderators.
 - `/turfs` lists the nearest available turf — see [The `/turfs` command](#the-turfs-command).
+- `/turfs-mine` lists what the caller is holding, with their list numbers and per-turf actions — see [The `/turfs-mine` command](#the-turfs-mine-command).
   **The only command here open to everyone**, deliberately: it serves the same data as
   the `/turfs` web page, which is already open to any signed-in member minus the turf
   block list. Its gates are `$lib/server/van/turf-slack.ts`'s.

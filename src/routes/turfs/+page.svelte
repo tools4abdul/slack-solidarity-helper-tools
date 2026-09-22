@@ -819,8 +819,7 @@
 										     hole in the map that reads as a bug, and a volunteer
 										     would keep looking for turf that is not missing. -->
 										<p class="claim-note">
-											Someone's already walking this one. It's shown rather than hidden so the map
-											doesn't look like it has a hole in it — check back later, or pick another turf
+											Someone's already walking this turf. Check back later, or pick another turf
 											nearby.
 										</p>
 									{/if}
