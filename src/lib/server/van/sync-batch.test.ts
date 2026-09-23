@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -32,6 +32,13 @@ beforeEach(async () => {
 		   (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
 		 VALUES (100, 'U1', 'Dana', '2026-09-12T10:00:00.000Z', '2026-09-14T10:00:00.000Z')`,
 	);
+});
+
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
 });
 
 describe('the retirement batch, against a real libsql', () => {

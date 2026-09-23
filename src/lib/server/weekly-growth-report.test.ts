@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, vi, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -473,6 +473,13 @@ describe('runWeeklyGrowthReport — the snapshot is written once per window', ()
 		await joined('U2', '2026-05-06T10:00:00.000Z', [71]);
 		await joined('U3', '2026-05-07T10:00:00.000Z', [71]);
 		await joined('U_OLD', '2026-01-01T10:00:00.000Z', [71]);
+	});
+
+	// Each test opens its own in-memory client. Closing it keeps one per test
+	// from leaking for the life of the worker — which never shows up while this
+	// file is run on its own.
+	afterEach(() => {
+		client.close();
 	});
 
 	const run = (over: Record<string, unknown> = {}) =>

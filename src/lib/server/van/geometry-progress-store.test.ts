@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -60,6 +60,13 @@ beforeEach(async () => {
 	client = createClient({ url: ':memory:' });
 	db = drizzle(client);
 	await migrate(db, { migrationsFolder: 'drizzle' });
+});
+
+// Each test opens its own in-memory client. Closing it keeps one per test from
+// leaking for the life of the worker — which never shows up while this file is
+// run on its own.
+afterEach(() => {
+	client.close();
 });
 
 describe('loadGeometryProgress', () => {

@@ -45,7 +45,7 @@ export interface DriftAlertResult {
 	/** Why nothing was posted, when nothing was. Distinguishes "checked, all
 	 *  agreed" from "could not check" — the same trap `DriftVisibility` exists for
 	 *  one layer down. */
-	skipped?: 'van-side-unavailable' | 'no-channel' | 'nothing-new';
+	skipped?: 'van-side-unavailable' | 'exports-unused' | 'no-channel' | 'nothing-new';
 }
 
 function isDriftKind(value: string | null): value is DriftKind {
@@ -138,6 +138,7 @@ export async function sendDriftAlerts(
 
 	let items: AlertableDrift[];
 	let stampedRouteIds: number[];
+	let exportsUnused: boolean;
 	try {
 		const query = { chapterId: null };
 		const [turfs, claims, visibility, stamps] = await Promise.all([
@@ -155,7 +156,17 @@ export async function sendDriftAlerts(
 			return { ...empty, skipped: 'van-side-unavailable' };
 		}
 
-		items = driftReport(turfs, claims, now, visibility).items.map((item) => ({
+		// Nothing in the catalog has ever been exported, so the comparison has no
+		// side to compare against and the report comes back empty. Deliberately
+		// NOT an early return, unlike the branch above: there the stamps have to
+		// survive because we cannot see VAN and every one of them merely LOOKS
+		// stale. Here we can see VAN fine — we know this drift is no longer being
+		// reported — so the stale sweep below should clear the stamps it left
+		// behind rather than leave markers for a check that no longer runs.
+		const report = driftReport(turfs, claims, now, visibility);
+		exportsUnused = report.visibility === 'exports-unused';
+
+		items = report.items.map((item) => ({
 			...item,
 			alertedKind: stamps.kinds.get(item.mapRouteId) ?? null,
 		}));
@@ -186,7 +197,14 @@ export async function sendDriftAlerts(
 	const text = renderDriftAlert(fresh, appUrl);
 	if (text === null) {
 		if (cleared > 0) console.log(`${LOG} drift alerts: cleared=${cleared}`);
-		return { announced: 0, cleared, failed: false, skipped: 'nothing-new' };
+		// Say WHICH kind of quiet this is. "Nothing new" means the two sides
+		// agree; "exports unused" means half the comparison was never possible.
+		return {
+			announced: 0,
+			cleared,
+			failed: false,
+			skipped: exportsUnused ? 'exports-unused' : 'nothing-new',
+		};
 	}
 
 	if (!(await postAlert(channelId, text, LOG))) {

@@ -50,10 +50,16 @@ describe('driftReport', () => {
 		);
 	});
 
+	// Proof that this campaign uses the export workflow at all. Without one of
+	// these in the catalog the report returns `exports-unused` and says nothing,
+	// which is correct behaviour and would make the rules below untestable — so
+	// the fixtures that are ABOUT those rules carry one.
+	const exported = () => turf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' });
+
 	it('flags turf claimed here but absent from MiniVAN', () => {
-		const { items, claimedNotInMinivan } = driftReport([turf()], [claim()], NOW);
+		const { items, claimedNotInMinivan } = driftReport([turf(), exported()], [claim()], NOW);
 		expect(claimedNotInMinivan).toBe(1);
-		expect(items[0]).toMatchObject({
+		expect(items.find((i) => i.kind === 'claimed-not-in-minivan')).toMatchObject({
 			kind: 'claimed-not-in-minivan',
 			turfName: 'Turf 01',
 			heldBy: 'Dana',
@@ -171,17 +177,21 @@ describe('driftReport', () => {
 		it('would have found drift had the data been legible', () => {
 			// Same inputs, visible: proves the empty result above is the
 			// visibility flag talking, not an absence of drift.
-			expect(driftReport([turf()], [claim()], NOW, 'visible').items).toHaveLength(1);
+			expect(
+				driftReport([turf(), exported()], [claim()], NOW, 'visible').items.filter(
+					(i) => i.kind === 'claimed-not-in-minivan',
+				),
+			).toHaveLength(1);
 		});
 	});
 
 	it('reports whether the turf even has a list number', () => {
-		const withNumber = driftReport([turf()], [claim()], NOW).items[0]!;
-		expect(withNumber.hasListNumber).toBe(true);
+		const pick = (rows: Parameters<typeof driftReport>[0]) =>
+			driftReport(rows, [claim()], NOW).items.find((i) => i.mapRouteId === 100)!;
+		expect(pick([turf(), exported()]).hasListNumber).toBe(true);
 		// canClaim refuses turf without a number, so a claimed row lacking one
 		// means something upstream is wrong — worth surfacing, not hiding.
-		const without = driftReport([turf({ printedListNumber: null })], [claim()], NOW).items[0]!;
-		expect(without.hasListNumber).toBe(false);
+		expect(pick([turf({ printedListNumber: null }), exported()]).hasListNumber).toBe(false);
 	});
 
 	it('counts each kind separately', () => {
@@ -223,5 +233,85 @@ describe('driftLabel and driftAdvice', () => {
 
 	it('names the double-booking risk in the advice for the dangerous one', () => {
 		expect(driftAdvice('in-minivan-not-claimed')).toContain('claimed twice');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The export workflow this campaign does not use
+// ---------------------------------------------------------------------------
+
+describe('driftReport: exports-unused', () => {
+	// Verified live 2026-09-22: every printed list in the committee was
+	// generated after the most recent MiniVAN export, so nothing could match.
+	// Organizers hand out list NUMBERS, which load in MiniVAN with no export
+	// record. Flagging every claim as "not in MiniVAN" under that workflow is
+	// noise that buries the direction that matters.
+	it('reports nothing when no turf has ever been exported', () => {
+		const report = driftReport(
+			[
+				turf({ mapRouteId: 1, vanDistributedTo: null }),
+				turf({ mapRouteId: 2, vanDistributedTo: null }),
+			],
+			[claim({ mapRouteId: 1 }), claim({ mapRouteId: 2 })],
+			NOW,
+		);
+
+		expect(report.visibility).toBe('exports-unused');
+		expect(report.items).toEqual([]);
+		expect(report.claimedNotInMinivan).toBe(0);
+	});
+
+	// The moment one export lands, the check is meaningful again and comes back
+	// on its own — no setting to remember.
+	it('switches back on as soon as a single turf matches an export', () => {
+		const report = driftReport(
+			[
+				turf({ mapRouteId: 1, vanDistributedTo: null }),
+				turf({ mapRouteId: 2, vanDistributedTo: 'Avery Harbison' }),
+			],
+			[claim({ mapRouteId: 1 })],
+			NOW,
+		);
+
+		expect(report.visibility).toBe('visible');
+		// Turf 2 is exported and unclaimed, so it is drift in the other direction —
+		// which is the point: with one real export the comparison works again.
+		expect(report.items.map((i) => i.kind).sort()).toEqual([
+			'claimed-not-in-minivan',
+			'in-minivan-not-claimed',
+		]);
+	});
+
+	// A retired row keeps whatever it was last distributed to. Counting that as
+	// evidence would keep the check alive on the ghost of a workflow that has
+	// stopped.
+	it('does not count a retired turf as evidence the workflow is in use', () => {
+		const report = driftReport(
+			[
+				turf({ mapRouteId: 1, vanDistributedTo: null }),
+				turf({
+					mapRouteId: 2,
+					vanDistributedTo: 'Avery Harbison',
+					retiredAt: '2026-09-01T00:00:00.000Z',
+				}),
+			],
+			[claim({ mapRouteId: 1 })],
+			NOW,
+		);
+
+		expect(report.visibility).toBe('exports-unused');
+	});
+
+	// The distinction that already existed and must survive: "we never looked"
+	// outranks "we looked and it is unused".
+	it('still reports van-side-unavailable when the key cannot read exports', () => {
+		const report = driftReport(
+			[turf({ mapRouteId: 1, vanDistributedTo: null })],
+			[claim({ mapRouteId: 1 })],
+			NOW,
+			'van-side-unavailable',
+		);
+
+		expect(report.visibility).toBe('van-side-unavailable');
 	});
 });

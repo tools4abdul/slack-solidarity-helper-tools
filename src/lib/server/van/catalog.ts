@@ -116,15 +116,60 @@ function printedListIndex(printedLists: VanPrintedList[]): Map<string, string> {
 	return index;
 }
 
-/** Canvasser names by turf name, from exports an organizer made by hand in
- *  VAN. Turfs with an entry render as "assigned in VAN" rather than vanishing
+/**
+ * A canvasser's name, however this VAN spells it.
+ *
+ * Verified live: `/minivanExports?$expand=canvassers` returns
+ * `{canvassserId, firstName, lastName}` and no `name` at all. Reading only
+ * `name` — which this did — yielded an empty string for every canvasser, so
+ * every export was discarded as "nobody assigned" and `van_distributed_to`
+ * came out null for the whole catalog. `name` is still preferred when present
+ * so an instance that sends one is not broken by the fix.
+ */
+function canvasserName(c: {
+	name?: string | null;
+	firstName?: string | null;
+	lastName?: string | null;
+}): string {
+	const direct = (c.name ?? '').trim();
+	if (direct) return direct;
+	return [c.firstName, c.lastName]
+		.map((part) => (part ?? '').trim())
+		.filter(Boolean)
+		.join(' ');
+}
+
+/**
+ * The printed list number an export refers to.
+ *
+ * VAN names an export for the list it came from — `"List 58817996-30305"` —
+ * NOT for the turf. This index used to key on the export's name and be read
+ * with the ROUTE's name (`"R04C_Livingston_…_9.11 Turf 01"`), which cannot
+ * match, so nothing was ever found. Verified live: 610 of 703 exports in the
+ * recent window are named this way.
+ *
+ * Returns null for the rest — exports an organizer hand-named
+ * ("downtown LO Turf 01", "My List 5/30/18 5:04 PM"). Those are deliberately
+ * NOT matched by turf name: the window spans 2014 to today, turf names are
+ * reused across that whole period, and a 2014 export sharing a name with turf
+ * cut last week would attribute a stranger to it. A list number identifies one
+ * cut and cannot collide that way, so an unmatched hand-named export is the
+ * safer failure.
+ */
+function listNumberFromExportName(name: string | null | undefined): string | null {
+	const match = (name ?? '').trim().match(/^List\s+(\S+)$/i);
+	return match ? match[1]!.trim() : null;
+}
+
+/** Canvasser names by PRINTED LIST NUMBER, from exports made in VAN. Turfs
+ *  with an entry render as "assigned in VAN" rather than vanishing
  *  (plan.md §4, Story 8.1). */
 function distributionIndex(exports: VanMinivanExport[]): Map<string, string> {
 	const index = new Map<string, string>();
 	for (const exp of exports) {
-		const names = (exp.canvassers ?? []).map((c) => (c.name ?? '').trim()).filter(Boolean);
+		const names = (exp.canvassers ?? []).map(canvasserName).filter(Boolean);
 		if (names.length === 0) continue;
-		const key = nameKey(exp.name);
+		const key = listNumberFromExportName(exp.name);
 		if (!key) continue;
 		const existing = index.get(key);
 		index.set(key, existing ? `${existing}, ${names.join(', ')}` : names.join(', '));
@@ -224,7 +269,8 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					centroidLng: staleHull ? null : (prior?.centroidLng ?? null),
 					hullJson: staleHull ? null : (prior?.hullJson ?? null),
 					hullSourceRouteSize: staleHull ? null : hullSourceRouteSize,
-					vanDistributedTo: distributed.get(nameKey(route.name)) ?? null,
+					// Joined on the list number, which is what the export names.
+					vanDistributedTo: printedListNumber ? (distributed.get(printedListNumber) ?? null) : null,
 					firstSeenAt: prior?.firstSeenAt ?? nowIso,
 					lastSeenAt: nowIso,
 					// VAN's own refresh timestamp when it offers one, so the UI's

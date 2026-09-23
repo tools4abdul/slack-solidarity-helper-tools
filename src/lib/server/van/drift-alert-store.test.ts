@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -59,6 +59,21 @@ async function turf(
 	await client.execute(`INSERT INTO van_turfs (${cols}) VALUES (${vals})`);
 }
 
+/**
+ * A turf that IS in a MiniVAN export, proving this campaign uses the export
+ * workflow at all.
+ *
+ * `driftReport` returns `exports-unused` — and says nothing — when NOTHING in
+ * the catalog has ever been exported, because a campaign that hands out
+ * printed list numbers instead would otherwise have every claim flagged
+ * forever. Fixtures whose subject is the drift rules themselves need one of
+ * these present, or they are testing the suppression instead.
+ */
+async function exportedTurf(): Promise<void> {
+	await turf(999, { van_distributed_to: 'Avery Harbison' });
+	await claim(999);
+}
+
 async function claim(mapRouteId: number, over: Record<string, string | null> = {}): Promise<void> {
 	const row: Record<string, string | number | null> = {
 		map_route_id: mapRouteId,
@@ -115,6 +130,17 @@ beforeEach(async () => {
 	await migrate(db, { migrationsFolder: 'drizzle' });
 });
 
+// Each test opens its own libsql client and spies on three console methods.
+// Without this both leak for the life of the worker — fifteen clients and
+// forty-five spies by the end of the file, and `clearAllMocks` resets calls
+// without ever handing console back. Neither is visible while the file is run
+// on its own, which is exactly the shape of a test that fails once in a full
+// suite and passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
+});
+
 describe('sendDriftAlerts', () => {
 	it('announces turf VAN has out but the ledger shows free', async () => {
 		await vanSideVisible();
@@ -130,6 +156,7 @@ describe('sendDriftAlerts', () => {
 
 	it('announces turf claimed here that VAN never exported', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100);
 		await claim(100);
 
@@ -159,22 +186,27 @@ describe('sendDriftAlerts', () => {
 
 	it('stamps the kind it announced, so a direction change gets through', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100);
 		await claim(100);
 
 		expect(await run()).toMatchObject({ announced: 1 });
-		expect(await stampsInDb()).toEqual([
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
 			{ id: 100, kind: 'claimed-not-in-minivan', at: iso(NOW.getTime()) },
 		]);
 
 		// The half-fixed case: the organizer exports it to MiniVAN, the volunteer's
 		// claim lapses, and the route now drifts the dangerous way.
-		await client.execute("UPDATE van_turfs SET van_distributed_to = 'Sam Rivera'");
-		await client.execute(`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}'`);
+		await client.execute(
+			"UPDATE van_turfs SET van_distributed_to = 'Sam Rivera' WHERE map_route_id = 100",
+		);
+		await client.execute(
+			`UPDATE van_turf_checkouts SET released_at = '${iso(NOW.getTime())}' WHERE map_route_id = 100`,
+		);
 
 		expect(await run()).toMatchObject({ announced: 1 });
 		expect(lastText()).toContain('VAN says Sam Rivera');
-		expect(await stampsInDb()).toEqual([
+		expect((await stampsInDb()).filter((r) => r.id === 100)).toEqual([
 			{ id: 100, kind: 'in-minivan-not-claimed', at: iso(NOW.getTime()) },
 		]);
 	});
@@ -273,6 +305,7 @@ describe('sendDriftAlerts', () => {
 
 	it('ignores an expired claim, which is drift rather than a holding', async () => {
 		await vanSideVisible();
+		await exportedTurf();
 		await turf(100);
 		await claim(100, { expires_at: iso(NOW.getTime() - HOUR) });
 

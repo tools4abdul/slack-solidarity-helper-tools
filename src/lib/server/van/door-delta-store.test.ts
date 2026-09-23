@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, vi, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -75,6 +75,16 @@ async function deltas() {
 	);
 	return res.rows.map((r) => r.confirmed_door_delta);
 }
+
+// Each test opens its own in-memory client and replaces console. Both leak for
+// the life of the worker otherwise — `clearAllMocks` resets a spy's recorded
+// calls but leaves it installed. Neither is visible while this file is run on
+// its own, which is the shape of a test that fails once in a full suite and
+// passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
+});
 
 describe('stampDoorDeltas', () => {
 	it('stamps the doors that left and says nothing', async () => {

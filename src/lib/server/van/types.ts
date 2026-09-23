@@ -82,13 +82,35 @@ export interface VanSavedList {
 
 /** Evidence that an organizer distributed turf to MiniVAN outside this app.
  *  `canvassers` only populates with `$expand=canvassers`. */
+/** One MiniVAN export, as `/minivanExports?$expand=canvassers` really returns
+ *  it. Verified against the live API on 2026-09-22; the shape below is what
+ *  came back, not what the reference implies.
+ *
+ *  `name` is the PRINTED LIST NUMBER, formatted `"List 58817996-30305"` — not
+ *  the turf's name. That is what the distribution index joins on; see
+ *  `listNumberFromExportName` in catalog.ts.
+ *
+ *  A canvasser carries `firstName`/`lastName` and NO `name` field. `name` is
+ *  kept optional here so an instance that does send one still works, but
+ *  nothing may rely on it alone — reading only `name` is what made
+ *  van_distributed_to null for every turf VAN had actually distributed. */
 export interface VanMinivanExport {
 	minivanExportId: number;
 	name: string | null;
 	dateCreated: string | null;
-	createdBy: string | null;
-	canvassers: Array<{ canvasserId?: number; name?: string | null }> | null;
-	databaseMode: string | null;
+	/** An object, despite reading like a string: `{id, userId, firstName,
+	 *  lastName, displayName}`. Unused, and typed loosely rather than
+	 *  wrongly. */
+	createdBy: unknown;
+	canvassers: Array<{
+		/** VAN's own spelling, with three s's. Not a transcription error here. */
+		canvassserId?: number;
+		canvasserId?: number;
+		firstName?: string | null;
+		lastName?: string | null;
+		name?: string | null;
+	}> | null;
+	databaseMode: string | number | null;
 }
 
 /** Export job types are issued per developer — the numeric ids in VAN's docs
