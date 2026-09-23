@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { planCatalogSync, needsGeometry, type CatalogFolder } from './catalog.js';
 import type { VanTurfRow } from '../schema.js';
-import type { VanMapRegion } from './types.js';
+import type { VanMapRegion, VanMinivanExport } from './types.js';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 
@@ -331,38 +331,95 @@ describe('planCatalogSync', () => {
 		});
 	});
 
+	// These fixtures are the shape the LIVE API returns, captured 2026-09-22.
+	// The previous ones were invented — an export named for the turf, with
+	// `canvassers: [{name}]` — and both details were wrong, which is how
+	// van_distributed_to came out null for every turf while these tests passed.
+	// An export is named for its printed LIST, and a canvasser has firstName
+	// and lastName and no `name` at all.
+	const exportOf = (over: Partial<VanMinivanExport> = {}): VanMinivanExport => ({
+		minivanExportId: 5,
+		name: 'List 35536745-88712',
+		dateCreated: '2026-09-22T14:10:33.83Z',
+		createdBy: { id: 1, displayName: 'Richard Williamson' },
+		canvassers: [{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' }],
+		databaseMode: 0,
+		...over,
+	});
+
 	it('flags turf an organizer distributed to MiniVAN by hand', () => {
 		const plan = planCatalogSync({
 			...base,
 			folders: [folder([region([route()])])],
 			minivanExports: [
-				{
-					minivanExportId: 5,
-					name: 'City of Cambridge Turf 01',
-					dateCreated: null,
-					createdBy: null,
-					canvassers: [{ name: 'Dana Ruiz' }, { name: 'Sam Ito' }],
-					databaseMode: '0',
-				},
+				exportOf({
+					canvassers: [
+						{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' },
+						{ canvassserId: 2, firstName: 'Sam', lastName: 'Ito' },
+					],
+				}),
 			],
 		});
 		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz, Sam Ito');
+	});
+
+	// The join is the list number, because that is what the export names. The
+	// route is called "City of Cambridge Turf 01" and matching on that found
+	// nothing.
+	it('matches the export to the turf by printed list number', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ name: 'List 35536745-88712' })],
+		});
+		expect(plan.upserts[0]!.printedListNumber).toBe('35536745-88712');
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz');
+	});
+
+	it('does not match an export for a different list', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ name: 'List 99999999-00000' })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+	});
+
+	// Hand-named exports are left unmatched on purpose: the export window spans
+	// a decade, turf names repeat across it, and matching one by name would
+	// attribute a stranger from 2014 to turf cut last week.
+	it('ignores a hand-named export rather than matching it by turf name', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ name: 'City of Cambridge Turf 01' })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+	});
+
+	it('still reads a canvasser that does carry a name field', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ canvassers: [{ name: 'Dana Ruiz' }] })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz');
 	});
 
 	it('ignores a MiniVAN export with no canvassers on it', () => {
 		const plan = planCatalogSync({
 			...base,
 			folders: [folder([region([route()])])],
-			minivanExports: [
-				{
-					minivanExportId: 5,
-					name: 'City of Cambridge Turf 01',
-					dateCreated: null,
-					createdBy: null,
-					canvassers: [],
-					databaseMode: '0',
-				},
-			],
+			minivanExports: [exportOf({ canvassers: [] })],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+	});
+
+	it('ignores a canvasser entry with no name parts at all', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [exportOf({ canvassers: [{ canvassserId: 7 }] })],
 		});
 		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
 	});

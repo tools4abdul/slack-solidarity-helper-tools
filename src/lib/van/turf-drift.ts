@@ -76,8 +76,26 @@ export interface DriftItem {
  *
  * The caller passes what the sync recorded, because only the sync knows whether
  * the endpoint answered.
+ *
+ * `exports-unused` is a third state, decided here rather than passed in: the
+ * endpoint answered, and NO turf in the catalog appears in any export. That is
+ * not a campaign whose turf is all undistributed — it is a campaign that does
+ * not use the export workflow at all.
+ *
+ * Verified against the live committee on 2026-09-22: every one of its 2,201
+ * printed lists was generated AFTER the most recent MiniVAN export, so nothing
+ * could match by construction. Organizers there cut lists and hand out the
+ * printed list NUMBER, which loads in MiniVAN without an export record ever
+ * existing — `/minivanExports` records a different act, an organizer assigning
+ * a list to named canvassers in VAN's UI.
+ *
+ * Reporting `claimed-not-in-minivan` under that workflow flags every claim the
+ * app has ever taken, which is noise that buries the direction that matters.
+ * Suppressing it is the same judgement `van-side-unavailable` already makes —
+ * say the check did not happen rather than imply it passed — and it reverses
+ * itself the moment one export matches.
  */
-export type DriftVisibility = 'visible' | 'van-side-unavailable';
+export type DriftVisibility = 'visible' | 'van-side-unavailable' | 'exports-unused';
 
 export interface DriftReport {
 	visibility: DriftVisibility;
@@ -108,6 +126,19 @@ export function driftReport(
 ): DriftReport {
 	if (visibility === 'van-side-unavailable') {
 		return { visibility, items: [], claimedNotInMinivan: 0, inMinivanNotClaimed: 0 };
+	}
+
+	// Live turf only: a retired row keeps whatever it was last distributed to,
+	// and letting that count as evidence would leave the check switched on by
+	// the ghost of a workflow the campaign has since stopped using.
+	const usesExports = turfs.some((t) => t.retiredAt === null && t.vanDistributedTo);
+	if (!usesExports) {
+		return {
+			visibility: 'exports-unused',
+			items: [],
+			claimedNotInMinivan: 0,
+			inMinivanNotClaimed: 0,
+		};
 	}
 
 	const heldBy = new Map<number, ClaimSnapshot>();

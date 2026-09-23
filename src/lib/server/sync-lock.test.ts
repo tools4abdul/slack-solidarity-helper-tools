@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { acquireSyncLock, releaseSyncLock, withSyncLock } from './sync-lock.js';
@@ -10,9 +10,11 @@ import { acquireSyncLock, releaseSyncLock, withSyncLock } from './sync-lock.js';
 // certain way, which would keep passing if the guarantee broke.
 
 let db: LibSQLDatabase<Record<string, unknown>>;
+/** Held so afterEach can close it; see the note there. */
+let client: ReturnType<typeof createClient>;
 
 beforeEach(async () => {
-	const client = createClient({ url: ':memory:' });
+	client = createClient({ url: ':memory:' });
 	await client.execute(`
 		CREATE TABLE sync_locks (
 			name text PRIMARY KEY NOT NULL,
@@ -25,6 +27,13 @@ beforeEach(async () => {
 });
 
 const MINUTE = 60_000;
+
+// Each test opens its own in-memory client. Closing it keeps one per test
+// from leaking for the life of the worker — which never shows up while this
+// file is run on its own.
+afterEach(() => {
+	client.close();
+});
 
 describe('acquireSyncLock', () => {
 	it('grants a free lock', async () => {

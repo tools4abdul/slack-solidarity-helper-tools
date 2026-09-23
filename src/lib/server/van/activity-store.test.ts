@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -16,13 +16,15 @@ import { activityEvents, rangeFor, totalEvents } from '../../van/turf-activity.j
 // Typed as drizzle's own return so it matches the `Db` the van modules take
 // (which carries `$client`), rather than the looser LibSQLDatabase alias.
 let db: ReturnType<typeof drizzle>;
+/** Held so afterEach can close it; see the note there. */
+let client: ReturnType<typeof createClient>;
 
 const NOW = new Date('2026-08-24T18:00:00.000Z');
 const WEEK = rangeFor('7', NOW);
 const ALL = rangeFor('all', NOW);
 
 beforeEach(async () => {
-	const client = createClient({ url: ':memory:' });
+	client = createClient({ url: ':memory:' });
 	db = drizzle(client);
 	// The REAL schema from drizzle/, not a hand-copied CREATE TABLE. It carries
 	// the partial unique index that allows only one ACTIVE claim per route, so a
@@ -75,6 +77,13 @@ async function checkout(over: Record<string, string | number | null> = {}) {
 }
 
 const allChapters = { chapterId: null, range: WEEK };
+
+// Each test opens its own in-memory client. Closing it keeps one per test
+// from leaking for the life of the worker — which never shows up while this
+// file is run on its own.
+afterEach(() => {
+	client.close();
+});
 
 describe('loadActivityRows', () => {
 	it('joins the turf detail an organizer reads', async () => {

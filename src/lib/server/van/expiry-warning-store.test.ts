@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -78,6 +78,16 @@ async function warnedStamps(): Promise<(string | null)[]> {
 	const res = await client.execute('SELECT expiry_warned_at FROM van_turf_checkouts ORDER BY id');
 	return res.rows.map((r) => r.expiry_warned_at as string | null);
 }
+
+// Each test opens its own in-memory client and replaces console. Both leak for
+// the life of the worker otherwise — `clearAllMocks` resets a spy's recorded
+// calls but leaves it installed. Neither is visible while this file is run on
+// its own, which is the shape of a test that fails once in a full suite and
+// passes every time you go looking for it.
+afterEach(() => {
+	client.close();
+	vi.restoreAllMocks();
+});
 
 describe('sendExpiryWarnings', () => {
 	it('DMs the holder of turf inside the lead window', async () => {

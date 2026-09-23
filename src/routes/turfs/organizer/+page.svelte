@@ -206,6 +206,19 @@
 				<code>/minivanExports</code>, which the current API key can't read — so turf assigned by
 				hand in VAN is invisible to the app and nothing here has been compared either way.
 			</p>
+		{:else if data.drift.visibility === 'exports-unused'}
+			<!-- Also not "no drift". Nothing in this catalog has ever appeared in a
+			     MiniVAN export, which means the campaign hands out printed list
+			     NUMBERS rather than assigning lists to named canvassers in VAN. A
+			     list number loads in MiniVAN without an export record existing, so
+			     "claimed here, not in MiniVAN" would be true of every claim ever
+			     made and would mean nothing. -->
+			<p class="empty">
+				Not checked. No turf in {scope} appears in any MiniVAN export, so there is nothing to compare
+				against — this campaign hands out printed list numbers rather than assigning lists to canvassers
+				inside VAN. A list number loads in MiniVAN either way. This check switches itself back on as soon
+				as one export matches.
+			</p>
 		{:else if data.drift.items.length === 0}
 			<p class="empty">
 				Our checkout list and MiniVAN agree in {scope}. Nothing is claimed here without being

@@ -342,11 +342,34 @@ describe('/turfs/organizer drift pane', () => {
 	};
 
 	it('flags turf claimed here but absent from MiniVAN', async () => {
-		mockDriftTurfs.mockResolvedValue([driftTurf()]);
+		// The second turf is evidence that this campaign exports to MiniVAN at
+		// all. With nothing exported anywhere in the catalog the report returns
+		// `exports-unused` and says nothing — correct, and a different test.
+		mockDriftTurfs.mockResolvedValue([
+			driftTurf(),
+			driftTurf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' }),
+		]);
 		mockDriftClaims.mockResolvedValue([liveClaim]);
 		const data = await run(event(ADMIN));
 		expect(data.drift.claimedNotInMinivan).toBe(1);
-		expect(data.drift.items[0]).toMatchObject({ kind: 'claimed-not-in-minivan', heldBy: 'Dana' });
+		expect(
+			data.drift.items.find((i: { kind: string }) => i.kind === 'claimed-not-in-minivan'),
+		).toMatchObject({
+			kind: 'claimed-not-in-minivan',
+			heldBy: 'Dana',
+		});
+	});
+
+	// The workflow this campaign actually uses: printed list numbers handed out
+	// directly, nothing ever exported to named canvassers. Flagging every claim
+	// as "not in MiniVAN" there is noise, so the check reports that it did not
+	// run rather than implying agreement.
+	it('does not check at all when nothing in the catalog was ever exported', async () => {
+		mockDriftTurfs.mockResolvedValue([driftTurf()]);
+		mockDriftClaims.mockResolvedValue([liveClaim]);
+		const data = await run(event(ADMIN));
+		expect(data.drift.visibility).toBe('exports-unused');
+		expect(data.drift.items).toEqual([]);
 	});
 
 	it('flags turf in MiniVAN that nobody claimed here', async () => {

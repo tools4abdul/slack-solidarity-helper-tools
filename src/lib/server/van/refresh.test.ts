@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, vi, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -86,6 +86,13 @@ beforeEach(() => {
 	vi.spyOn(console, 'log').mockImplementation(() => {});
 	vi.spyOn(console, 'warn').mockImplementation(() => {});
 	vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+// Hands console back. `clearAllMocks` resets a spy's recorded calls but leaves
+// it installed, so without this the real console stays replaced for the rest of
+// the worker's life.
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 describe('loadRegionStates', () => {
@@ -377,6 +384,13 @@ describe('runRefreshSweep — a want recorded mid-sweep survives', () => {
 			      VALUES (100, 10, 1152, 71, 'Washtenaw County', 'Ann Arbor', 'Turf 01', 250, ?, ?)`,
 			args: [NOW.toISOString(), NOW.toISOString()],
 		});
+	});
+
+	// Each test opens its own in-memory client. Closing it keeps one per test
+	// from leaking for the life of the worker — which never shows up while this
+	// file is run on its own.
+	afterEach(() => {
+		client.close();
 	});
 
 	async function storedRequestedAt(): Promise<string | null> {
