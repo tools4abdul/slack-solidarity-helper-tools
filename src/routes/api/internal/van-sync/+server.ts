@@ -288,9 +288,9 @@ export const POST: RequestHandler = async ({ url }) => {
 		// straight away and the new counts arrive with a future catalog read.
 		//
 		// Only when an admin has turned it on. A re-cut replaces every route in
-		// the region, and nothing yet shows the replacements keep a printed list
-		// number — without one they are unclaimable until someone regenerates the
-		// lists in VAN by hand (see app_config.vanRegionRefreshEnabled). Completed
+		// the region and deletes its printed lists (verified 2026-09-24) — the
+		// replacements are unclaimable until someone prints lists in VAN by hand
+		// (see app_config.vanRegionRefreshEnabled). Completed
 		// turf still records its want while this is off; the sweep sends it once
 		// the switch is on.
 		const refresh = vanRegionRefreshEnabled

@@ -15,6 +15,7 @@ import {
 	TURF_RELEASE_ACTION_ID,
 	TURF_RELEASE_MINE_ACTION_ID,
 	TURF_COMPLETE_ACTION_ID,
+	COMPLETE_PERCENTS,
 	turfPageUrl,
 	type Block,
 } from './turf-command.js';
@@ -474,10 +475,34 @@ describe('buildMineBlocks', () => {
 	it('carries each turf to its own action', () => {
 		const blocks = buildMineBlocks(input([turf(), turf({ mapRouteId: 502 })])).blocks;
 		const actions = blocks.filter((b) => b.type === 'actions');
-		const ids = actions.map((b) =>
-			b.type === 'actions' ? decodeTurfAction(b.elements[0]?.value)?.mapRouteId : null,
-		);
+		const ids = actions.map((b) => {
+			const first = b.type === 'actions' ? b.elements[0] : undefined;
+			const value = first?.type === 'static_select' ? first.options[0]?.value : first?.value;
+			return decodeTurfAction(value)?.mapRouteId;
+		});
 		expect(ids).toEqual([501, 502]);
+	});
+
+	// Marking walked requires the % MiniVAN shows, so "Mark it done" is a menu
+	// whose every option carries the turf AND a percentage — picking one is the
+	// whole action, with no modal.
+	it('offers "Mark it done" as percentages, each carrying the turf', () => {
+		const blocks = buildMineBlocks(input([turf()])).blocks;
+		const actions = blocks.find((b) => b.type === 'actions');
+		const menu = actions?.type === 'actions' ? actions.elements[0] : undefined;
+		expect(menu?.type).toBe('static_select');
+		if (menu?.type !== 'static_select') return;
+		const decoded = menu.options.map((o) => decodeTurfAction(o.value));
+		expect(decoded.map((d) => d?.percent)).toEqual(COMPLETE_PERCENTS);
+		expect(decoded.every((d) => d?.mapRouteId === 501)).toBe(true);
+		expect(COMPLETE_PERCENTS[0]).toBe(100);
+	});
+
+	it('drops a percentage outside 0-100 rather than trusting it', () => {
+		expect(
+			decodeTurfAction(JSON.stringify({ c: 71, o: 0, r: 501, p: 400 }))?.percent,
+		).toBeUndefined();
+		expect(decodeTurfAction(JSON.stringify({ c: 71, o: 0, r: 501, p: 0 }))?.percent).toBe(0);
 	});
 
 	// The whole point of the warning. Completing records that YOU walked it; it

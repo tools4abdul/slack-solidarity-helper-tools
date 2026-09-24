@@ -12,8 +12,7 @@
 import { and, eq, isNull, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanSyncState, vanTurfCheckouts, vanTurfs } from '../schema.js';
-import type { ClaimSnapshot } from '../../van/checkout.js';
-import type { DriftTurfRow, DriftVisibility } from '../../van/turf-drift.js';
+import type { DriftClaim, DriftTurfRow, DriftVisibility } from '../../van/turf-drift.js';
 import { visibleToChapter } from './chapter-visibility.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -56,7 +55,7 @@ export async function loadDriftTurfs(db: Db, query: DriftQuery): Promise<DriftTu
  * this chapter's turf", and passing several hundred route ids into an `IN` to
  * express that would be the same query written worse.
  */
-export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<ClaimSnapshot[]> {
+export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<DriftClaim[]> {
 	return db
 		.select({
 			mapRouteId: vanTurfCheckouts.mapRouteId,
@@ -66,6 +65,7 @@ export async function loadDriftClaims(db: Db, query: DriftQuery): Promise<ClaimS
 			expiresAt: vanTurfCheckouts.expiresAt,
 			releasedAt: vanTurfCheckouts.releasedAt,
 			completedAt: vanTurfCheckouts.completedAt,
+			loadedInMinivanAt: vanTurfCheckouts.loadedInMinivanAt,
 		})
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))

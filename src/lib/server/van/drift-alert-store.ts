@@ -49,7 +49,10 @@ export interface DriftAlertResult {
 }
 
 function isDriftKind(value: string | null): value is DriftKind {
-	return value === 'claimed-not-in-minivan' || value === 'in-minivan-not-claimed';
+	// Only the kind that still exists. `in-minivan-not-claimed` stamps from before
+	// that direction was dropped (turf-drift.ts) fail this on purpose, so the
+	// stale sweep clears them.
+	return value === 'claimed-not-in-minivan';
 }
 
 interface Stamps {

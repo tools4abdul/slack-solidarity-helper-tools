@@ -282,22 +282,12 @@ tr:hover td {
 }
 
 /* --- Drift ---------------------------------------------------------------
-   Two problems, ranked by consequence rather than by symmetry: turf out in
-   MiniVAN but free here can be claimed twice, which is the failure the whole
-   feature exists to prevent; turf claimed here but never exported costs one
-   volunteer a wasted morning. Red and amber accordingly. */
-
-.drift-in-minivan-not-claimed td:first-child {
-	box-shadow: inset 3px 0 0 var(--color-red);
-}
+   Turf claimed here but not yet loaded in MiniVAN is worth a nudge:
+   amber, not red. (The red "in MiniVAN, not claimed here" row is gone — see
+   turf-drift.ts.) */
 
 .drift-claimed-not-in-minivan td:first-child {
 	box-shadow: inset 3px 0 0 var(--color-warning);
-}
-
-.badge-in-minivan-not-claimed {
-	background: color-mix(in srgb, var(--color-red) 18%, transparent);
-	color: var(--color-red);
 }
 
 .badge-claimed-not-in-minivan {

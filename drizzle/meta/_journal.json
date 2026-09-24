@@ -309,6 +309,13 @@
       "when": 1790197491436,
       "tag": "0043_naive_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1790216393947,
+      "tag": "0044_flippant_puppet_master",
+      "breakpoints": true
     }
   ]
 }

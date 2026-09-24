@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { planCatalogSync, needsGeometry, type CatalogFolder } from './catalog.js';
+import {
+	planCatalogSync,
+	needsGeometry,
+	type CatalogClaim,
+	type CatalogFolder,
+} from './catalog.js';
 import type { VanTurfRow } from '../schema.js';
 import type { VanMapRegion, VanMinivanExport } from './types.js';
 
@@ -59,6 +64,7 @@ function existingRow(over: Partial<VanTurfRow> = {}): VanTurfRow {
 		hullJson: '[{"lat":42.37,"lng":-71.11}]',
 		hullSourceRouteSize: 400,
 		vanDistributedTo: null,
+		vanAssignedAt: null,
 		firstSeenAt: '2026-08-01T00:00:00.000Z',
 		lastSeenAt: '2026-08-20T00:00:00.000Z',
 		lastRefreshedAt: '2026-08-20T00:00:00.000Z',
@@ -146,7 +152,8 @@ describe('planCatalogSync', () => {
 					]),
 				],
 			});
-			expect(fromRoute.upserts[0]!.printedListCreatedAt).toBe('2026-08-01T10:00:00Z');
+			// VAN's local wall clock wearing a Z, stored as the real UTC instant.
+			expect(fromRoute.upserts[0]!.printedListCreatedAt).toBe('2026-08-01T14:00:00.000Z');
 
 			// Otherwise it comes from /printedLists, by the number being issued.
 			const fromList = planCatalogSync({
@@ -154,7 +161,7 @@ describe('planCatalogSync', () => {
 				folders: [folder([region([route()])])],
 				printedLists: [list('35536745-88712', '2026-08-02T10:00:00Z')],
 			});
-			expect(fromList.upserts[0]!.printedListCreatedAt).toBe('2026-08-02T10:00:00Z');
+			expect(fromList.upserts[0]!.printedListCreatedAt).toBe('2026-08-02T14:00:00.000Z');
 
 			// No number, no date — even when a list with another number has one.
 			const none = planCatalogSync({
@@ -445,6 +452,132 @@ describe('planCatalogSync', () => {
 		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz, unknown canvasser');
 	});
 
+	// Loading a list number into MiniVAN is what creates an export, so an export
+	// means SOMEONE opened the list. Inside one of our claims it is our
+	// volunteer; anywhere else the turf was handed out outside the app, and
+	// that never lets go until the route is re-cut.
+	describe('our own claims versus outside assignments', () => {
+		// 2026-09-22T11:52:28 Detroit time, which VAN writes with a Z — really
+		// 15:52:28 UTC.
+		const loaded = exportOf({ dateCreated: '2026-09-22T11:52:28.15Z' });
+		const claim = (over: Partial<CatalogClaim> = {}): CatalogClaim => ({
+			checkoutId: 7,
+			mapRouteId: 100,
+			claimedAt: '2026-09-22T15:40:00.000Z',
+			endedAt: '2026-09-24T15:40:00.000Z',
+			loadedInMinivanAt: null,
+			...over,
+		});
+		const plan = (over: Partial<Parameters<typeof planCatalogSync>[0]> = {}) =>
+			planCatalogSync({
+				...base,
+				now: new Date('2026-09-30T12:00:00.000Z'),
+				folders: [folder([region([route()])])],
+				minivanExports: [loaded],
+				...over,
+			});
+
+		it('treats an export inside our claim as our volunteer loading the list', () => {
+			const result = plan({ claims: [claim()] });
+			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
+			expect(result.claimsLoaded).toEqual([
+				{ checkoutId: 7, loadedAt: '2026-09-22T15:52:28.150Z' },
+			]);
+		});
+
+		it('counts an export just before the claim landed as ours too', () => {
+			const result = plan({ claims: [claim({ claimedAt: '2026-09-22T16:10:00.000Z' })] });
+			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
+			expect(result.claimsLoaded).toHaveLength(1);
+		});
+
+		it('does not stamp a claim twice', () => {
+			const result = plan({
+				claims: [claim({ loadedInMinivanAt: '2026-09-22T15:52:28.150Z' })],
+			});
+			expect(result.claimsLoaded).toEqual([]);
+		});
+
+		it('marks turf loaded with no claim of ours as assigned outside the app', () => {
+			const result = plan();
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Dana Ruiz',
+				vanAssignedAt: '2026-09-22T15:52:28.150Z',
+			});
+		});
+
+		it('counts an export after our claim ended as outside', () => {
+			const result = plan({
+				claims: [
+					claim({ claimedAt: '2026-09-20T10:00:00.000Z', endedAt: '2026-09-21T10:00:00.000Z' }),
+				],
+			});
+			expect(result.upserts[0]!.vanAssignedAt).toBe('2026-09-22T15:52:28.150Z');
+		});
+
+		// "Never let turf assigned outside our tool become available again."
+		it('keeps an outside assignment after the export is gone', () => {
+			const result = plan({
+				minivanExports: [],
+				existing: [
+					existingRow({
+						vanDistributedTo: 'Dana Ruiz',
+						vanAssignedAt: '2026-09-22T15:52:28.150Z',
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Dana Ruiz',
+				vanAssignedAt: '2026-09-22T15:52:28.150Z',
+			});
+		});
+
+		it('keeps it through a reprinted list, and names the newest outside holder', () => {
+			const result = plan({
+				folders: [folder([region([route({ printedList: { number: '11111111-22222' } })])])],
+				minivanExports: [
+					exportOf({
+						minivanExportId: 9,
+						name: 'List 11111111-22222',
+						dateCreated: '2026-09-28T09:00:00Z',
+						canvassers: [{ firstName: 'Sam', lastName: 'Ito' }],
+					}),
+				],
+				existing: [
+					existingRow({
+						vanDistributedTo: 'Dana Ruiz',
+						vanAssignedAt: '2026-09-22T15:52:28.150Z',
+					}),
+				],
+			});
+			expect(result.upserts[0]).toMatchObject({
+				vanDistributedTo: 'Sam Ito',
+				vanAssignedAt: '2026-09-22T15:52:28.150Z',
+			});
+		});
+
+		// Rows written before this rule carry names that may have come from our
+		// own volunteers. Only `vanAssignedAt` makes a hold sticky.
+		it('does not inherit a name written before the rule existed', () => {
+			const result = plan({
+				minivanExports: [],
+				existing: [existingRow({ vanDistributedTo: 'unknown canvasser', vanAssignedAt: null })],
+			});
+			expect(result.upserts[0]).toMatchObject({ vanDistributedTo: null, vanAssignedAt: null });
+		});
+
+		it('ignores an export it cannot date', () => {
+			const result = plan({ minivanExports: [exportOf({ dateCreated: null })] });
+			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
+		});
+
+		// An export naming nobody is no evidence anyone was handed the list.
+		it('ignores an export with no canvassers', () => {
+			const result = plan({ minivanExports: [exportOf({ canvassers: [] })] });
+			expect(result.upserts[0]!.vanAssignedAt).toBeNull();
+		});
+	});
+
 	describe('when a list has been exported more than once', () => {
 		// The live case: Royal Oak 59430821-62783 went to a named canvasser on
 		// 09-22 and was re-exported on 09-23 to one VAN names only by id.
@@ -514,6 +647,7 @@ describe('planCatalogSync', () => {
 			retirements: [],
 			unretirements: [],
 			geometryQueue: [],
+			claimsLoaded: [],
 			warnings: [],
 		});
 	});
@@ -523,7 +657,8 @@ describe('planCatalogSync', () => {
 			...base,
 			folders: [folder([region([route()], { dateRefreshed: '2026-08-20T20:59:00Z' })])],
 		});
-		expect(plan.upserts[0]!.lastRefreshedAt).toBe('2026-08-20T20:59:00Z');
+		// 20:59 Detroit, which VAN writes as 20:59Z — really 00:59 UTC next day.
+		expect(plan.upserts[0]!.lastRefreshedAt).toBe('2026-08-21T00:59:00.000Z');
 	});
 
 	it('keeps the prior refresh time when VAN omits one', () => {

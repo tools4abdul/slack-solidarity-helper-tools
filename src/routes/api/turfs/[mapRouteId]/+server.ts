@@ -5,6 +5,7 @@ import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
+import { parseReportedPercent } from '$lib/van/checkout.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
 
@@ -58,8 +59,11 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	let action: unknown;
+	// What MiniVAN shows as done — required when marking walked, and checked by
+	// endClaim rather than here so the Slack path shares the same rule.
+	let percent: unknown;
 	try {
-		({ action } = (await request.json()) as { action?: unknown });
+		({ action, percent } = (await request.json()) as { action?: unknown; percent?: unknown });
 	} catch {
 		return json({ error: 'Malformed request' }, { status: 400 });
 	}
@@ -97,6 +101,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		slackUserId: session.slackUserId,
 		now: new Date(now),
 		kind: action === 'complete' ? 'complete' : 'release',
+		reportedPercent: action === 'complete' ? parseReportedPercent(percent) : null,
 	});
 	if (!result.ok) return json({ error: result.message }, { status: result.status });
 	// Story 5.6 hangs off completion, and finishes elsewhere: `endClaim` records

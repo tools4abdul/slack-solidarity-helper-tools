@@ -8,6 +8,7 @@
 
 import type { NewVanTurfRow, VanTurfRow } from '../schema.js';
 import type { VanMapRegion, VanMinivanExport, VanPrintedList } from './types.js';
+import { campaignWallClockToUtc } from '../../campaign-time.js';
 
 /** One folder's worth of fetched data, already resolved to a chapter. */
 export interface CatalogFolder {
@@ -26,7 +27,22 @@ export interface CatalogInput {
 	existing: VanTurfRow[];
 	/** Optional — Tier 3, and a key without it should still sync a catalog. */
 	minivanExports?: VanMinivanExport[];
+	/** This app's own claims, recent enough to overlap the stored exports. An
+	 *  export inside one of these is our volunteer loading the list, not the
+	 *  turf being handed out elsewhere. */
+	claims?: CatalogClaim[];
 	now: Date;
+}
+
+/** One of our checkouts, as the export attribution needs it. */
+export interface CatalogClaim {
+	checkoutId: number;
+	mapRouteId: number;
+	claimedAt: string;
+	/** completedAt ?? releasedAt ?? expiresAt — when the claim stopped (or will
+	 *  stop) covering the turf. */
+	endedAt: string;
+	loadedInMinivanAt: string | null;
 }
 
 export interface CatalogPlan {
@@ -38,6 +54,9 @@ export interface CatalogPlan {
 	unretirements: number[];
 	/** Turfs needing hull geometry: no hull, or one the route outgrew. */
 	geometryQueue: Array<{ mapRouteId: number; savedListId: number }>;
+	/** Claims whose list was just seen loaded in MiniVAN, to stamp
+	 *  `loadedInMinivanAt` on. Only claims not already stamped. */
+	claimsLoaded: Array<{ checkoutId: number; loadedAt: string }>;
 	/** Operator-facing conditions. Logged under `[van]`; the sync route
 	 *  forwards them to Slack the way the door-knock snapshot does. */
 	warnings: string[];
@@ -161,56 +180,131 @@ export function listNumberFromExportName(name: string | null | undefined): strin
 	return match ? match[1]!.trim() : null;
 }
 
+/**
+ * One of VAN's own timestamps — a region's `dateRefreshed`, a printed list's
+ * `dateCreated` — as a real UTC ISO string.
+ *
+ * VAN writes campaign-local wall-clock time and appends a `Z`. Verified live
+ * 2026-09-24: a region refreshed at about 21:40 Eastern reported
+ * `dateRefreshed: 21:40Z`, and lists printed a few minutes after a sync that ran
+ * at 01:40 UTC reported `dateCreated: 21:45Z`. Read as UTC, every one of them
+ * is four hours in the past, and three readers compare them with our own clock:
+ * the refresh settle check, the door-delta evidence check, and the list-expiry
+ * warning. Converted here, once, so all of them get the real instant.
+ *
+ * Null for anything unparseable, which each reader already treats as "VAN did
+ * not say".
+ */
+export function vanTimestamp(value: string | null | undefined): string | null {
+	if (!value) return null;
+	return campaignWallClockToUtc(value)?.toISOString() ?? null;
+}
+
 /** What a turf shows for a canvasser VAN names only by id. */
 export const UNKNOWN_CANVASSER = 'unknown canvasser';
 
-/** Whether `a` was exported after `b`. By `dateCreated`, then by export id,
- *  which VAN hands out in increasing order — so two exports in the same
- *  second still have a winner, and it does not depend on input order. */
-function isLater(a: VanMinivanExport, b: VanMinivanExport): boolean {
-	const byDate = (a.dateCreated ?? '').localeCompare(b.dateCreated ?? '');
-	return byDate !== 0 ? byDate > 0 : a.minivanExportId > b.minivanExportId;
+/**
+ * How far before a claim an export still counts as that claim's volunteer
+ * loading the list. Covers a volunteer who types the number into MiniVAN a
+ * moment before the claim lands, and clock skew between VAN and us.
+ */
+export const CLAIM_LOAD_GRACE_MS = 30 * 60 * 1000;
+
+/** An export we can place in time, with the names to show for it. */
+interface DatedExport {
+	at: number;
+	minivanExportId: number;
+	names: string;
 }
 
 /**
- * Canvasser names by PRINTED LIST NUMBER, from exports made in VAN. Turfs
- * with an entry render as "assigned in VAN" rather than vanishing (plan.md §4,
- * Story 8.1).
+ * Exports by PRINTED LIST NUMBER, oldest first, from exports made in VAN.
  *
- * The LATEST export of a list wins. An organizer re-exporting a list is handing
- * it to someone else, so the earlier canvasser no longer has it. Verified live
- * 2026-09-23: Royal Oak list 59430821-62783 went to a named canvasser on 09-22
- * and was exported again on 09-23. Merging the two named both people and kept
- * the first one on the turf indefinitely.
+ * An export with no canvassers at all is skipped: it names nobody, so it is no
+ * evidence the list was handed to anyone. So is one whose date cannot be read,
+ * because every decision below is about WHEN it happened.
  *
- * That second export's canvasser came back as an id with a null first and last
- * name, which VAN does for some canvassers. They are still someone holding the
- * list, so they show as UNKNOWN_CANVASSER rather than being dropped — dropping
- * them is what left the 09-22 canvasser in place.
- *
- * An export with no canvassers at all is skipped, not counted as a win: it
- * names nobody, so it is no evidence the list changed hands.
+ * Some canvassers come back as an id with null names, which VAN does for most
+ * MiniVAN users. They are still someone holding the list, so they show as
+ * UNKNOWN_CANVASSER rather than being dropped. `dateCreated` is VAN's local
+ * wall clock wearing a `Z` (see vanTimestamp).
  */
-function distributionIndex(exports: VanMinivanExport[]): Map<string, string> {
-	const latest = new Map<string, VanMinivanExport>();
+function exportsByList(exports: VanMinivanExport[]): Map<string, DatedExport[]> {
+	const index = new Map<string, DatedExport[]>();
 	for (const exp of exports) {
 		if ((exp.canvassers ?? []).length === 0) continue;
 		const key = listNumberFromExportName(exp.name);
 		if (!key) continue;
-		const current = latest.get(key);
-		if (!current || isLater(exp, current)) latest.set(key, exp);
-	}
-
-	const index = new Map<string, string>();
-	for (const [key, exp] of latest) {
+		const at = campaignWallClockToUtc(exp.dateCreated ?? '')?.getTime();
+		if (at === undefined) continue;
 		// Deduplicated, so two canvassers VAN names only by id read as one
 		// "unknown canvasser" rather than the same phrase twice.
 		const names = [
 			...new Set((exp.canvassers ?? []).map((c) => canvasserName(c) || UNKNOWN_CANVASSER)),
-		];
-		index.set(key, names.join(', '));
+		].join(', ');
+		const list = index.get(key) ?? [];
+		list.push({ at, minivanExportId: exp.minivanExportId, names });
+		index.set(key, list);
+	}
+	// By time, then by export id, which VAN hands out in increasing order — so
+	// two exports in the same second still have an order that does not depend
+	// on the order they arrived in.
+	for (const list of index.values()) {
+		list.sort((a, b) => a.at - b.at || a.minivanExportId - b.minivanExportId);
 	}
 	return index;
+}
+
+/** Whether an export falls inside one of our claims on the route. */
+function insideClaim(at: number, claims: readonly CatalogClaim[]): boolean {
+	return claims.some(
+		(c) => at >= Date.parse(c.claimedAt) - CLAIM_LOAD_GRACE_MS && at <= Date.parse(c.endedAt),
+	);
+}
+
+/**
+ * Who holds this route outside the app, and since when — or null.
+ *
+ * Loading a list number into MiniVAN is what creates an export (verified
+ * 2026-09-24: most carry the loading volunteer as a nameless canvasser, and one
+ * was created BY its own canvasser). So an export means SOMEONE opened the list,
+ * and the question is who:
+ *
+ *   - inside one of our claims on this route → our volunteer. Not an outside
+ *     assignment; it is recorded on the claim instead (`claimsLoaded`).
+ *   - anywhere else → the turf was handed out outside this app.
+ *
+ * An outside assignment is STICKY for the life of the route: once
+ * `vanAssignedAt` is set it is carried forward on every sync, and so is the
+ * name, even after the export ages out of the store or the list is reprinted.
+ * Turf handed out elsewhere is managed elsewhere, and never comes back into this
+ * app's pool. A re-cut issues new route ids, which is the one thing that starts
+ * a route over.
+ *
+ * The LATEST outside export names the holder: re-exporting a list hands it to
+ * someone else. Stickiness is keyed on `vanAssignedAt` rather than on
+ * `vanDistributedTo`, because rows written before this rule may carry a name
+ * that came from our own volunteer's export.
+ */
+function outsideAssignment(
+	exports: readonly DatedExport[],
+	claims: readonly CatalogClaim[],
+	prior: VanTurfRow | undefined,
+): { vanDistributedTo: string | null; vanAssignedAt: string | null } {
+	const outside = exports.filter((e) => !insideClaim(e.at, claims));
+	const latest = outside.at(-1);
+	if (prior?.vanAssignedAt) {
+		return {
+			vanDistributedTo: latest?.names ?? prior.vanDistributedTo ?? UNKNOWN_CANVASSER,
+			vanAssignedAt: prior.vanAssignedAt,
+		};
+	}
+	if (!latest) return { vanDistributedTo: null, vanAssignedAt: null };
+	return {
+		vanDistributedTo: latest.names,
+		// The FIRST outside export: when the route left the pool.
+		vanAssignedAt: new Date(outside[0]!.at).toISOString(),
+	};
 }
 
 /** First five names, then a count of the rest — a warning names the turf an
@@ -234,7 +328,14 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 	const warnings: string[] = [];
 	const listIndex = printedListIndex(printedLists);
 	const createdIndex = listCreatedIndex(printedLists);
-	const distributed = distributionIndex(input.minivanExports ?? []);
+	const exportIndex = exportsByList(input.minivanExports ?? []);
+	const claimsByRoute = new Map<number, CatalogClaim[]>();
+	for (const claim of input.claims ?? []) {
+		const list = claimsByRoute.get(claim.mapRouteId) ?? [];
+		list.push(claim);
+		claimsByRoute.set(claim.mapRouteId, list);
+	}
+	const claimsLoaded: CatalogPlan['claimsLoaded'] = [];
 	const existingById = new Map(existing.map((row) => [row.mapRouteId, row]));
 
 	const upserts: NewVanTurfRow[] = [];
@@ -266,10 +367,10 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					routeNumber !== null && backfill !== null && routeNumber !== backfill;
 				// The date belongs to whichever number is being issued, so it is
 				// looked up by that number rather than taken from the route alone.
-				const printedListCreatedAt =
+				const printedListCreatedAt = vanTimestamp(
 					(routeNumber !== null ? route.printedList?.dateCreated : null) ??
-					(printedListNumber ? createdIndex.get(printedListNumber) : undefined) ??
-					null;
+						(printedListNumber ? createdIndex.get(printedListNumber) : undefined),
+				);
 
 				const routeSize = route.routeSize ?? 0;
 				const hullSourceRouteSize = prior?.hullSourceRouteSize ?? null;
@@ -281,6 +382,23 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 						hullSourceRouteSize,
 						routeSize,
 					});
+
+				// Joined on the list number, which is what the export names.
+				const routeExports = printedListNumber ? (exportIndex.get(printedListNumber) ?? []) : [];
+				const routeClaims = claimsByRoute.get(route.mapRouteId) ?? [];
+				const assignment = outsideAssignment(routeExports, routeClaims, prior);
+				// Our own volunteer loading the list: the first export inside
+				// each claim that has not been stamped yet.
+				for (const claim of routeClaims) {
+					if (claim.loadedInMinivanAt) continue;
+					const loaded = routeExports.find((e) => insideClaim(e.at, [claim]));
+					if (loaded) {
+						claimsLoaded.push({
+							checkoutId: claim.checkoutId,
+							loadedAt: new Date(loaded.at).toISOString(),
+						});
+					}
+				}
 
 				const row: NewVanTurfRow = {
 					mapRouteId: route.mapRouteId,
@@ -305,14 +423,15 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 					centroidLng: staleHull ? null : (prior?.centroidLng ?? null),
 					hullJson: staleHull ? null : (prior?.hullJson ?? null),
 					hullSourceRouteSize: staleHull ? null : hullSourceRouteSize,
-					// Joined on the list number, which is what the export names.
-					vanDistributedTo: printedListNumber ? (distributed.get(printedListNumber) ?? null) : null,
+					vanDistributedTo: assignment.vanDistributedTo,
+					vanAssignedAt: assignment.vanAssignedAt,
 					firstSeenAt: prior?.firstSeenAt ?? nowIso,
 					lastSeenAt: nowIso,
 					// VAN's own refresh timestamp when it offers one, so the UI's
 					// staleness label reflects when the counts were recomputed
-					// rather than when we last asked for them.
-					lastRefreshedAt: region.dateRefreshed ?? prior?.lastRefreshedAt ?? null,
+					// rather than when we last asked for them. Converted from VAN's
+					// local clock; see vanTimestamp.
+					lastRefreshedAt: vanTimestamp(region.dateRefreshed) ?? prior?.lastRefreshedAt ?? null,
 					retiredAt: null,
 				};
 				upserts.push(row);
@@ -357,5 +476,5 @@ export function planCatalogSync(input: CatalogInput): CatalogPlan {
 		)
 		.map((row) => row.mapRouteId);
 
-	return { upserts, retirements, unretirements, geometryQueue, warnings };
+	return { upserts, retirements, unretirements, geometryQueue, claimsLoaded, warnings };
 }

@@ -530,6 +530,8 @@ function buildTurf(seed: TurfSeed, viewer: { isAdmin: boolean }): DemoTurf {
 			retiredAt: null,
 			vanDistributedTo: seed.status === 'assigned-in-van' ? (seed.heldBy ?? 'A canvasser') : null,
 			doorCount: seed.doorsRemaining,
+			// The demo has no ledger, so nobody has reported walking anything.
+			reportedPercent: null,
 		},
 		demoClaims(seed),
 		DEMO_VIEWER_ID,

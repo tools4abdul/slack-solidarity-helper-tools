@@ -28,6 +28,7 @@ import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/ti
 import type { ClaimSnapshot } from '$lib/van/checkout.js';
 import type { LatLng } from '$lib/van/geometry.js';
 import { visibleToChapter } from '$lib/server/van/chapter-visibility.js';
+import { latestWalkReports } from '$lib/server/van/checkout-store.js';
 
 // The volunteer turf page.
 //
@@ -299,6 +300,12 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const asOf = new Date();
 	const viewer = { slackUserId: session.slackUserId, isAdmin: session.isAdmin };
+	// What volunteers last reported walking, so a turf finished at 100% is not
+	// offered as claimable and part-walked turf says how far along it is.
+	const walkReports = await latestWalkReports(
+		db,
+		selected.map((r) => r.mapRouteId),
+	);
 	// Passed to toTurfView so `claimable` and the at-the-limit message reflect
 	// what the claim route will actually enforce — the map and the button must
 	// not disagree with the thing they lead to.
@@ -313,7 +320,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		chapter,
 		// toTurfView is the single gate on what reaches the browser; see its
 		// header. Nothing below it should ever be spread from a raw row.
-		turfs: selected.map((row) => toTurfView(row, claims, viewer, asOf, options)),
+		turfs: selected.map((row) =>
+			toTurfView(row, claims, viewer, asOf, { ...options, walkReports }),
+		),
 		// The chapter's total, not this payload's remainder. Reporting the
 		// remainder made the page's own message drift as soon as someone
 		// panned: the count of loaded turf grew while the "N more" figure kept

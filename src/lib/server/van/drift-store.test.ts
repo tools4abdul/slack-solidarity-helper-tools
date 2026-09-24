@@ -42,10 +42,12 @@ beforeEach(async () => {
 	);
 });
 
+// Claimed three hours ago: past the 2-hour grace before an unloaded claim is
+// drift (DRIFT_LOAD_GRACE_HOURS in turf-drift.ts).
 const claimOn = (route: number, name = 'Dana') =>
 	client.execute(
 		`INSERT INTO van_turf_checkouts (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at)
-		 VALUES (${route}, 'U_VOL', '${name}', '${iso(NOW.getTime() - HOUR)}', '${iso(NOW.getTime() + 40 * HOUR)}')`,
+		 VALUES (${route}, 'U_VOL', '${name}', '${iso(NOW.getTime() - 3 * HOUR)}', '${iso(NOW.getTime() + 40 * HOUR)}')`,
 	);
 
 const distribute = (route: number, who: string) =>
@@ -134,11 +136,14 @@ describe('loadDriftVisibility', () => {
 });
 
 describe('the three reads together', () => {
-	it('finds both directions of drift', async () => {
+	it('finds turf claimed here but not in MiniVAN', async () => {
 		await claimOn(100); // claimed here, not in MiniVAN
-		await distribute(200, 'Sam Rivera'); // in MiniVAN, not claimed here
-		await distribute(300, 'Alex Kim');
-		await claimOn(300); // both sides agree — not drift
+		await distribute(200, 'Sam Rivera'); // in MiniVAN, not claimed here — not drift
+		await claimOn(300);
+		// Claimed and loaded — agreement, not drift.
+		await client.execute(
+			`UPDATE van_turf_checkouts SET loaded_in_minivan_at = '${iso(NOW.getTime())}' WHERE map_route_id = 300`,
+		);
 		await syncState(true);
 
 		const report = driftReport(
@@ -148,8 +153,7 @@ describe('the three reads together', () => {
 			await loadDriftVisibility(db),
 		);
 		expect(report.claimedNotInMinivan).toBe(1);
-		expect(report.inMinivanNotClaimed).toBe(1);
-		expect(report.items.map((i) => i.mapRouteId)).toEqual([200, 100]);
+		expect(report.items.map((i) => i.mapRouteId)).toEqual([100]);
 	});
 
 	// Same rows, unreadable VAN side: the report must go quiet rather than

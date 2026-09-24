@@ -280,7 +280,7 @@ export async function releaseMineFromSlack(
  */
 export async function completeFromSlack(
 	db: Db,
-	ctx: TurfRequestContext & { mapRouteId: number },
+	ctx: TurfRequestContext & { mapRouteId: number; percent: number | null },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
 	const result = await endClaim(db, {
@@ -288,6 +288,8 @@ export async function completeFromSlack(
 		slackUserId: ctx.slackUserId,
 		now: new Date(now),
 		kind: 'complete',
+		// Required; endClaim refuses without it and says what to pick.
+		reportedPercent: ctx.percent,
 	});
 	const note = result.ok
 		? 'Marked walked. If MiniVAN has not synced yet, open it and hit *Sync* — ' +

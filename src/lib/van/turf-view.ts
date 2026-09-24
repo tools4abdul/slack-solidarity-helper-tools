@@ -26,6 +26,7 @@ import {
 	type ClaimSnapshot,
 } from './checkout.js';
 import { visibleTurfState, type VolunteerStatus } from './turf-status.js';
+import { campaignDayLabel } from '../campaign-time.js';
 
 /** The van_turfs columns this module reads. Narrow on purpose: the row type
  *  can grow without widening what the browser can be shown. */
@@ -127,13 +128,32 @@ export interface TurfView {
 	 * not pay for it on every row.
 	 */
 	retired?: true;
+	/**
+	 * What MiniVAN showed as done the last time a volunteer marked this turf
+	 * walked, and on which campaign day — e.g. 70 and "Tue 23 Sep".
+	 *
+	 * VAN has no progress figure the app can read, and its door count only
+	 * moves on a re-cut, so without this a walked turf looks untouched. Belongs
+	 * to this route id, so a re-cut starts it over. Omitted when nobody has
+	 * reported, for the same payload reason as `claimBlockedReason`.
+	 */
+	walkReport?: { percent: number; dayLabel: string };
 }
 
-/** Claim rules, plus the one piece of state that is about the turf rather than
- *  about the viewer: which regions VAN is currently re-cutting. */
+/** A walk report as the view needs it: the percentage, and when. */
+export interface WalkReportInput {
+	percent: number;
+	at: string;
+}
+
+/** Claim rules, plus the state that is about the turf rather than about the
+ *  viewer: which regions VAN is currently re-cutting, and what volunteers last
+ *  reported walking. */
 export type TurfViewOptions = ClaimOptions & {
 	/** Map region ids with a refresh in flight. See `TurfView.updating`. */
 	refreshingRegions?: ReadonlySet<number>;
+	/** Latest walk report per route id. See `TurfView.walkReport`. */
+	walkReports?: ReadonlyMap<number, WalkReportInput>;
 };
 
 /** A turf that can actually be drawn. */
@@ -213,12 +233,14 @@ export function toTurfView(
 	now: Date,
 	options: TurfViewOptions = {},
 ): TurfView {
+	const report = options.walkReports?.get(row.mapRouteId) ?? null;
 	const snapshot = {
 		mapRouteId: row.mapRouteId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
 		vanDistributedTo: row.vanDistributedTo,
 		doorCount: row.doorCount,
+		reportedPercent: report?.percent ?? null,
 	};
 
 	const rawStatus = turfStatus(snapshot, claims, viewer.slackUserId, now);
@@ -258,5 +280,8 @@ export function toTurfView(
 			: { claimBlockedReason: decision.message }),
 		...(options.refreshingRegions?.has(row.mapRegionId) ? { updating: true as const } : {}),
 		...(row.retiredAt ? { retired: true as const } : {}),
+		...(report
+			? { walkReport: { percent: report.percent, dayLabel: campaignDayLabel(report.at) } }
+			: {}),
 	};
 }

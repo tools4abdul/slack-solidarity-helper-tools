@@ -21,7 +21,6 @@ function item(over: Partial<AlertableDrift> = {}): AlertableDrift {
 		chapterName: 'Washtenaw County',
 		doorCount: 250,
 		heldBy: 'Dana',
-		distributedTo: null,
 		hasListNumber: true,
 		alertedKind: null,
 		...over,
@@ -36,19 +35,6 @@ describe('needsDriftAlert', () => {
 	it('stays quiet about drift already announced', () => {
 		expect(needsDriftAlert(item({ alertedKind: 'claimed-not-in-minivan' }))).toBe(false);
 	});
-
-	it('re-announces when the drift changes direction', () => {
-		// The half-fixed case: an organizer bulk-exports turf that was claimed
-		// here, the claim then lapses, and the same route now reads
-		// in-minivan-not-claimed — the dangerous direction, and genuinely new.
-		const flipped = item({
-			kind: 'in-minivan-not-claimed',
-			alertedKind: 'claimed-not-in-minivan',
-			heldBy: null,
-			distributedTo: 'Sam Rivera',
-		});
-		expect(needsDriftAlert(flipped)).toBe(true);
-	});
 });
 
 describe('newDriftAlerts', () => {
@@ -56,13 +42,7 @@ describe('newDriftAlerts', () => {
 		const fresh = newDriftAlerts([
 			item({ mapRouteId: 1, alertedKind: 'claimed-not-in-minivan' }),
 			item({ mapRouteId: 2 }),
-			item({
-				mapRouteId: 3,
-				kind: 'in-minivan-not-claimed',
-				alertedKind: 'in-minivan-not-claimed',
-				heldBy: null,
-				distributedTo: 'Sam Rivera',
-			}),
+			item({ mapRouteId: 3, alertedKind: 'claimed-not-in-minivan' }),
 			item({ mapRouteId: 4 }),
 		]);
 		expect(fresh.map((i) => i.mapRouteId)).toEqual([2, 4]);
@@ -78,15 +58,8 @@ describe('staleDriftStamps', () => {
 		expect(staleDriftStamps([100, 200], [item({ mapRouteId: 100 })])).toEqual([200]);
 	});
 
-	it('keeps the stamp of a turf that changed direction', () => {
-		// The alert path rewrites this stamp in the same run. Clearing it here as
-		// well would be two writes racing to describe one route.
-		const flipped = item({
-			mapRouteId: 100,
-			kind: 'in-minivan-not-claimed',
-			alertedKind: 'claimed-not-in-minivan',
-		});
-		expect(staleDriftStamps([100], [flipped])).toEqual([]);
+	it('keeps the stamp of a turf that is still drifting', () => {
+		expect(staleDriftStamps([100], [item({ mapRouteId: 100 })])).toEqual([]);
 	});
 
 	it('clears everything when nothing drifts any more', () => {
@@ -109,23 +82,11 @@ describe('renderDriftAlert', () => {
 		expect(renderDriftAlert([item()], APP)!).toContain('1 new disagreement between');
 	});
 
-	it('groups by kind and puts the collision direction first', () => {
-		const text = renderDriftAlert(
-			[
-				item({
-					mapRouteId: 200,
-					kind: 'in-minivan-not-claimed',
-					heldBy: null,
-					distributedTo: 'Sam Rivera',
-				}),
-				item({ mapRouteId: 100 }),
-			],
-			APP,
-		)!;
-		const collision = text.indexOf(driftLabel('in-minivan-not-claimed'));
-		const wasted = text.indexOf(driftLabel('claimed-not-in-minivan'));
-		expect(collision).toBeGreaterThan(-1);
-		expect(wasted).toBeGreaterThan(collision);
+	// Dropped as drift (turf-drift.ts): VAN-held turf is already unclaimable.
+	it('never announces turf for being in MiniVAN without a claim here', () => {
+		const text = renderDriftAlert([item()], APP)!;
+		expect(text).not.toContain('In MiniVAN, not claimed here');
+		expect(text).not.toContain('claimed twice');
 	});
 
 	it('reuses the report wording, so the channel and the page cannot disagree', () => {
@@ -134,14 +95,8 @@ describe('renderDriftAlert', () => {
 		expect(text).toContain(driftAdvice('claimed-not-in-minivan'));
 	});
 
-	it('names who holds it on each side', () => {
-		const held = renderDriftAlert([item({ heldBy: 'Dana' })], APP)!;
-		expect(held).toContain('held by Dana');
-		const vanSide = renderDriftAlert(
-			[item({ kind: 'in-minivan-not-claimed', heldBy: null, distributedTo: 'Sam Rivera' })],
-			APP,
-		)!;
-		expect(vanSide).toContain('VAN says Sam Rivera');
+	it('names who holds it', () => {
+		expect(renderDriftAlert([item({ heldBy: 'Dana' })], APP)!).toContain('held by Dana');
 	});
 
 	it('flags a drift row with no MiniVAN list number as an upstream fault', () => {
@@ -172,22 +127,5 @@ describe('renderDriftAlert', () => {
 		expect(text).toContain('+7 more');
 		expect(text).toContain('Turf 10');
 		expect(text).not.toContain('Turf 11');
-	});
-
-	it('caps each kind separately', () => {
-		const mixed: DriftItem[] = [
-			...Array.from({ length: 3 }, (_, i) =>
-				item({
-					mapRouteId: 500 + i,
-					kind: 'in-minivan-not-claimed',
-					heldBy: null,
-					distributedTo: 'Sam',
-				}),
-			),
-			...Array.from({ length: 12 }, (_, i) => item({ mapRouteId: i + 1 })),
-		];
-		const text = renderDriftAlert(mixed, APP, 2)!;
-		expect(text).toContain('+1 more');
-		expect(text).toContain('+10 more');
 	});
 });

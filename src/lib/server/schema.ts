@@ -340,13 +340,17 @@ export const appConfig = sqliteTable(
 		// that lapses in a minute.
 		vanTurfClaimTtlHours: integer('van_turf_claim_ttl_hours'),
 		vanTurfMaxConcurrentClaims: integer('van_turf_max_concurrent_claims'),
-		// Whether the sync may ask VAN to re-cut map regions. NULL means OFF: a
-		// re-cut retires every route in the region and returns new ones with new
-		// ids and new saved lists, and nothing yet shows the replacements inherit
-		// a printed list number — which this app cannot generate. So until that
-		// is verified on a test region, a refresh can turn claimable turf into
-		// unclaimable turf, and a nightly sweep would do it to every mapped folder
-		// every night, including shared folders other organizers cut.
+		// Whether the sync may ask VAN to re-cut map regions. NULL means OFF, and it
+		// should stay off. A re-cut retires every route in the region and returns
+		// new ones with new ids and new saved lists — and it DELETES the region's
+		// printed lists. Verified live 2026-09-24 on R06F_Washtenaw_SalineCity02
+		// (folder 68298): all 18 routes came back with no printed list, and the old
+		// numbers 404 on /printedLists/{number}. They came back only when an
+		// organizer printed the lists again in VAN, which this app cannot do. So a
+		// refresh turns claimable turf into unclaimable turf until someone prints,
+		// kills any list number already handed out, and a nightly sweep would do
+		// that to every mapped folder every night, including shared folders other
+		// organizers cut.
 		vanRegionRefreshEnabled: integer('van_region_refresh_enabled', { mode: 'boolean' }),
 		// The tab the checkout log is appended to, in every one of the campaign's
 		// spreadsheets. One name for all of them: the app creates the tab and its
@@ -877,9 +881,21 @@ export const vanTurfs = sqliteTable(
 		/** routeSize when the hull was computed. A materially different
 		 *  routeSize means the turf was re-cut and the hull is stale. */
 		hullSourceRouteSize: integer('hull_source_route_size'),
-		/** Canvassers VAN reports for this turf via /minivanExports, when an
-		 *  organizer distributed it outside this app. Null = not distributed. */
+		/** Canvassers VAN reports for this turf via /minivanExports, when it was
+		 *  handed out outside this app. Null = not distributed. Sticky once
+		 *  `vanAssignedAt` is set — see there. */
 		vanDistributedTo: text('van_distributed_to'),
+		/** When this route was first seen loaded in MiniVAN OUTSIDE one of our
+		 *  own claims — an organizer handing the list out directly, or a
+		 *  volunteer given the number by someone else.
+		 *
+		 *  Sticky for the life of the route: once set, the catalog sync keeps it
+		 *  and `vanDistributedTo`, so turf handed out elsewhere never comes back
+		 *  into this app's pool. A re-cut issues new route ids, which is the one
+		 *  thing that starts a route over. Exports made DURING one of our claims
+		 *  are our own volunteer loading the list and are recorded on the claim
+		 *  instead (`van_turf_checkouts.loaded_in_minivan_at`). See catalog.ts. */
+		vanAssignedAt: text('van_assigned_at'),
 		/** When the turf channel was last told this turf was drifting, and which
 		 *  direction it was drifting in.
 		 *
@@ -889,7 +905,8 @@ export const vanTurfs = sqliteTable(
 		 *  one. Cleared when the turf stops drifting, so a recurrence is audible.
 		 *  Stamped only after Slack accepted the message. */
 		driftAlertedAt: text('drift_alerted_at'),
-		/** 'claimed-not-in-minivan' | 'in-minivan-not-claimed' */
+		/** 'claimed-not-in-minivan'. Older rows may hold 'in-minivan-not-claimed',
+		 *  a kind since dropped; the drift alert's stale sweep clears those. */
 		driftAlertedKind: text('drift_alerted_kind'),
 		firstSeenAt: text('first_seen_at').notNull(),
 		lastSeenAt: text('last_seen_at').notNull(),
@@ -943,6 +960,21 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  rows claimed before this column existed, which reads as "cannot be
 		 *  measured" rather than as zero. */
 		claimDoorCount: integer('claim_door_count'),
+		/** What MiniVAN showed as done, 0-100, when the volunteer marked the turf
+		 *  walked. Required on completion; null on releases and on rows from
+		 *  before it was asked.
+		 *
+		 *  VAN's API has no progress figure and its door counts only move on a
+		 *  re-cut, which deletes the printed lists — so the volunteer, who has
+		 *  MiniVAN open at that moment, is the only source. Trusted until the
+		 *  turf is next cut: it belongs to this route id, and a re-cut issues new
+		 *  ones. */
+		reportedPercent: integer('reported_percent'),
+		/** When the sync first saw this claim's list loaded in MiniVAN: an export
+		 *  of the turf's list inside the claim's window. Loading a list number is
+		 *  what creates the export, so null on a live claim means the volunteer
+		 *  has not opened it yet — the drift report's one direction. */
+		loadedInMinivanAt: text('loaded_in_minivan_at'),
 		/** Doors that left the turf between claim and the post-completion
 		 *  refresh. Zero means the volunteer probably never synced MiniVAN. */
 		confirmedDoorDelta: integer('confirmed_door_delta'),

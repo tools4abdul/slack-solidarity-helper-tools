@@ -29,7 +29,21 @@ export interface TurfSnapshot {
 	vanDistributedTo: string | null;
 	/** Doors VAN still shows as uncontacted. */
 	doorCount: number;
+	/** What MiniVAN showed as done, 0-100, the last time a volunteer marked
+	 *  this route walked — or null if nobody has. VAN's own door count only
+	 *  moves on a re-cut, so this is the app's only measure of progress. */
+	reportedPercent: number | null;
 }
+
+/** A reported percentage from a request: an integer 0-100, or null. */
+export function parseReportedPercent(value: unknown): number | null {
+	const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+	if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 100) return null;
+	return n;
+}
+
+/** At this, a reported turf has nothing left to knock and leaves the pool. */
+export const WALKED_OUT_PERCENT = 100;
 
 export interface ClaimSnapshot {
 	mapRouteId: number;
@@ -238,6 +252,17 @@ export function canClaim(
 			ok: false,
 			reason: 'no-doors-left',
 			message: 'Every door on this turf has already been knocked.',
+		};
+	}
+
+	// VAN's door count only drops on a re-cut, so without this a turf walked
+	// to the end comes straight back into the pool. The volunteer's report is
+	// the only thing that knows it is finished.
+	if (turf.reportedPercent !== null && turf.reportedPercent >= WALKED_OUT_PERCENT) {
+		return {
+			ok: false,
+			reason: 'no-doors-left',
+			message: 'The last volunteer here finished every door on this turf.',
 		};
 	}
 

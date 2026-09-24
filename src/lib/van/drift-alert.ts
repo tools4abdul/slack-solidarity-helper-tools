@@ -5,13 +5,10 @@
 // re-render the same twelve rows every load, and a channel cannot. Two people on
 // one doorstep is urgent the first time it is announced and noise the fortieth.
 //
-// So the unit of idempotency is (turf, kind) — see `needsDriftAlert`. It is a
-// pair rather than a plain "already told them" flag because a turf can drift one
-// way, get half-fixed, and start drifting the other way: an organizer who
-// bulk-exports turf that was claimed here resolves
-// `claimed-not-in-minivan` and, if the claim then lapses, creates
-// `in-minivan-not-claimed` on the same route. That is genuinely new information
-// and the more dangerous of the two directions, so it has to get through.
+// So the unit of idempotency is (turf, kind) — see `needsDriftAlert`. There is
+// only one kind now (turf-drift.ts says why the other was dropped), but the
+// stamp keeps the pair: it is what lets a stamp written by an older version,
+// with a kind that no longer exists, read as "never announced" and be swept.
 //
 // Pure — no DB, no Slack, no clock of its own. drift-alert-store.ts does the
 // rows and the posting.
@@ -83,13 +80,9 @@ export function staleDriftStamps(
 function renderRow(item: DriftItem): string {
 	const where = item.regionName ? `${item.regionName}` : item.chapterName;
 	const doors = `${item.doorCount.toLocaleString('en-US')} doors`;
-	const who =
-		item.kind === 'in-minivan-not-claimed'
-			? `VAN says ${item.distributedTo}`
-			: `held by ${item.heldBy}`;
-	// Only meaningful on `claimed-not-in-minivan`, where `canClaim` should have
-	// made it impossible — so it is an upstream fault worth naming inline rather
-	// than a variant of the normal advice.
+	const who = `held by ${item.heldBy}`;
+	// `canClaim` should have made this impossible, so it is an upstream fault
+	// worth naming inline rather than a variant of the normal advice.
 	const anomaly = item.hasListNumber ? '' : ' · :question: no MiniVAN list number';
 	return `• *${item.turfName}* — ${where} · ${doors} · ${who}${anomaly}`;
 }
@@ -111,7 +104,7 @@ export function renderDriftAlert(
 ): string | null {
 	if (items.length === 0) return null;
 
-	const kinds: DriftKind[] = ['in-minivan-not-claimed', 'claimed-not-in-minivan'];
+	const kinds: DriftKind[] = ['claimed-not-in-minivan'];
 	const lines: string[] = [];
 	const n = items.length;
 

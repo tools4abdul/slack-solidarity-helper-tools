@@ -23,6 +23,7 @@ import { toTurfView } from '$lib/van/turf-view.js';
 import type { ClaimSnapshot } from '$lib/van/checkout.js';
 import { demoTurfs, DEMO_CHAPTERS } from '$lib/van/demo-turfs.js';
 import { visibleToChapter } from '$lib/server/van/chapter-visibility.js';
+import { latestWalkReports } from '$lib/server/van/checkout-store.js';
 
 // Turf inside a map viewport, for paging a chapter too large to serialise in
 // one payload (plan.md 6.2b — a 1,000-turf chapter is ~800 KB).
@@ -165,6 +166,12 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	}));
 
 	const viewer = { slackUserId: session.slackUserId, isAdmin: session.isAdmin };
+	// Same walk reports as the page load, or a turf walked to 100% would read
+	// as claimable on pan and be refused on click.
+	const walkReports = await latestWalkReports(
+		db,
+		selected.map((r) => r.mapRouteId),
+	);
 
 	return json({
 		// Same claim options as the page load. Before 7.4 both used the built-in
@@ -175,6 +182,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			toTurfView(row, claims, viewer, new Date(now), {
 				ttlHours: settings.vanTurfClaimTtlHours,
 				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+				walkReports,
 			}),
 		),
 		// The chapter's total, matching the page load. A per-viewport remainder

@@ -63,6 +63,14 @@ export const TURF_PAGE_ACTION_ID = 'van_turf_page';
 export const TURF_RELEASE_MINE_ACTION_ID = 'van_turf_release_mine';
 export const TURF_COMPLETE_ACTION_ID = 'van_turf_complete';
 
+/** The choices "Mark it done" offers in Slack: 5% steps, 100 first because a
+ *  finished turf is the common case. Slack caps a menu at 100 options; this
+ *  is 20. The web page takes any whole number. */
+export const COMPLETE_PERCENTS: readonly number[] = Array.from(
+	{ length: 20 },
+	(_, i) => 100 - i * 5,
+);
+
 export type TurfArgument =
 	{ kind: 'none' } | { kind: 'zip'; zip: string } | { kind: 'address'; query: string };
 
@@ -88,6 +96,9 @@ export interface TurfActionValue {
 	chapterId: number;
 	offset: number;
 	location?: LatLng | null;
+	/** What MiniVAN shows as done, 0-100. Carried by the "Mark it done"
+	 *  options, one value per percentage, so completing needs no modal. */
+	percent?: number;
 }
 
 /** Pack a button's state. Coordinates are rounded to 3 dp (~100 m) — enough to
@@ -96,6 +107,7 @@ export interface TurfActionValue {
 export function encodeTurfAction(value: TurfActionValue): string {
 	const payload: Record<string, number> = { c: value.chapterId, o: value.offset };
 	if (value.mapRouteId !== undefined) payload.r = value.mapRouteId;
+	if (value.percent !== undefined) payload.p = value.percent;
 	if (value.location) {
 		payload.lat = round3(value.location.lat);
 		payload.lng = round3(value.location.lng);
@@ -131,6 +143,10 @@ export function decodeTurfAction(raw: string | null | undefined): TurfActionValu
 	};
 	const mapRouteId = asInt(p.r);
 	if (mapRouteId !== null) value.mapRouteId = mapRouteId;
+	// Out of range is dropped, not clamped: completing refuses a missing
+	// percentage with a message, which beats recording a forged 400 as 100.
+	const percent = asInt(p.p);
+	if (percent !== null && percent >= 0 && percent <= 100) value.percent = percent;
 
 	const lat = asFinite(p.lat);
 	const lng = asFinite(p.lng);
@@ -172,10 +188,17 @@ type Button = {
 	url?: string;
 	style?: 'primary' | 'danger';
 };
+type PlainText = { type: 'plain_text'; text: string };
+type StaticSelect = {
+	type: 'static_select';
+	placeholder: PlainText;
+	action_id: string;
+	options: Array<{ text: PlainText; value: string }>;
+};
 export type Block =
 	| { type: 'section'; text: Mrkdwn; accessory?: Button }
 	| { type: 'context'; elements: Mrkdwn[] }
-	| { type: 'actions'; elements: Button[] }
+	| { type: 'actions'; elements: Array<Button | StaticSelect> }
 	| { type: 'divider' };
 
 export interface SlackMessage {
@@ -303,6 +326,9 @@ function turfSection(
 	location: LatLng | null,
 ): Block {
 	const facts = [`${turf.doorsRemaining} doors`];
+	if (turf.walkReport) {
+		facts.push(`about ${turf.walkReport.percent}% walked (${turf.walkReport.dayLabel})`);
+	}
 	const distance = distanceTo(turf, location);
 	if (distance !== null) facts.push(`${formatDistance(distance)} away`);
 	facts.push(statusLabel(turf.status));
@@ -544,15 +570,22 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 		blocks.push({
 			type: 'actions',
 			elements: [
+				// A dropdown rather than a button: marking walked requires the
+				// % MiniVAN shows, and picking it IS the action — one tap, no
+				// modal. Each option carries the whole action value.
 				{
-					type: 'button',
-					text: { type: 'plain_text', text: 'Mark it done' },
+					type: 'static_select',
+					placeholder: { type: 'plain_text', text: 'Mark it done — MiniVAN %' },
 					action_id: TURF_COMPLETE_ACTION_ID,
-					value: encodeTurfAction({
-						mapRouteId: turf.mapRouteId,
-						chapterId: turf.chapterId,
-						offset: 0,
-					}),
+					options: COMPLETE_PERCENTS.map((percent) => ({
+						text: { type: 'plain_text', text: `${percent}% done` },
+						value: encodeTurfAction({
+							mapRouteId: turf.mapRouteId,
+							chapterId: turf.chapterId,
+							offset: 0,
+							percent,
+						}),
+					})),
 				},
 				{
 					type: 'button',
