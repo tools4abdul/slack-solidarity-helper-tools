@@ -14,7 +14,7 @@
 // storage-level checks are what make simultaneous clicks resolve correctly even
 // when the friendly layer is bypassed or raced.
 
-import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { chunked } from './sql-chunk.js';
@@ -22,6 +22,7 @@ import { requestRegionRefresh } from './refresh.js';
 import {
 	canClaim,
 	DEFAULT_MAX_CONCURRENT_CLAIMS,
+	parseReportedPercent,
 	type ClaimOptions,
 	type ClaimSnapshot,
 	type TurfSnapshot,
@@ -33,7 +34,51 @@ export type ClaimResult =
 	| { ok: true; expiresAt: string; printedListNumber: string }
 	| { ok: false; status: 404 | 409; message: string };
 
-export type ReleaseResult = { ok: true } | { ok: false; status: 404 | 409; message: string };
+export type ReleaseResult = { ok: true } | { ok: false; status: 400 | 404 | 409; message: string };
+
+/** What a volunteer last reported for a route: MiniVAN's percentage when they
+ *  marked it walked, and when. */
+export interface WalkReport {
+	percent: number;
+	at: string;
+}
+
+/**
+ * The latest walk report for each route, from completed checkouts.
+ *
+ * Keyed by route id, which is what makes it "trusted until the next cut": a
+ * re-cut issues new route ids, and the new routes start with no report.
+ */
+export async function latestWalkReports(
+	db: Db,
+	mapRouteIds: readonly number[],
+): Promise<Map<number, WalkReport>> {
+	const reports = new Map<number, WalkReport>();
+	for (const batch of chunked([...new Set(mapRouteIds)])) {
+		const rows = await db
+			.select({
+				mapRouteId: vanTurfCheckouts.mapRouteId,
+				percent: vanTurfCheckouts.reportedPercent,
+				at: vanTurfCheckouts.completedAt,
+			})
+			.from(vanTurfCheckouts)
+			.where(
+				and(
+					inArray(vanTurfCheckouts.mapRouteId, batch),
+					isNotNull(vanTurfCheckouts.completedAt),
+					isNotNull(vanTurfCheckouts.reportedPercent),
+				),
+			)
+			.orderBy(desc(vanTurfCheckouts.completedAt));
+		for (const row of rows) {
+			// Newest first, so the first row per route is the one that counts.
+			if (!reports.has(row.mapRouteId) && row.percent !== null && row.at !== null) {
+				reports.set(row.mapRouteId, { percent: row.percent, at: row.at });
+			}
+		}
+	}
+	return reports;
+}
 
 /** The claims `canClaim` needs to judge this request.
  *
@@ -98,6 +143,7 @@ export async function claimTurf(
 		retiredAt: row.retiredAt,
 		vanDistributedTo: row.vanDistributedTo,
 		doorCount: row.doorCount,
+		reportedPercent: (await latestWalkReports(db, [mapRouteId])).get(mapRouteId)?.percent ?? null,
 	};
 
 	const options = input.options ?? {};
@@ -215,7 +261,11 @@ export async function claimTurf(
 
 /** Give turf back, or mark it walked. `reason` distinguishes the two in the
  *  ledger; 'complete' stamps completedAt instead of releasedAt so the row
- *  records that the doors were actually knocked. */
+ *  records that the doors were actually knocked.
+ *
+ *  Marking walked REQUIRES `reportedPercent`, what MiniVAN shows as done: it
+ *  is the only progress figure the app will ever have for this turf (see
+ *  van_turf_checkouts.reportedPercent). Handing it back unwalked does not ask. */
 export async function endClaim(
 	db: Db,
 	input: {
@@ -223,12 +273,22 @@ export async function endClaim(
 		slackUserId: string;
 		now: Date;
 		kind: 'release' | 'complete';
+		/** 0-100. Required when `kind` is 'complete'; ignored otherwise. */
+		reportedPercent?: number | null;
 	},
 ): Promise<ReleaseResult> {
 	const { mapRouteId, slackUserId, now, kind } = input;
+	const reportedPercent = parseReportedPercent(input.reportedPercent);
+	if (kind === 'complete' && reportedPercent === null) {
+		return {
+			ok: false,
+			status: 400,
+			message: 'Enter the % MiniVAN shows as done for this turf (0 to 100).',
+		};
+	}
 	const stamp =
 		kind === 'complete'
-			? { completedAt: now.toISOString() }
+			? { completedAt: now.toISOString(), reportedPercent }
 			: { releasedAt: now.toISOString(), releaseReason: 'volunteer' as const };
 
 	// Scoped to this user's own active claim, so one volunteer cannot release
@@ -278,7 +338,10 @@ export async function endClaim(
 		}
 	}
 
-	console.log(`[van] ${kind}: user=${slackUserId} route=${mapRouteId}`);
+	console.log(
+		`[van] ${kind}: user=${slackUserId} route=${mapRouteId}` +
+			(kind === 'complete' ? ` reported=${reportedPercent}%` : ''),
+	);
 	return { ok: true };
 }
 

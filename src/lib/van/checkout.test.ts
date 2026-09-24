@@ -13,6 +13,7 @@ import {
 	MAX_CONCURRENT_CLAIMS,
 	MIN_CLAIM_TTL_HOURS,
 	MIN_CONCURRENT_CLAIMS,
+	parseReportedPercent,
 	resolveClaimOptions,
 	turfStatus,
 	type ClaimSnapshot,
@@ -27,6 +28,7 @@ const turf = (over: Partial<TurfSnapshot> = {}): TurfSnapshot => ({
 	retiredAt: null,
 	vanDistributedTo: null,
 	doorCount: 91,
+	reportedPercent: null,
 	...over,
 });
 
@@ -337,6 +339,7 @@ describe('resolveClaimOptions', () => {
 			retiredAt: null,
 			vanDistributedTo: null,
 			doorCount: 100,
+			reportedPercent: null,
 		};
 		const claims = [held(1), held(2)];
 
@@ -352,5 +355,33 @@ describe('resolveClaimOptions', () => {
 		const now = new Date('2026-08-30T12:00:00.000Z');
 		const { ttlHours } = resolveClaimOptions({ ttlHours: 6 });
 		expect(expiryFor(now, ttlHours)).toBe('2026-08-30T18:00:00.000Z');
+	});
+});
+
+describe('walk reports', () => {
+	// VAN's door count only moves on a re-cut, so a turf walked to the end would
+	// otherwise come straight back into the pool.
+	it('refuses a turf the last volunteer reported at 100%', () => {
+		const decision = canClaim(turf({ reportedPercent: 100 }), [], 'U_VOL', NOW);
+		expect(decision).toMatchObject({ ok: false, reason: 'no-doors-left' });
+	});
+
+	it('still offers a part-walked turf', () => {
+		expect(canClaim(turf({ reportedPercent: 70 }), [], 'U_VOL', NOW).ok).toBe(true);
+	});
+
+	it.each([
+		[0, 0],
+		[100, 100],
+		['55', 55],
+		[-1, null],
+		[101, null],
+		[50.5, null],
+		['', null],
+		['abc', null],
+		[null, null],
+		[undefined, null],
+	])('parses %j as %j', (input, expected) => {
+		expect(parseReportedPercent(input)).toBe(expected);
 	});
 });

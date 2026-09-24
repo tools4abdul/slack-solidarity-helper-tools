@@ -5,8 +5,8 @@ import {
 	driftReport,
 	type DriftKind,
 	type DriftTurfRow,
+	type DriftClaim,
 } from './turf-drift.js';
-import type { ClaimSnapshot } from './checkout.js';
 
 const NOW = new Date('2026-09-05T18:00:00.000Z');
 const HOUR = 3_600_000;
@@ -27,7 +27,7 @@ function turf(over: Partial<DriftTurfRow> = {}): DriftTurfRow {
 	};
 }
 
-function claim(over: Partial<ClaimSnapshot> = {}): ClaimSnapshot {
+function claim(over: Partial<DriftClaim> = {}): DriftClaim {
 	return {
 		mapRouteId: 100,
 		slackUserId: 'U_VOL',
@@ -36,25 +36,30 @@ function claim(over: Partial<ClaimSnapshot> = {}): ClaimSnapshot {
 		expiresAt: iso(NOW.getTime() + 40 * HOUR),
 		releasedAt: null,
 		completedAt: null,
+		loadedInMinivanAt: null,
 		...over,
 	};
 }
+
+// Proof that this campaign uses the export workflow at all. Without one of
+// these in the catalog the report returns `exports-unused` and says nothing,
+// which is correct behaviour and would make the rules below untestable — so
+// the fixtures that are ABOUT those rules carry one.
+const exported = () => turf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' });
 
 describe('driftReport', () => {
 	it('reports nothing when the two systems agree', () => {
 		// Neither side has it.
 		expect(driftReport([turf()], [], NOW).items).toEqual([]);
-		// Both sides have it.
-		expect(driftReport([turf({ vanDistributedTo: 'Sam Rivera' })], [claim()], NOW).items).toEqual(
-			[],
-		);
+		// Claimed here and the volunteer has loaded it in MiniVAN.
+		expect(
+			driftReport(
+				[turf(), exported()],
+				[claim({ loadedInMinivanAt: iso(NOW.getTime() - HOUR) })],
+				NOW,
+			).items,
+		).toEqual([]);
 	});
-
-	// Proof that this campaign uses the export workflow at all. Without one of
-	// these in the catalog the report returns `exports-unused` and says nothing,
-	// which is correct behaviour and would make the rules below untestable — so
-	// the fixtures that are ABOUT those rules carry one.
-	const exported = () => turf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' });
 
 	it('flags turf claimed here but absent from MiniVAN', () => {
 		const { items, claimedNotInMinivan } = driftReport([turf(), exported()], [claim()], NOW);
@@ -63,22 +68,37 @@ describe('driftReport', () => {
 			kind: 'claimed-not-in-minivan',
 			turfName: 'Turf 01',
 			heldBy: 'Dana',
-			distributedTo: null,
 		});
 	});
 
-	it('flags turf in MiniVAN that nobody claimed here', () => {
-		const { items, inMinivanNotClaimed } = driftReport(
-			[turf({ vanDistributedTo: 'Sam Rivera' })],
-			[],
-			NOW,
-		);
-		expect(inMinivanNotClaimed).toBe(1);
-		expect(items[0]).toMatchObject({
-			kind: 'in-minivan-not-claimed',
-			heldBy: null,
-			distributedTo: 'Sam Rivera',
+	// Claimed at home, MiniVAN opened at the turf. Flagging that before the
+	// volunteer has had time to get there is noise in the turf channel.
+	describe('the grace period', () => {
+		it('does not flag a claim younger than two hours', () => {
+			const report = driftReport(
+				[turf(), exported()],
+				[claim({ claimedAt: iso(NOW.getTime() - 2 * HOUR + 60_000) })],
+				NOW,
+			);
+			expect(report.items).toEqual([]);
 		});
+
+		it('flags it once two hours have passed', () => {
+			const report = driftReport(
+				[turf(), exported()],
+				[claim({ claimedAt: iso(NOW.getTime() - 2 * HOUR) })],
+				NOW,
+			);
+			expect(report.items.map((i) => i.mapRouteId)).toEqual([100]);
+		});
+	});
+
+	// The dropped direction. `canClaim` already refuses turf VAN holds, so it
+	// cannot be claimed twice, and on a live campaign this was most of the
+	// catalog (1,315 rows on 2026-09-24).
+	it('does not report turf in MiniVAN that nobody claimed here', () => {
+		const { items } = driftReport([turf({ vanDistributedTo: 'Sam Rivera' })], [], NOW);
+		expect(items).toEqual([]);
 	});
 
 	describe('what counts as "claimed"', () => {
@@ -93,17 +113,6 @@ describe('driftReport', () => {
 			expect(driftReport([turf()], [claim(over)], NOW).items).toEqual([]);
 		});
 
-		// The mirror of the above: with VAN holding it and our claim dead, the
-		// turf IS drifting — it reads as free here but is out over there.
-		it('treats a dead claim plus a VAN export as drift', () => {
-			const report = driftReport(
-				[turf({ vanDistributedTo: 'Sam Rivera' })],
-				[claim({ releasedAt: iso(NOW.getTime() - HOUR) })],
-				NOW,
-			);
-			expect(report.items.map((i) => i.kind)).toEqual(['in-minivan-not-claimed']);
-		});
-
 		it('matches a claim to its own turf only', () => {
 			const report = driftReport([turf({ mapRouteId: 100 })], [claim({ mapRouteId: 999 })], NOW);
 			expect(report.items).toEqual([]);
@@ -113,35 +122,20 @@ describe('driftReport', () => {
 	// A re-cut turf is gone from VAN, so "not in MiniVAN" is true and useless.
 	// The catalog sync already releases claims on it; reporting it here would
 	// bury the real rows under the consequences of a re-cut.
-	it('skips retired turf in both directions', () => {
+	it('skips retired turf', () => {
 		const retired = { retiredAt: iso(NOW.getTime() - 48 * HOUR) };
-		expect(driftReport([turf(retired)], [claim()], NOW).items).toEqual([]);
-		expect(
-			driftReport([turf({ ...retired, vanDistributedTo: 'Sam Rivera' })], [], NOW).items,
-		).toEqual([]);
+		expect(driftReport([turf(retired), exported()], [claim()], NOW).items).toEqual([]);
 	});
 
 	describe('ordering', () => {
-		// Two people on one doorstep outranks one wasted morning.
-		it('puts double-booked turf above dead list numbers', () => {
-			const report = driftReport(
-				[turf({ mapRouteId: 1 }), turf({ mapRouteId: 2, vanDistributedTo: 'Sam Rivera' })],
-				[claim({ mapRouteId: 1 })],
-				NOW,
-			);
-			expect(report.items.map((i) => i.kind)).toEqual([
-				'in-minivan-not-claimed',
-				'claimed-not-in-minivan',
-			]);
-		});
-
-		it('ranks bigger turf first within a kind', () => {
+		it('ranks bigger turf first', () => {
 			const report = driftReport(
 				[
-					turf({ mapRouteId: 1, doorCount: 50, vanDistributedTo: 'A' }),
-					turf({ mapRouteId: 2, doorCount: 400, vanDistributedTo: 'B' }),
+					turf({ mapRouteId: 1, doorCount: 50 }),
+					turf({ mapRouteId: 2, doorCount: 400 }),
+					exported(),
 				],
-				[],
+				[claim({ mapRouteId: 1 }), claim({ mapRouteId: 2 })],
 				NOW,
 			);
 			expect(report.items.map((i) => i.mapRouteId)).toEqual([2, 1]);
@@ -149,11 +143,8 @@ describe('driftReport', () => {
 
 		it('breaks a tie stably', () => {
 			const report = driftReport(
-				[
-					turf({ mapRouteId: 9, vanDistributedTo: 'A' }),
-					turf({ mapRouteId: 2, vanDistributedTo: 'B' }),
-				],
-				[],
+				[turf({ mapRouteId: 9 }), turf({ mapRouteId: 2 }), exported()],
+				[claim({ mapRouteId: 9 }), claim({ mapRouteId: 2 })],
 				NOW,
 			);
 			expect(report.items.map((i) => i.mapRouteId)).toEqual([2, 9]);
@@ -170,7 +161,6 @@ describe('driftReport', () => {
 				visibility: 'van-side-unavailable',
 				items: [],
 				claimedNotInMinivan: 0,
-				inMinivanNotClaimed: 0,
 			});
 		});
 
@@ -194,7 +184,7 @@ describe('driftReport', () => {
 		expect(pick([turf({ printedListNumber: null }), exported()]).hasListNumber).toBe(false);
 	});
 
-	it('counts each kind separately', () => {
+	it('counts the rows it reports', () => {
 		const report = driftReport(
 			[
 				turf({ mapRouteId: 1 }),
@@ -205,8 +195,7 @@ describe('driftReport', () => {
 			NOW,
 		);
 		expect(report.claimedNotInMinivan).toBe(2);
-		expect(report.inMinivanNotClaimed).toBe(1);
-		expect(report.items).toHaveLength(3);
+		expect(report.items).toHaveLength(2);
 	});
 
 	it('handles an empty catalog', () => {
@@ -215,7 +204,7 @@ describe('driftReport', () => {
 });
 
 describe('driftLabel and driftAdvice', () => {
-	const kinds: DriftKind[] = ['claimed-not-in-minivan', 'in-minivan-not-claimed'];
+	const kinds: DriftKind[] = ['claimed-not-in-minivan'];
 
 	it.each(kinds)('labels %s', (kind) => {
 		expect(driftLabel(kind).length).toBeGreaterThan(0);
@@ -225,15 +214,6 @@ describe('driftLabel and driftAdvice', () => {
 	it.each(kinds)('gives actionable advice for %s', (kind) => {
 		expect(driftAdvice(kind).length).toBeGreaterThan(0);
 	});
-
-	it('tells the two apart', () => {
-		expect(driftLabel('claimed-not-in-minivan')).not.toBe(driftLabel('in-minivan-not-claimed'));
-		expect(driftAdvice('claimed-not-in-minivan')).not.toBe(driftAdvice('in-minivan-not-claimed'));
-	});
-
-	it('names the double-booking risk in the advice for the dangerous one', () => {
-		expect(driftAdvice('in-minivan-not-claimed')).toContain('claimed twice');
-	});
 });
 
 // ---------------------------------------------------------------------------
@@ -241,6 +221,21 @@ describe('driftLabel and driftAdvice', () => {
 // ---------------------------------------------------------------------------
 
 describe('driftReport: exports-unused', () => {
+	// Our volunteers' loads are recorded on their claims, not on the turf, and
+	// they are the same evidence that lists are being loaded.
+	it('counts a claim seen loaded in MiniVAN as the workflow being in use', () => {
+		const report = driftReport(
+			[turf({ mapRouteId: 1 }), turf({ mapRouteId: 2 })],
+			[
+				claim({ mapRouteId: 1, loadedInMinivanAt: iso(NOW.getTime() - HOUR) }),
+				claim({ mapRouteId: 2 }),
+			],
+			NOW,
+		);
+		expect(report.visibility).toBe('visible');
+		expect(report.items.map((i) => i.mapRouteId)).toEqual([2]);
+	});
+
 	// Verified live 2026-09-22: every printed list in the committee was
 	// generated after the most recent MiniVAN export, so nothing could match.
 	// Organizers hand out list NUMBERS, which load in MiniVAN with no export
@@ -274,12 +269,9 @@ describe('driftReport: exports-unused', () => {
 		);
 
 		expect(report.visibility).toBe('visible');
-		// Turf 2 is exported and unclaimed, so it is drift in the other direction —
-		// which is the point: with one real export the comparison works again.
-		expect(report.items.map((i) => i.kind).sort()).toEqual([
-			'claimed-not-in-minivan',
-			'in-minivan-not-claimed',
-		]);
+		// Turf 1 is claimed and not exported — flagged now that one real export
+		// shows the workflow is in use. Turf 2, exported and unclaimed, is not.
+		expect(report.items.map((i) => i.mapRouteId)).toEqual([1]);
 	});
 
 	// A retired row keeps whatever it was last distributed to. Counting that as

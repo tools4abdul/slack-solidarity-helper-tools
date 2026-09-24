@@ -19,10 +19,10 @@
 //     of its life; short enough to keep a statewide campaign's ~1,000 exports
 //     a day to tens of thousands of rows.
 
-import { inArray, lt, max } from 'drizzle-orm';
+import { eq, gte, inArray, lt, max } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
-import { vanMinivanExports, type NewVanMinivanExportRow } from '../schema.js';
-import { listNumberFromExportName } from './catalog.js';
+import { vanMinivanExports, vanTurfCheckouts, type NewVanMinivanExportRow } from '../schema.js';
+import { listNumberFromExportName, type CatalogClaim } from './catalog.js';
 import type { VanClient } from './client.js';
 import { chunked } from './sql-chunk.js';
 import type { VanMinivanExport } from './types.js';
@@ -179,5 +179,56 @@ function parseCanvassers(json: string): VanMinivanExport['canvassers'] {
 		return Array.isArray(parsed) ? (parsed as VanMinivanExport['canvassers']) : [];
 	} catch {
 		return [];
+	}
+}
+
+/**
+ * Our own claims that the stored exports could fall inside — the input that
+ * tells the catalog "this export was our volunteer loading the list".
+ *
+ * Every claim claimed within the retention window, whatever its state: a
+ * completed or released claim still explains an export made while it ran.
+ * Older claims cannot overlap any export the store still holds.
+ */
+export async function loadClaimsForExports(db: Db, now: Date): Promise<CatalogClaim[]> {
+	const rows = await db
+		.select({
+			id: vanTurfCheckouts.id,
+			mapRouteId: vanTurfCheckouts.mapRouteId,
+			claimedAt: vanTurfCheckouts.claimedAt,
+			expiresAt: vanTurfCheckouts.expiresAt,
+			releasedAt: vanTurfCheckouts.releasedAt,
+			completedAt: vanTurfCheckouts.completedAt,
+			loadedInMinivanAt: vanTurfCheckouts.loadedInMinivanAt,
+		})
+		.from(vanTurfCheckouts)
+		.where(
+			gte(
+				vanTurfCheckouts.claimedAt,
+				new Date(now.getTime() - EXPORT_RETENTION_DAYS * DAY_MS).toISOString(),
+			),
+		);
+	return rows.map((r) => ({
+		checkoutId: r.id,
+		mapRouteId: r.mapRouteId,
+		claimedAt: r.claimedAt,
+		endedAt: r.completedAt ?? r.releasedAt ?? r.expiresAt,
+		loadedInMinivanAt: r.loadedInMinivanAt,
+	}));
+}
+
+/** Record that a claim's list was seen loaded in MiniVAN. */
+export async function stampClaimsLoaded(
+	db: Db,
+	stamps: ReadonlyArray<{ checkoutId: number; loadedAt: string }>,
+): Promise<void> {
+	for (const batch of chunked([...stamps], WRITE_BATCH_SIZE)) {
+		const statements = batch.map((s) =>
+			db
+				.update(vanTurfCheckouts)
+				.set({ loadedInMinivanAt: s.loadedAt })
+				.where(eq(vanTurfCheckouts.id, s.checkoutId)),
+		);
+		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
 }

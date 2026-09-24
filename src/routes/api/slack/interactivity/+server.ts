@@ -66,7 +66,7 @@ interface SlackPayload {
 	team?: { domain?: string };
 	channel?: { id?: string };
 	message?: { user?: string; bot_id?: string; ts?: string; thread_ts?: string };
-	actions?: { action_id?: string; value?: string }[];
+	actions?: { action_id?: string; value?: string; selected_option?: { value?: string } }[];
 	view?: { id?: string; hash?: string; callback_id?: string };
 }
 
@@ -248,14 +248,16 @@ async function handleBlockActions(payload: SlackPayload): Promise<Response> {
  */
 function handleTurfAction(
 	payload: SlackPayload,
-	action: { action_id?: string; value?: string },
+	action: { action_id?: string; value?: string; selected_option?: { value?: string } },
 ): Response {
 	const slackUserId = payload.user?.id ?? '';
 	const responseUrl = payload.response_url;
 	// The value round-tripped through a client, so it is untrusted input.
 	// decodeTurfAction validates it; turf-slack re-checks the chapter against
 	// settings regardless.
-	const decoded = decodeTurfAction(action.value);
+	// A button carries `value`; the "Mark it done" dropdown carries the chosen
+	// option's value instead, with the percentage packed into it.
+	const decoded = decodeTurfAction(action.value ?? action.selected_option?.value);
 
 	if (!slackUserId || !decoded) {
 		respondToSlack(
@@ -287,7 +289,11 @@ function handleTurfAction(
 					: action.action_id === TURF_RELEASE_MINE_ACTION_ID && routeId !== undefined
 						? await releaseMineFromSlack(db, { ...ctx, mapRouteId: routeId })
 						: action.action_id === TURF_COMPLETE_ACTION_ID && routeId !== undefined
-							? await completeFromSlack(db, { ...ctx, mapRouteId: routeId })
+							? await completeFromSlack(db, {
+									...ctx,
+									mapRouteId: routeId,
+									percent: decoded.percent ?? null,
+								})
 							: // A mine-list button that lost its turf id redraws the mine
 								// list, not the nearby one — landing somewhere unrelated to
 								// where the tap happened is its own small betrayal.

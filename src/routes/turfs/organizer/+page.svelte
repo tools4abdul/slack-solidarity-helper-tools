@@ -222,15 +222,14 @@
 			</p>
 		{:else if data.drift.items.length === 0}
 			<p class="empty">
-				Our checkout list and MiniVAN agree in {scope}. Nothing is claimed here without being
-				exported, and nothing is out in MiniVAN that the app thinks is free.
+				Our checkout list and MiniVAN agree in {scope}. Nothing is claimed here without being in
+				MiniVAN.
 			</p>
 		{:else}
 			<p class="section-note">
 				The app and VAN disagree about {data.drift.items.length}
-				{data.drift.items.length === 1 ? 'turf' : 'turfs'}. Turf out in MiniVAN but free here can be
-				claimed by a second person; turf claimed here but never exported gives its holder a list
-				number that loads nothing.
+				{data.drift.items.length === 1 ? 'turf' : 'turfs'}: claimed here, but the volunteer hasn't
+				loaded the list in MiniVAN yet.
 			</p>
 			<div class="table-wrap">
 				<table>
@@ -258,7 +257,7 @@
 									</span>
 								</td>
 								<td>
-									{item.heldBy ?? item.distributedTo ?? '—'}
+									{item.heldBy}
 									{#if !item.hasListNumber}
 										<span class="turf-sub">no MiniVAN list number</span>
 									{/if}

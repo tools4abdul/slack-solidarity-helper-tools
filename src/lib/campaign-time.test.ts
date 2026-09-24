@@ -5,6 +5,7 @@ import {
 	campaignDayKey,
 	campaignDayLabel,
 	campaignTimeLabel,
+	campaignWallClockToUtc,
 	campaignWeekStart,
 } from './campaign-time.js';
 
@@ -153,5 +154,37 @@ describe('CAMPAIGN_TIME_ZONE', () => {
 	// van/doors-leaderboard.ts and doors-projection.ts share this clock.
 	it('is the campaign clock the canvassing modules already assume', () => {
 		expect(CAMPAIGN_TIME_ZONE).toBe('America/Detroit');
+	});
+});
+
+describe('campaignWallClockToUtc', () => {
+	// The live case: VAN's dateCreated for a Royal Oak export, which is
+	// Detroit time wearing a Z.
+	it('reads the digits as campaign-local time, ignoring the Z', () => {
+		expect(campaignWallClockToUtc('2026-09-22T11:52:28.15Z')?.toISOString()).toBe(
+			'2026-09-22T15:52:28.150Z',
+		);
+	});
+
+	it('uses the winter offset in winter', () => {
+		expect(campaignWallClockToUtc('2026-01-15T12:00:00')?.toISOString()).toBe(
+			'2026-01-15T17:00:00.000Z',
+		);
+	});
+
+	it('lands either side of a daylight-saving change correctly', () => {
+		// 2026-11-01 02:00 EDT falls back to 01:00 EST.
+		expect(campaignWallClockToUtc('2026-11-01T00:30:00Z')?.toISOString()).toBe(
+			'2026-11-01T04:30:00.000Z',
+		);
+		expect(campaignWallClockToUtc('2026-11-01T03:00:00Z')?.toISOString()).toBe(
+			'2026-11-01T08:00:00.000Z',
+		);
+	});
+
+	it('returns null for anything that is not a timestamp', () => {
+		expect(campaignWallClockToUtc('')).toBeNull();
+		expect(campaignWallClockToUtc('2026-09-22')).toBeNull();
+		expect(campaignWallClockToUtc('yesterday')).toBeNull();
 	});
 });

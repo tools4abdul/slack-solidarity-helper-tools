@@ -6,6 +6,9 @@ const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockSettings = vi.hoisted(() => vi.fn());
 const mockSelect = vi.hoisted(() => vi.fn());
 
+// Walk reports have their own tests on real SQLite (checkout-store.test.ts);
+// the stubbed db here answers only the chains this module's tests script.
+vi.mock('$lib/server/van/checkout-store.js', () => ({ latestWalkReports: async () => new Map() }));
 vi.mock('$lib/server/db.js', () => ({ db: { select: () => mockSelect() } }));
 vi.mock('$lib/server/env.js', () => ({ SLACK_SUPERUSER_ID: 'U_SUPER' }));
 vi.mock('$lib/server/settings.js', () => ({

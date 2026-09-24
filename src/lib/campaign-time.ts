@@ -202,3 +202,62 @@ export function campaignWeekStart(now: Date): Date {
 	const midnight = Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day')));
 	return new Date(midnight - back * 86_400_000);
 }
+
+const WALL_CLOCK = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3})\d*)?Z?$/;
+
+const ZONE_PARTS = new Intl.DateTimeFormat('en-US', {
+	timeZone: CAMPAIGN_TIME_ZONE,
+	hourCycle: 'h23',
+	year: 'numeric',
+	month: '2-digit',
+	day: '2-digit',
+	hour: '2-digit',
+	minute: '2-digit',
+	second: '2-digit',
+});
+
+/** How far the campaign's clock is ahead of UTC at `ms` (negative in the US). */
+function zoneOffsetMs(ms: number): number {
+	const parts = ZONE_PARTS.formatToParts(new Date(ms));
+	const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+	const asUtc = Date.UTC(
+		get('year'),
+		get('month') - 1,
+		get('day'),
+		get('hour'),
+		get('minute'),
+		get('second'),
+	);
+	return asUtc - Math.floor(ms / 1000) * 1000;
+}
+
+/**
+ * A campaign-local wall-clock time, as the UTC instant it names.
+ *
+ * For timestamps that carry a `Z` they have not earned. VAN's
+ * `/minivanExports` `dateCreated` is one: verified 2026-09-23, its newest
+ * records ran hours behind the real UTC time, and exports that follow a claim
+ * in this app line up only once shifted by the Eastern offset. The `Z` is
+ * ignored and the digits are read as campaign-local time.
+ *
+ * The offset is taken twice — once at the naive guess, once at the result — so
+ * a time in the hour either side of a daylight-saving change lands on the right
+ * side of it. Returns null for anything that is not `YYYY-MM-DDTHH:MM:SS`.
+ */
+export function campaignWallClockToUtc(wallClock: string): Date | null {
+	const match = WALL_CLOCK.exec(wallClock.trim());
+	if (!match) return null;
+	const [, y, mo, d, h, mi, s, frac] = match;
+	const naive = Date.UTC(
+		Number(y),
+		Number(mo) - 1,
+		Number(d),
+		Number(h),
+		Number(mi),
+		Number(s),
+		Number((frac ?? '0').padEnd(3, '0')),
+	);
+	if (Number.isNaN(naive)) return null;
+	const guess = naive - zoneOffsetMs(naive);
+	return new Date(naive - zoneOffsetMs(guess));
+}

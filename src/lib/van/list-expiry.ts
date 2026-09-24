@@ -11,7 +11,7 @@
 // Pure — no DB, no Slack, no clock of its own. list-expiry-alert-store.ts does
 // the rows and the posting.
 
-import { campaignDayLabel } from '../campaign-time.js';
+import { campaignDayLabel, campaignWallClockToUtc } from '../campaign-time.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -60,6 +60,23 @@ export function listExpiresAt(createdAt: string): Date | null {
 }
 
 /**
+ * Whether the channel was already warned about the list created at `createdAt`.
+ *
+ * Normally an exact match on the stamp. The second test is for stamps written
+ * before the catalog converted VAN's timestamps to UTC (catalog.ts,
+ * vanTimestamp): those hold VAN's raw local-time string, and the same list now
+ * arrives as a different string for the same instant. Without this, every list
+ * already warned about would be warned about again on the first sync after the
+ * change.
+ */
+function alreadyWarned(warnedFor: string | null, createdAt: string): boolean {
+	if (!warnedFor) return false;
+	if (warnedFor === createdAt) return true;
+	const legacy = campaignWallClockToUtc(warnedFor);
+	return legacy !== null && legacy.getTime() === Date.parse(createdAt);
+}
+
+/**
  * Turfs to warn about on this run.
  *
  * Inside the warning window and not yet announced for THIS list. Lists already
@@ -76,7 +93,7 @@ export function listExpiryAlerts(
 	const alerts: ListExpiryAlert[] = [];
 	for (const turf of turfs) {
 		if (turf.retiredAt || !turf.printedListNumber || !turf.printedListCreatedAt) continue;
-		if (turf.listExpiryWarnedFor === turf.printedListCreatedAt) continue;
+		if (alreadyWarned(turf.listExpiryWarnedFor, turf.printedListCreatedAt)) continue;
 		const expiresAt = listExpiresAt(turf.printedListCreatedAt);
 		if (!expiresAt) continue;
 		const msLeft = expiresAt.getTime() - now.getTime();
@@ -127,9 +144,9 @@ export function renderListExpiryAlert(
 	const lines = [
 		`:hourglass_flowing_sand: *MiniVAN list numbers expiring — ${n} turf${n === 1 ? '' : 's'}.*`,
 		`_VAN expires a printed list ${PRINTED_LIST_LIFETIME_DAYS} days after it is generated, and ` +
-			'this app cannot make a new one. Generate a new list number in VAN’s Turf Manager and ' +
-			'bulk-export it to MiniVAN. When the new number reaches the route, the next sync issues ' +
-			'it and DMs anyone holding the turf._',
+			'this app cannot make a new one. Print a new list for the turf in VAN’s Turf Manager — ' +
+			'nothing needs exporting, volunteers load it by typing the number into MiniVAN. The next ' +
+			'sync picks up the new number and DMs it to anyone holding the turf._',
 		'',
 	];
 	for (const alert of alerts.slice(0, maxRows)) lines.push(renderRow(alert, now));

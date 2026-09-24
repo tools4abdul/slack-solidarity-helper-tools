@@ -147,10 +147,12 @@
 	</label>
 	<p class="app-config-note">
 		A re-cut is how knocked doors leave the counts: after someone finishes a turf, and overnight for
-		every mapped folder. But VAN replaces every route in a region it re-cuts, and the new routes may
-		have no MiniVAN list number until someone generates printed lists in VAN again — until then they
-		can't be claimed. It also re-cuts turf other organizers cut, in any shared folder mapped above.
-		Off by default. Turn it on only once a test re-cut has shown list numbers survive.
+		every mapped folder. But <strong>a re-cut deletes the region's printed lists</strong>: VAN
+		replaces every route, the old list numbers stop existing, and the new routes have none until
+		someone prints lists for the region again in VAN — the app can't. Until then that turf can't be
+		claimed, and any list number already handed out for it is gone. It also re-cuts turf other
+		organizers cut, in any shared folder mapped above. Off by default, and best left off: re-cut a
+		region by hand in VAN, then print its lists straight after.
 	</p>
 </SettingsRow>
 

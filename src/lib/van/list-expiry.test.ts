@@ -81,6 +81,23 @@ describe('listExpiryAlerts', () => {
 		expect(listExpiryAlerts([regenerated], new Set(), NOW)).toHaveLength(1);
 	});
 
+	// Stamps written before the catalog converted VAN's local-time strings to
+	// UTC. Same list, same instant, different string — it must not warn twice.
+	it('treats a stamp in VAN’s old local-time form as the same list', () => {
+		// 2026-08-24 10:00 Detroit: VAN wrote "10:00:00Z", we now store 14:00 UTC.
+		const alert = listExpiryAlerts(
+			[
+				turf({
+					printedListCreatedAt: '2026-08-24T14:00:00.000Z',
+					listExpiryWarnedFor: '2026-08-24T10:00:00Z',
+				}),
+			],
+			new Set(),
+			NOW,
+		);
+		expect(alert).toEqual([]);
+	});
+
 	it('skips retired turf, turf with no list, and a date it cannot read', () => {
 		expect(
 			listExpiryAlerts(
@@ -125,6 +142,9 @@ describe('renderListExpiryAlert', () => {
 		expect(text).toContain('(4 days)');
 		expect(text).toContain('someone holds it');
 		expect(text).toContain('Turf Manager');
+		// Loading the number in MiniVAN is what hands a list out; there is no
+		// separate export step for an organizer to do.
+		expect(text).not.toContain('bulk-export');
 		expect(text).toContain(`${APP}/turfs/organizer`);
 		// The number is the credential that loads the doors in MiniVAN.
 		expect(text).not.toContain('35536745-88712');

@@ -2,7 +2,7 @@ import { describe, afterEach, it, expect, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { claimTurf, endClaim, sweepExpiredClaims } from './checkout-store.js';
+import { claimTurf, endClaim, latestWalkReports, sweepExpiredClaims } from './checkout-store.js';
 
 // A real in-memory libsql rather than a chained-db fake, for the same reason
 // activity-store.test.ts uses one: the behaviour under test is a collaboration
@@ -284,6 +284,7 @@ describe('endClaim', () => {
 			slackUserId: 'U_FIRST',
 			now: NOW,
 			kind: 'complete',
+			reportedPercent: 80,
 		});
 
 		expect(result).toMatchObject({ ok: true });
@@ -301,6 +302,53 @@ describe('endClaim', () => {
 				in_flight_since: null,
 			},
 		]);
+	});
+
+	// The only progress figure the app will have for this turf, so marking it
+	// walked without one is refused rather than recorded as unknown.
+	it('refuses to mark turf walked without the % MiniVAN shows', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+
+		for (const reportedPercent of [undefined, null, -1, 101, 50.5]) {
+			const result = await endClaim(db, {
+				mapRouteId: 100,
+				slackUserId: 'U_FIRST',
+				now: NOW,
+				kind: 'complete',
+				reportedPercent,
+			});
+			expect(result).toMatchObject({ ok: false, status: 400 });
+		}
+		const res = await client.execute('SELECT completed_at FROM van_turf_checkouts');
+		expect(res.rows[0]!.completed_at).toBeNull();
+	});
+
+	it('records the % on the completed claim', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+		await endClaim(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_FIRST',
+			now: NOW,
+			kind: 'complete',
+			reportedPercent: 65,
+		});
+		const res = await client.execute(
+			'SELECT completed_at, reported_percent FROM van_turf_checkouts',
+		);
+		expect(res.rows[0]).toMatchObject({ completed_at: NOW.toISOString(), reported_percent: 65 });
+	});
+
+	// Handing back unwalked is not asked for a percentage — and is not refused
+	// for lacking one.
+	it('hands turf back without asking for a %', async () => {
+		await insertClaim({ expires_at: '2026-08-26T12:00:00.000Z' });
+		const result = await endClaim(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_FIRST',
+			now: NOW,
+			kind: 'release',
+		});
+		expect(result).toMatchObject({ ok: true });
 	});
 
 	it('does not ask for a refresh when turf is simply handed back', async () => {
@@ -331,5 +379,45 @@ describe('claimTurf — what the volunteer was told', () => {
 		// And the baseline Story 5.6 measures the completion against. van_turfs
 		// holds one door count and it moves, so it has to be captured here.
 		expect(res.rows[0].claim_door_count).toBe(250);
+	});
+});
+
+describe('latestWalkReports', () => {
+	async function completed(at: string, percent: number | null) {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (map_route_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at, reported_percent)
+			      VALUES (100, 'U_FIRST', 'Dana', ?, ?, ?, ?)`,
+			args: [CLAIMED, LAPSED, at, percent],
+		});
+	}
+
+	it('returns the newest report per route', async () => {
+		await completed('2026-08-21T12:00:00.000Z', 40);
+		await completed('2026-08-23T12:00:00.000Z', 90);
+		const reports = await latestWalkReports(db, [100, 999]);
+		expect(reports.get(100)).toEqual({ percent: 90, at: '2026-08-23T12:00:00.000Z' });
+		expect(reports.has(999)).toBe(false);
+	});
+
+	// Completions from before the question existed carry no percentage; they
+	// must not hide an older one that does, or read as 0%.
+	it('skips completions with no reported %', async () => {
+		await completed('2026-08-21T12:00:00.000Z', 40);
+		await completed('2026-08-23T12:00:00.000Z', null);
+		expect((await latestWalkReports(db, [100])).get(100)?.percent).toBe(40);
+	});
+
+	// A walked-out turf leaves the pool, because VAN's door count will not
+	// move until the next re-cut.
+	it('makes a turf reported at 100% unclaimable', async () => {
+		await completed('2026-08-23T12:00:00.000Z', 100);
+		const result = await claimTurf(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_NEXT',
+			slackUserName: 'Sam',
+			now: NOW,
+		});
+		expect(result).toMatchObject({ ok: false, status: 409 });
 	});
 });

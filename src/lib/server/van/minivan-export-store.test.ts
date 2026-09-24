@@ -2,7 +2,13 @@ import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient, type Client } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { exportCursor, loadMinivanExports, pullMinivanExports } from './minivan-export-store.js';
+import {
+	exportCursor,
+	loadClaimsForExports,
+	loadMinivanExports,
+	pullMinivanExports,
+	stampClaimsLoaded,
+} from './minivan-export-store.js';
 import type { VanClient } from './client.js';
 import type { VanMinivanExport } from './types.js';
 
@@ -184,5 +190,55 @@ describe('loadMinivanExports', () => {
 		);
 		const [only] = await loadMinivanExports(db, ['11111111-22222']);
 		expect(only!.canvassers).toEqual([]);
+	});
+});
+
+describe('our claims, for export attribution', () => {
+	async function checkout(id: number, claimedAt: string, over: Record<string, string> = {}) {
+		const row: Record<string, string | number> = {
+			id,
+			// One route each: the real schema allows one open claim per route.
+			map_route_id: 100 + id,
+			slack_user_id: 'U_VOL',
+			slack_user_name: 'Dana',
+			claimed_at: claimedAt,
+			expires_at: '2026-09-30T00:00:00.000Z',
+			...over,
+		};
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts (${Object.keys(row).join(', ')})
+			      VALUES (${Object.keys(row)
+							.map(() => '?')
+							.join(', ')})`,
+			args: Object.values(row),
+		});
+	}
+
+	it('loads every recent claim, ended ones included, with when it stopped', async () => {
+		await checkout(1, '2026-09-20T10:00:00.000Z', { completed_at: '2026-09-20T14:00:00.000Z' });
+		await checkout(2, '2026-09-22T10:00:00.000Z', { released_at: '2026-09-22T11:00:00.000Z' });
+		await checkout(3, '2026-09-23T10:00:00.000Z');
+		// Older than anything the export store still holds.
+		await checkout(4, '2026-07-01T10:00:00.000Z');
+
+		const claims = await loadClaimsForExports(db, NOW);
+		expect(claims.map((c) => [c.checkoutId, c.endedAt])).toEqual([
+			[1, '2026-09-20T14:00:00.000Z'],
+			[2, '2026-09-22T11:00:00.000Z'],
+			[3, '2026-09-30T00:00:00.000Z'],
+		]);
+	});
+
+	it('stamps the claims whose list was seen loaded', async () => {
+		await checkout(1, '2026-09-23T10:00:00.000Z');
+		await checkout(2, '2026-09-23T11:00:00.000Z');
+		await stampClaimsLoaded(db, [{ checkoutId: 2, loadedAt: '2026-09-23T11:05:00.000Z' }]);
+		const rows = await client.execute(
+			'SELECT id, loaded_in_minivan_at FROM van_turf_checkouts ORDER BY id',
+		);
+		expect(rows.rows.map((r) => r.loaded_in_minivan_at)).toEqual([
+			null,
+			'2026-09-23T11:05:00.000Z',
+		]);
 	});
 });

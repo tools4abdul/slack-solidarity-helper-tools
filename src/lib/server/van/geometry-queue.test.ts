@@ -29,7 +29,7 @@ beforeEach(async () => {
 			printed_list_created_at text, list_expiry_warned_for text, route_number integer,
 			route_size integer DEFAULT 0 NOT NULL, door_count integer DEFAULT 0 NOT NULL,
 			phone_count integer DEFAULT 0 NOT NULL, centroid_lat real, centroid_lng real, hull_json text,
-			hull_source_route_size integer, van_distributed_to text, drift_alerted_at text,
+			hull_source_route_size integer, van_distributed_to text, van_assigned_at text, drift_alerted_at text,
 			drift_alerted_kind text, first_seen_at text NOT NULL,
 			last_seen_at text NOT NULL, last_refreshed_at text, retired_at text)`,
 		`CREATE TABLE van_geometry_queue (
@@ -39,7 +39,8 @@ beforeEach(async () => {
 		`CREATE TABLE van_turf_checkouts (
 			id integer PRIMARY KEY AUTOINCREMENT NOT NULL, map_route_id integer NOT NULL,
 			slack_user_id text NOT NULL, slack_user_name text NOT NULL, claimed_at text NOT NULL,
-			expires_at text NOT NULL, released_at text, release_reason text)`,
+			expires_at text NOT NULL, released_at text, completed_at text, release_reason text,
+			loaded_in_minivan_at text)`,
 		`CREATE TABLE van_sync_state (
 			id integer PRIMARY KEY NOT NULL, last_sync_at text NOT NULL, minivan_exports_ok integer)`,
 		`CREATE TABLE van_minivan_exports (

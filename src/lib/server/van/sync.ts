@@ -18,10 +18,15 @@ import type { drizzle } from 'drizzle-orm/libsql';
 // outside the Vite bundle, where the alias does not resolve.
 import { errMessage } from '../../err-message.js';
 import { vanGeometryQueue, vanTurfs, vanTurfCheckouts, vanSyncState } from '../schema.js';
-import { planCatalogSync, type CatalogFolder, type CatalogPlan } from './catalog.js';
+import { planCatalogSync, vanTimestamp, type CatalogFolder, type CatalogPlan } from './catalog.js';
 import { chunked } from './sql-chunk.js';
 import { VanError, type VanClient } from './client.js';
-import { loadMinivanExports, pullMinivanExports } from './minivan-export-store.js';
+import {
+	loadClaimsForExports,
+	loadMinivanExports,
+	pullMinivanExports,
+	stampClaimsLoaded,
+} from './minivan-export-store.js';
 import type { VanPrintedList } from './types.js';
 
 // Matches the alias in settings.ts, which this file calls into — the
@@ -252,15 +257,21 @@ export async function runCatalogSync(
 		}
 	}
 	const minivanExports = await loadMinivanExports(db, candidateListNumbers(folders, printedLists));
+	// Our own claims, so an export made while one of our volunteers held the
+	// turf reads as them loading it rather than as the turf being handed out
+	// elsewhere (catalog.ts, outsideAssignment).
+	const claims = await loadClaimsForExports(db, now);
 
 	const existing = await db.select().from(vanTurfs);
-	const plan = planCatalogSync({ folders, printedLists, existing, minivanExports, now });
+	const plan = planCatalogSync({ folders, printedLists, existing, minivanExports, claims, now });
 
 	const regionsRead = folders.flatMap((folder) =>
 		folder.regions.map((region) => ({
 			folderId: folder.folderId,
 			mapRegionId: region.mapRegionId,
-			dateRefreshed: region.dateRefreshed ?? null,
+			// Real UTC, not VAN's local clock: settleRefreshes compares it with
+			// the time WE sent the request (see vanTimestamp).
+			dateRefreshed: vanTimestamp(region.dateRefreshed),
 		})),
 	);
 
@@ -464,6 +475,8 @@ export async function runCatalogSync(
 		);
 		await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 	}
+
+	await stampClaimsLoaded(db, plan.claimsLoaded);
 
 	// Written last, and only on a real run: a dry run reports what WOULD happen,
 	// so recording it as what the catalog now reflects would make the drift

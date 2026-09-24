@@ -335,10 +335,11 @@ describe('/turfs/organizer drift pane', () => {
 		mapRouteId: 100,
 		slackUserId: 'U_VOL',
 		slackUserName: 'Dana',
-		claimedAt: iso(NOW.getTime() - HOUR),
+		claimedAt: iso(NOW.getTime() - 3 * HOUR), // past the 2-hour grace
 		expiresAt: iso(NOW.getTime() + 40 * HOUR),
 		releasedAt: null,
 		completedAt: null,
+		loadedInMinivanAt: null,
 	};
 
 	it('flags turf claimed here but absent from MiniVAN', async () => {
@@ -372,16 +373,20 @@ describe('/turfs/organizer drift pane', () => {
 		expect(data.drift.items).toEqual([]);
 	});
 
-	it('flags turf in MiniVAN that nobody claimed here', async () => {
+	// Dropped as drift: VAN-held turf is already unclaimable (turf-drift.ts).
+	it('does not flag turf in MiniVAN that nobody claimed here', async () => {
 		mockDriftTurfs.mockResolvedValue([driftTurf({ vanDistributedTo: 'Sam Rivera' })]);
 		const data = await run(event(ADMIN));
-		expect(data.drift.inMinivanNotClaimed).toBe(1);
-		expect(data.drift.items[0]!.distributedTo).toBe('Sam Rivera');
+		expect(data.drift.visibility).toBe('visible');
+		expect(data.drift.items).toEqual([]);
 	});
 
 	it('says nothing when the two agree', async () => {
-		mockDriftTurfs.mockResolvedValue([driftTurf({ vanDistributedTo: 'Dana' })]);
-		mockDriftClaims.mockResolvedValue([liveClaim]);
+		mockDriftTurfs.mockResolvedValue([
+			driftTurf(),
+			driftTurf({ mapRouteId: 999, vanDistributedTo: 'Avery Harbison' }),
+		]);
+		mockDriftClaims.mockResolvedValue([{ ...liveClaim, loadedInMinivanAt: iso(NOW.getTime()) }]);
 		expect((await run(event(ADMIN))).drift.items).toEqual([]);
 	});
 

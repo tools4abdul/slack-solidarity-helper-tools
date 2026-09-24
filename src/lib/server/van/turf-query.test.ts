@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadChapterTurfs } from './turf-query.js';
+import { latestWalkReports } from './checkout-store.js';
+
+// Walk reports have their own tests on real SQLite (checkout-store.test.ts);
+// the stubbed db below answers only the select chains this module scripts.
+vi.mock('./checkout-store.js', () => ({ latestWalkReports: vi.fn(async () => new Map()) }));
 
 function turfRow(over: Record<string, unknown> = {}) {
 	return {
@@ -56,6 +61,19 @@ const HERE = { lat: 42.28, lng: -83.74 };
 
 describe('loadChapterTurfs', () => {
 	beforeEach(() => vi.clearAllMocks());
+
+	// The only progress figure there is. A turf finished at 100% must not be
+	// offered again just because VAN's door count never moved.
+	it('carries the latest walk report onto the view, and blocks a walked-out turf', async () => {
+		vi.mocked(latestWalkReports).mockResolvedValueOnce(
+			new Map([[100, { percent: 100, at: '2026-09-23T18:00:00.000Z' }]]),
+		);
+		const { db } = makeDb([[turfRow()], []]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		expect(turfs[0]!.walkReport).toEqual({ percent: 100, dayLabel: expect.any(String) });
+		expect(turfs[0]!.claimable).toBe(false);
+		expect(turfs[0]!.claimBlockedReason).toContain('finished every door');
+	});
 
 	it('builds views for the chapter’s turf', async () => {
 		const { db } = makeDb([[turfRow()], []]);

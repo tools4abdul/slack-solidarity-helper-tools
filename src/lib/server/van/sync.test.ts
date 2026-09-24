@@ -3,7 +3,12 @@ import { runCatalogSync } from './sync.js';
 import { VanError, VanIncompleteError, type VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
 import { vanGeometryQueue } from '../schema.js';
-import { loadMinivanExports, pullMinivanExports } from './minivan-export-store.js';
+import {
+	loadClaimsForExports,
+	loadMinivanExports,
+	pullMinivanExports,
+	stampClaimsLoaded,
+} from './minivan-export-store.js';
 
 // The export store runs real SQL against its own table, which the recording
 // stub below does not model; it has its own tests on in-memory libsql. Here it
@@ -15,6 +20,8 @@ vi.mock('./minivan-export-store.js', () => ({
 		return { from: '2026-09-01', fetched: items.length, complete };
 	}),
 	loadMinivanExports: vi.fn(async () => []),
+	loadClaimsForExports: vi.fn(async () => []),
+	stampClaimsLoaded: vi.fn(async () => undefined),
 }));
 
 // A recording stub of the drizzle chains sync.ts actually uses. Enough to
@@ -437,6 +444,36 @@ describe('runCatalogSync', () => {
 			expect(vi.mocked(loadMinivanExports).mock.calls.at(-1)![1]).toEqual(
 				expect.arrayContaining(['35536745-88712', '11111111-22222']),
 			);
+		});
+
+		// The export made while our own volunteer held the turf is theirs: it
+		// stamps their claim and does NOT mark the turf as handed out elsewhere.
+		it('attributes an export inside our claim to that claim', async () => {
+			vi.mocked(loadMinivanExports).mockResolvedValueOnce([
+				{
+					minivanExportId: 1,
+					name: 'List 35536745-88712',
+					dateCreated: '2026-09-22T11:52:28.15Z',
+					createdBy: null,
+					canvassers: [{ canvassserId: 5 }],
+					databaseMode: null,
+				},
+			]);
+			vi.mocked(loadClaimsForExports).mockResolvedValueOnce([
+				{
+					checkoutId: 42,
+					mapRouteId: 100,
+					claimedAt: '2026-09-22T15:40:00.000Z',
+					endedAt: '2026-09-24T15:40:00.000Z',
+					loadedInMinivanAt: null,
+				},
+			]);
+			const { db, inserted } = makeDb();
+			await runCatalogSync(db, makeClient(), MAPPING);
+			expect(inserted[0]).toMatchObject({ mapRouteId: 100, vanAssignedAt: null });
+			expect(vi.mocked(stampClaimsLoaded).mock.calls.at(-1)![1]).toEqual([
+				{ checkoutId: 42, loadedAt: '2026-09-22T15:52:28.150Z' },
+			]);
 		});
 
 		it('reads nothing from VAN on a dry run', async () => {

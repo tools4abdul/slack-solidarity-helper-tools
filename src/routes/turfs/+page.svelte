@@ -32,6 +32,11 @@
 	 *  rendered, so a fresh claim needs somewhere to put it until the
 	 *  invalidate lands. */
 	let issued = $state<Record<number, string>>({});
+	/** Turf whose "I walked this turf" form is open, and what has been typed
+	 *  into it. Marking walked requires the % MiniVAN shows, so the button
+	 *  opens the question rather than submitting. */
+	let reporting = $state<Record<number, boolean>>({});
+	let walkPercent = $state<Record<number, number | null>>({});
 
 	/** Browser geolocation, requested once and never blocking. A volunteer who
 	 *  declines still gets the map (framed on all the turf) and the full list —
@@ -275,7 +280,7 @@
 		card.focus({ preventScroll: true });
 	}
 
-	async function act(turf: TurfView, action: 'claim' | 'release' | 'complete') {
+	async function act(turf: TurfView, action: 'claim' | 'release' | 'complete', percent?: number) {
 		// Checked first and returning early, so a demo action can never reach
 		// the network. The fabricated route ids would almost certainly 404
 		// against van_turfs anyway, but "almost certainly" is not a guarantee
@@ -295,7 +300,7 @@
 			const res = await fetch(`/api/turfs/${turf.mapRouteId}`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action }),
+				body: JSON.stringify(action === 'complete' ? { action, percent } : { action }),
 			});
 			const body = await res.json().catch(() => ({}));
 			if (!res.ok) {
@@ -311,6 +316,8 @@
 			} else {
 				delete issued[turf.mapRouteId];
 				delete copied[turf.mapRouteId];
+				delete reporting[turf.mapRouteId];
+				delete walkPercent[turf.mapRouteId];
 			}
 			// Re-run the load function so every turf's status, claimability and
 			// door count come back from the server rather than being patched
@@ -514,19 +521,61 @@
 					     costs rather than leaving the choice to a verb. -->
 					<div class="card-actions">
 						<div class="action-choice">
-							<button
-								type="button"
-								class="claim-btn"
-								disabled={busy[turf.mapRouteId]}
-								aria-describedby="walked-hint-{turf.mapRouteId}"
-								onclick={() => act(turf, 'complete')}
-							>
-								I walked this turf
-							</button>
-							<p class="action-hint" id="walked-hint-{turf.mapRouteId}">
-								Credits your doors and asks VAN to re-cut the area. Sync MiniVAN first, or it counts
-								as zero doors.
-							</p>
+							{#if reporting[turf.mapRouteId]}
+								<!-- Required, and asked here rather than guessed: VAN has no
+								     progress figure the app can read, and its door count only
+								     moves on a re-cut. The volunteer has MiniVAN open right now,
+								     so this is the one moment the number is free to get. -->
+								<form
+									class="walk-report"
+									onsubmit={(e) => {
+										e.preventDefault();
+										const percent = walkPercent[turf.mapRouteId];
+										if (typeof percent === 'number') act(turf, 'complete', percent);
+									}}
+								>
+									<label class="walk-report-label" for="walk-percent-{turf.mapRouteId}">
+										What % does MiniVAN show as done?
+									</label>
+									<div class="walk-report-row">
+										<input
+											id="walk-percent-{turf.mapRouteId}"
+											type="number"
+											inputmode="numeric"
+											min="0"
+											max="100"
+											step="1"
+											required
+											bind:value={walkPercent[turf.mapRouteId]}
+										/>
+										<span class="walk-report-unit">%</span>
+										<button type="submit" class="claim-btn" disabled={busy[turf.mapRouteId]}>
+											{busy[turf.mapRouteId] ? 'Saving…' : 'Mark walked'}
+										</button>
+									</div>
+									<button
+										type="button"
+										class="link-btn"
+										onclick={() => delete reporting[turf.mapRouteId]}
+									>
+										Cancel
+									</button>
+								</form>
+							{:else}
+								<button
+									type="button"
+									class="claim-btn"
+									disabled={busy[turf.mapRouteId]}
+									aria-describedby="walked-hint-{turf.mapRouteId}"
+									onclick={() => (reporting[turf.mapRouteId] = true)}
+								>
+									I walked this turf
+								</button>
+								<p class="action-hint" id="walked-hint-{turf.mapRouteId}">
+									Credits your doors. You'll be asked for the % MiniVAN shows, so the next volunteer
+									knows how much is left. Sync MiniVAN first, or it counts as zero doors.
+								</p>
+							{/if}
 						</div>
 						<div class="action-choice">
 							<button
@@ -775,6 +824,14 @@
 											Held by {turf.heldBy}{turf.expiresInHours
 												? ` — frees up in ${turf.expiresInHours} h`
 												: ' (assigned in VAN)'}
+										</span>
+									{/if}
+									{#if turf.walkReport}
+										<!-- The only progress figure there is: what the last
+										     volunteer read off MiniVAN when they marked it walked.
+										     Trusted until the turf is next cut. -->
+										<span class="card-note">
+											About {turf.walkReport.percent}% walked · {turf.walkReport.dayLabel}
 										</span>
 									{/if}
 								</span>
