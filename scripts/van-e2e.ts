@@ -189,8 +189,12 @@ async function main(): Promise<void> {
 	);
 	await step(
 		'GET /minivanExports (client, with retries)',
-		() => client.minivanExports(),
-		(e) => `${e.length} export(s)`,
+		() =>
+			client.minivanExportsSince(
+				new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+				1,
+			),
+		(e) => `${e.items.length} export(s) on the first page of the last week`,
 	);
 
 	section('GET /minivanExports — raw response');

@@ -21,7 +21,8 @@ import { vanGeometryQueue, vanTurfs, vanTurfCheckouts, vanSyncState } from '../s
 import { planCatalogSync, type CatalogFolder, type CatalogPlan } from './catalog.js';
 import { chunked } from './sql-chunk.js';
 import { VanError, type VanClient } from './client.js';
-import type { VanMinivanExport, VanPrintedList } from './types.js';
+import { loadMinivanExports, pullMinivanExports } from './minivan-export-store.js';
+import type { VanPrintedList } from './types.js';
 
 // Matches the alias in settings.ts, which this file calls into — the
 // narrower LibSQLDatabase<...> lacks the $client those helpers require.
@@ -83,6 +84,22 @@ export interface CatalogSyncOptions {
 	 *  WOULD have happened, so an operator can see the blast radius of a first
 	 *  run — particularly the retirements — before committing to it. */
 	dryRun?: boolean;
+}
+
+/** Every printed list number this run's catalog could assign a turf: the
+ *  route's own, and every number /printedLists offered as a backfill. A
+ *  superset of what the planner picks, which is all the export lookup needs. */
+function candidateListNumbers(folders: CatalogFolder[], printedLists: VanPrintedList[]): string[] {
+	const numbers: string[] = [];
+	for (const folder of folders) {
+		for (const region of folder.regions) {
+			for (const route of region.mapRoutes ?? []) {
+				if (route.printedList?.number) numbers.push(route.printedList.number);
+			}
+		}
+	}
+	for (const list of printedLists) if (list.number) numbers.push(list.number);
+	return numbers;
 }
 
 /**
@@ -199,21 +216,42 @@ export async function runCatalogSync(
 		}
 	}
 
-	let minivanExports: VanMinivanExport[] = [];
-	// Recorded, not just logged: when this fails the plan below writes
-	// van_distributed_to = NULL for every turf, so afterwards the column cannot
-	// say whether VAN reported nothing or was never asked. The drift report
+	// Top up the stored exports, then read the ones this catalog could match.
+	//
+	// Recorded, not just logged: when the store is not current —
+	// /minivanExports refused, or still backfilling — van_distributed_to is
+	// incomplete for reasons that say nothing about VAN, and the column alone
+	// cannot tell that apart from "nothing is distributed". The drift report
 	// (Story 8.2) needs that difference, and this is the only moment anyone
 	// knows it.
-	let minivanExportsOk = true;
-	try {
-		minivanExports = await client.minivanExports();
-	} catch (err) {
-		minivanExportsOk = false;
-		degraded.push(
-			`/minivanExports unavailable (${errMessage(err)}) — turf assigned by hand in VAN will not be flagged`,
-		);
+	//
+	// The index is built from the STORE whether or not this run's read worked.
+	// One failed read used to write NULL over every turf VAN had distributed;
+	// now it leaves what the last good read established, and the flag above
+	// keeps the drift report from trusting it.
+	//
+	// Skipped on a dry run, which must write nothing — it plans against what is
+	// already stored.
+	let minivanExportsOk = false;
+	if (!options.dryRun) {
+		try {
+			const pulled = await pullMinivanExports(db, client, { now });
+			minivanExportsOk = pulled.complete;
+			if (!pulled.complete) {
+				// Logged rather than reported as `degraded`: that list goes to the
+				// turf channel on every sync, and a backfill that finishes by
+				// itself within a few runs is not something anyone needs to act on.
+				console.log(
+					`[van] /minivanExports: still catching up — read ${pulled.fetched} from ${pulled.from}; drift is not checked until the store is current`,
+				);
+			}
+		} catch (err) {
+			degraded.push(
+				`/minivanExports unavailable (${errMessage(err)}) — turf assigned by hand in VAN will not be flagged`,
+			);
+		}
 	}
+	const minivanExports = await loadMinivanExports(db, candidateListNumbers(folders, printedLists));
 
 	const existing = await db.select().from(vanTurfs);
 	const plan = planCatalogSync({ folders, printedLists, existing, minivanExports, now });

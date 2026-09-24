@@ -1090,14 +1090,53 @@ export const vanRegionRefreshes = sqliteTable(
 	(table) => [primaryKey({ columns: [table.folderId, table.mapRegionId] })],
 );
 
+// MiniVAN exports, as read from VAN and kept so that each sync only asks for
+// what is new (minivan-export-store.ts).
+//
+// Stored rather than re-read because there is no way to re-read "the recent
+// ones" cheaply. The unfiltered endpoint holds 645,000+ records in no date
+// order at all — verified live on 2026-09-23, the table's tail ran 2014 to
+// 2023 — so the old "walk back 1,000 from the end" read an effectively random
+// slice, and a turf's `van_distributed_to` flickered between syncs as the
+// slice moved. `generatedAfter` does filter, and returns oldest-first, so a
+// cursor over this table turns each sync into a page or two.
+//
+// Every export is kept, not only the ones matching a turf today: a list number
+// VAN issues tomorrow may have been exported already, and the cursor is read
+// back off `date_created`.
+export const vanMinivanExports = sqliteTable(
+	'van_minivan_exports',
+	{
+		minivanExportId: integer('minivan_export_id').primaryKey(),
+		/** VAN's export name, normally `"List 58817996-30305"`. */
+		name: text('name'),
+		/** The printed list number parsed from `name`, which is what a turf is
+		 *  joined on. Null for hand-named exports, which are deliberately not
+		 *  matched (see listNumberFromExportName in catalog.ts). */
+		listNumber: text('list_number'),
+		/** VAN's `dateCreated`, verbatim. It carries a `Z` but reads as campaign
+		 *  local time, so it is compared by DATE only — see the cursor. */
+		dateCreated: text('date_created'),
+		/** The `canvassers` array as VAN sent it, JSON. Kept whole rather than
+		 *  reduced to names so a change in how names are read needs no refetch. */
+		canvassersJson: text('canvassers_json').notNull().default('[]'),
+		fetchedAt: text('fetched_at').notNull(),
+	},
+	(table) => [
+		index('van_minivan_exports_list_number').on(table.listNumber),
+		index('van_minivan_exports_date_created').on(table.dateCreated),
+	],
+);
+
 // What the last catalog sync could actually see, so a read can tell "VAN says
 // nothing is distributed" apart from "we could not ask VAN".
 //
-// `/minivanExports` is Tier 3 and 403s on a demo key. When it fails the sync
-// writes `van_turfs.van_distributed_to = NULL` for every turf — deliberately,
-// since stale distribution data is worse than none — which leaves the column
-// meaning two opposite things. The drift report (Story 8.2) is the one reader
-// that cannot live with that ambiguity, so the sync records the answer here.
+// `/minivanExports` is Tier 3 and 403s on a demo key, and on a fresh database
+// the first few syncs are still backfilling it. Either way
+// `van_turfs.van_distributed_to` is null (or incomplete) for reasons that have
+// nothing to do with what VAN says, which leaves the column meaning two
+// opposite things. The drift report (Story 8.2) is the one reader that cannot
+// live with that ambiguity, so the sync records the answer here.
 //
 // Singleton, in the shape of door_knock_refresh.
 export const vanSyncState = sqliteTable(
@@ -1106,8 +1145,9 @@ export const vanSyncState = sqliteTable(
 		id: integer('id').primaryKey(),
 		/** ISO timestamp of the last non-dry-run catalog sync. */
 		lastSyncAt: text('last_sync_at').notNull(),
-		/** Whether /minivanExports answered on that run. NULL only before the
-		 *  first sync has ever completed. */
+		/** Whether the stored exports were complete and current on that run:
+		 *  /minivanExports answered AND the store has caught up to today. NULL
+		 *  only before the first sync has ever completed. */
 		minivanExportsOk: integer('minivan_exports_ok', { mode: 'boolean' }),
 	},
 	(table) => [check('van_sync_state_singleton', sql`${table.id} = 1`)],
@@ -1138,6 +1178,9 @@ export type VanBlockedUserRow = typeof vanBlockedUsers.$inferSelect;
 export type NewVanBlockedUserRow = typeof vanBlockedUsers.$inferInsert;
 
 export type VanSyncStateRow = typeof vanSyncState.$inferSelect;
+
+export type VanMinivanExportRow = typeof vanMinivanExports.$inferSelect;
+export type NewVanMinivanExportRow = typeof vanMinivanExports.$inferInsert;
 
 export type VanGeometryQueueRow = typeof vanGeometryQueue.$inferSelect;
 export type NewVanGeometryQueueRow = typeof vanGeometryQueue.$inferInsert;

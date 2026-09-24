@@ -197,14 +197,15 @@
 	<section class="board">
 		<h2>Out of step with VAN</h2>
 		{#if data.drift.visibility === 'van-side-unavailable'}
-			<!-- Not "no drift". The sync writes van_distributed_to = NULL both when
-			     VAN reports nothing and when the tier that reads exports is not
-			     granted, so an empty list here would be reassurance drawn from a
-			     question nobody asked. -->
+			<!-- Not "no drift". van_distributed_to is incomplete both when the
+			     tier that reads exports is not granted and while the sync is still
+			     backfilling them, so an empty list here would be reassurance drawn
+			     from a question nobody asked. -->
 			<p class="empty">
-				Can't check. Comparing our checkout list against MiniVAN needs VAN's
-				<code>/minivanExports</code>, which the current API key can't read — so turf assigned by
-				hand in VAN is invisible to the app and nothing here has been compared either way.
+				Can't check right now. Comparing our checkout list against MiniVAN needs VAN's
+				<code>/minivanExports</code>, and the last sync couldn't finish reading it — either the API
+				key can't read it, VAN failed, or the app is still loading the last 30 days of exports.
+				Nothing here has been compared either way.
 			</p>
 		{:else if data.drift.visibility === 'exports-unused'}
 			<!-- Also not "no drift". Nothing in this catalog has ever appeared in a

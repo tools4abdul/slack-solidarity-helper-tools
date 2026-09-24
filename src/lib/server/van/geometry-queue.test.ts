@@ -42,6 +42,9 @@ beforeEach(async () => {
 			expires_at text NOT NULL, released_at text, release_reason text)`,
 		`CREATE TABLE van_sync_state (
 			id integer PRIMARY KEY NOT NULL, last_sync_at text NOT NULL, minivan_exports_ok integer)`,
+		`CREATE TABLE van_minivan_exports (
+			minivan_export_id integer PRIMARY KEY NOT NULL, name text, list_number text,
+			date_created text, canvassers_json text DEFAULT '[]' NOT NULL, fetched_at text NOT NULL)`,
 	]) {
 		await client.execute(ddl);
 	}
@@ -74,7 +77,7 @@ function vanClientWith(savedListId: number, routeSize = 76): VanClient {
 		mapRegions: async () => regions,
 		printedLists: async () => [],
 		savedLists: async () => [],
-		minivanExports: async () => [],
+		minivanExportsSince: async () => ({ items: [], complete: true }),
 		refreshMapRegion: async () => undefined,
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,

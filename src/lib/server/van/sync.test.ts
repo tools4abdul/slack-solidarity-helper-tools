@@ -3,6 +3,19 @@ import { runCatalogSync } from './sync.js';
 import { VanError, VanIncompleteError, type VanClient } from './client.js';
 import type { VanMapRegion } from './types.js';
 import { vanGeometryQueue } from '../schema.js';
+import { loadMinivanExports, pullMinivanExports } from './minivan-export-store.js';
+
+// The export store runs real SQL against its own table, which the recording
+// stub below does not model; it has its own tests on in-memory libsql. Here it
+// is replaced by a pass-through to the client, so a test can still make VAN
+// refuse the endpoint and watch the sync degrade.
+vi.mock('./minivan-export-store.js', () => ({
+	pullMinivanExports: vi.fn(async (_db: unknown, client: VanClient) => {
+		const { items, complete } = await client.minivanExportsSince('2026-09-01', 150);
+		return { from: '2026-09-01', fetched: items.length, complete };
+	}),
+	loadMinivanExports: vi.fn(async () => []),
+}));
 
 // A recording stub of the drizzle chains sync.ts actually uses. Enough to
 // assert what was written without standing up SQLite; the storage-level
@@ -80,7 +93,7 @@ function makeClient(over: Partial<VanClient> = {}): VanClient {
 		],
 		printedLists: async () => [],
 		savedLists: async () => [],
-		minivanExports: async () => [],
+		minivanExportsSince: async () => ({ items: [], complete: true }),
 		refreshMapRegion: async () => undefined,
 		exportJobTypes: async () => [],
 		createExportJob: async () => ({}) as never,
@@ -159,7 +172,7 @@ describe('runCatalogSync', () => {
 		const { db } = makeDb();
 		const result = await runCatalogSync(
 			db,
-			makeClient({ minivanExports: forbidden, printedLists: forbidden }),
+			makeClient({ minivanExportsSince: forbidden, printedLists: forbidden }),
 			MAPPING,
 		);
 
@@ -354,5 +367,83 @@ describe('runCatalogSync', () => {
 		expect(result.foldersSynced).toBe(0);
 		expect(result.foldersSkipped).toBe(4);
 		expect(result.turfsUpserted).toBe(0);
+	});
+
+	describe('MiniVAN exports', () => {
+		const syncState = (inserted: unknown[]) =>
+			inserted.find(
+				(row) => (row as { id?: number }).id === 1 && 'minivanExportsOk' in (row as object),
+			) as { minivanExportsOk: boolean } | undefined;
+
+		it('marks the drift comparison visible once the store has caught up', async () => {
+			const { db, inserted } = makeDb();
+			await runCatalogSync(db, makeClient(), MAPPING);
+			expect(syncState(inserted)?.minivanExportsOk).toBe(true);
+		});
+
+		// A backfill that hit its page cap has part of VAN's picture. Reporting
+		// drift from it would call every not-yet-read export "not in MiniVAN".
+		it('keeps it unavailable while the store is still backfilling, without telling Slack', async () => {
+			vi.spyOn(console, 'log').mockImplementation(() => {});
+			const { db, inserted } = makeDb();
+			const result = await runCatalogSync(
+				db,
+				makeClient({ minivanExportsSince: async () => ({ items: [], complete: false }) }),
+				MAPPING,
+			);
+			expect(syncState(inserted)?.minivanExportsOk).toBe(false);
+			expect(result.degraded).toEqual([]);
+		});
+
+		// The regression this store exists for: one bad read used to null
+		// van_distributed_to on every turf. Now the index comes from what is
+		// stored, and only the flag says the read failed.
+		it('still builds van_distributed_to from stored exports when VAN fails', async () => {
+			vi.mocked(loadMinivanExports).mockResolvedValueOnce([
+				{
+					minivanExportId: 1,
+					name: 'List 35536745-88712',
+					dateCreated: '2026-09-22T11:52:28.15Z',
+					createdBy: null,
+					canvassers: [{ firstName: 'Tammy', lastName: 'B' }],
+					databaseMode: null,
+				},
+			]);
+			const { db, inserted } = makeDb();
+			const result = await runCatalogSync(
+				db,
+				makeClient({
+					minivanExportsSince: async () => {
+						throw new VanError('/minivanExports', 503, [], 'down');
+					},
+				}),
+				MAPPING,
+			);
+
+			expect(result.degraded.join(' ')).toContain('/minivanExports unavailable');
+			expect(syncState(inserted)?.minivanExportsOk).toBe(false);
+			expect(inserted[0]).toMatchObject({ mapRouteId: 100, vanDistributedTo: 'Tammy B' });
+		});
+
+		it('looks up exports for every list number the catalog could assign', async () => {
+			const { db } = makeDb();
+			await runCatalogSync(
+				db,
+				makeClient({
+					printedLists: async () => [{ number: '11111111-22222', name: 'Turf 09' }] as never,
+				}),
+				MAPPING,
+			);
+			expect(vi.mocked(loadMinivanExports).mock.calls.at(-1)![1]).toEqual(
+				expect.arrayContaining(['35536745-88712', '11111111-22222']),
+			);
+		});
+
+		it('reads nothing from VAN on a dry run', async () => {
+			const { db } = makeDb();
+			vi.mocked(pullMinivanExports).mockClear();
+			await runCatalogSync(db, makeClient(), MAPPING, { dryRun: true });
+			expect(pullMinivanExports).not.toHaveBeenCalled();
+		});
 	});
 });

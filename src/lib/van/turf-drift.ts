@@ -82,12 +82,15 @@ export interface DriftItem {
  * not a campaign whose turf is all undistributed — it is a campaign that does
  * not use the export workflow at all.
  *
- * Verified against the live committee on 2026-09-22: every one of its 2,201
- * printed lists was generated AFTER the most recent MiniVAN export, so nothing
- * could match by construction. Organizers there cut lists and hand out the
- * printed list NUMBER, which loads in MiniVAN without an export record ever
- * existing — `/minivanExports` records a different act, an organizer assigning
- * a list to named canvassers in VAN's UI.
+ * Organizers can cut lists and hand out the printed list NUMBER, which loads in
+ * MiniVAN without an export record ever existing — `/minivanExports` records a
+ * different act, an organizer assigning a list to named canvassers in VAN's UI.
+ *
+ * (An earlier note here said the live committee's exports all predated its
+ * printed lists. That came from a read of `/minivanExports` that took an
+ * effectively random slice of 645,000 records, not the recent ones — see
+ * `minivanExportsSince` in client.ts. Read by date, the committee does export:
+ * e.g. Royal Oak lists to a named canvasser on 2026-09-13 and 09-22.)
  *
  * Reporting `claimed-not-in-minivan` under that workflow flags every claim the
  * app has ever taken, which is noise that buries the direction that matters.
