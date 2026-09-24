@@ -415,13 +415,96 @@ describe('planCatalogSync', () => {
 		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
 	});
 
-	it('ignores a canvasser entry with no name parts at all', () => {
+	// VAN returns some canvassers as an id with null names. They still hold the
+	// list, so the turf must not read as free.
+	it('shows a canvasser VAN names only by id as an unknown canvasser', () => {
 		const plan = planCatalogSync({
 			...base,
 			folders: [folder([region([route()])])],
-			minivanExports: [exportOf({ canvassers: [{ canvassserId: 7 }] })],
+			minivanExports: [
+				exportOf({ canvassers: [{ canvassserId: 7, firstName: null, lastName: null }] }),
+			],
 		});
-		expect(plan.upserts[0]!.vanDistributedTo).toBeNull();
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('unknown canvasser');
+	});
+
+	it('names an unknown canvasser once, however many there are', () => {
+		const plan = planCatalogSync({
+			...base,
+			folders: [folder([region([route()])])],
+			minivanExports: [
+				exportOf({
+					canvassers: [
+						{ canvassserId: 1, firstName: 'Dana', lastName: 'Ruiz' },
+						{ canvassserId: 7 },
+						{ canvassserId: 8 },
+					],
+				}),
+			],
+		});
+		expect(plan.upserts[0]!.vanDistributedTo).toBe('Dana Ruiz, unknown canvasser');
+	});
+
+	describe('when a list has been exported more than once', () => {
+		// The live case: Royal Oak 59430821-62783 went to a named canvasser on
+		// 09-22 and was re-exported on 09-23 to one VAN names only by id.
+		const first = exportOf({
+			minivanExportId: 645875,
+			dateCreated: '2026-09-22T11:52:28.15Z',
+			canvassers: [{ canvassserId: 2833309, firstName: 'Tammy', lastName: 'Banjany' }],
+		});
+		const second = exportOf({
+			minivanExportId: 646478,
+			dateCreated: '2026-09-23T11:43:55.93Z',
+			canvassers: [{ canvassserId: 132602398, firstName: null, lastName: null }],
+		});
+
+		it('takes the latest export, not every export merged', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [first, second],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('unknown canvasser');
+		});
+
+		it('decides by date, whatever order the exports arrive in', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [second, first],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('unknown canvasser');
+		});
+
+		it('breaks a same-second tie by export id', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [
+					exportOf({ minivanExportId: 9, canvassers: [{ firstName: 'Sam', lastName: 'Ito' }] }),
+					exportOf({ minivanExportId: 8, canvassers: [{ firstName: 'Dana', lastName: 'Ruiz' }] }),
+				],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('Sam Ito');
+		});
+
+		// An export naming nobody is no evidence the list changed hands.
+		it('keeps the earlier canvasser when the later export has none', () => {
+			const plan = planCatalogSync({
+				...base,
+				folders: [folder([region([route()])])],
+				minivanExports: [
+					first,
+					exportOf({
+						minivanExportId: 646999,
+						dateCreated: '2026-09-23T12:00:00Z',
+						canvassers: [],
+					}),
+				],
+			});
+			expect(plan.upserts[0]!.vanDistributedTo).toBe('Tammy Banjany');
+		});
 	});
 
 	it('handles an empty catalog without throwing', () => {

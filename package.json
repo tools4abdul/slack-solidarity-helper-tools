@@ -24,7 +24,8 @@
 		"van:e2e": "tsx --env-file=.env.local scripts/van-e2e.ts",
 		"van:geometry": "tsx --env-file=.env.local scripts/van-geometry-status.ts",
 		"van:drain": "tsx --env-file=.env.local scripts/van-geometry-drain.ts",
-		"sheets:check": "tsx --env-file=.env.local scripts/sheets-check.ts"
+		"sheets:check": "tsx --env-file=.env.local scripts/sheets-check.ts",
+		"slack:copy-members": "tsx --env-file=.env.local scripts/copy-channel-members.ts"
 	},
 	"license": "MIT",
 	"dependencies": {

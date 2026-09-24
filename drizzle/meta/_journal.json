@@ -302,6 +302,13 @@
       "when": 1789880527808,
       "tag": "0042_soft_sphinx",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1790197491436,
+      "tag": "0043_naive_captain_cross",
+      "breakpoints": true
     }
   ]
 }

@@ -217,8 +217,11 @@ async function checkMode(mode: VanDatabaseMode, verbose: boolean): Promise<ModeS
 		return lists;
 	});
 	const minivanExports = await probe('GET /minivanExports', async () => {
-		const exports = await client.minivanExports();
-		console.log(`         ${exports.length} MiniVAN export(s)`);
+		// One page of the last week is enough to prove the tier and show the
+		// shape; the sync is what reads them all.
+		const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+		const { items: exports } = await client.minivanExportsSince(since, 1);
+		console.log(`         ${exports.length} MiniVAN export(s) on the first page since ${since}`);
 		// Each export names the database it was cut from. When it's populated
 		// this is VAN telling you the answer directly, rather than us inferring
 		// it from where the turf turned up.

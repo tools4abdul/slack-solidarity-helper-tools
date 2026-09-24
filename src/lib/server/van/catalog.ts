@@ -156,23 +156,59 @@ function canvasserName(c: {
  * cut and cannot collide that way, so an unmatched hand-named export is the
  * safer failure.
  */
-function listNumberFromExportName(name: string | null | undefined): string | null {
+export function listNumberFromExportName(name: string | null | undefined): string | null {
 	const match = (name ?? '').trim().match(/^List\s+(\S+)$/i);
 	return match ? match[1]!.trim() : null;
 }
 
-/** Canvasser names by PRINTED LIST NUMBER, from exports made in VAN. Turfs
- *  with an entry render as "assigned in VAN" rather than vanishing
- *  (plan.md §4, Story 8.1). */
+/** What a turf shows for a canvasser VAN names only by id. */
+export const UNKNOWN_CANVASSER = 'unknown canvasser';
+
+/** Whether `a` was exported after `b`. By `dateCreated`, then by export id,
+ *  which VAN hands out in increasing order — so two exports in the same
+ *  second still have a winner, and it does not depend on input order. */
+function isLater(a: VanMinivanExport, b: VanMinivanExport): boolean {
+	const byDate = (a.dateCreated ?? '').localeCompare(b.dateCreated ?? '');
+	return byDate !== 0 ? byDate > 0 : a.minivanExportId > b.minivanExportId;
+}
+
+/**
+ * Canvasser names by PRINTED LIST NUMBER, from exports made in VAN. Turfs
+ * with an entry render as "assigned in VAN" rather than vanishing (plan.md §4,
+ * Story 8.1).
+ *
+ * The LATEST export of a list wins. An organizer re-exporting a list is handing
+ * it to someone else, so the earlier canvasser no longer has it. Verified live
+ * 2026-09-23: Royal Oak list 59430821-62783 went to a named canvasser on 09-22
+ * and was exported again on 09-23. Merging the two named both people and kept
+ * the first one on the turf indefinitely.
+ *
+ * That second export's canvasser came back as an id with a null first and last
+ * name, which VAN does for some canvassers. They are still someone holding the
+ * list, so they show as UNKNOWN_CANVASSER rather than being dropped — dropping
+ * them is what left the 09-22 canvasser in place.
+ *
+ * An export with no canvassers at all is skipped, not counted as a win: it
+ * names nobody, so it is no evidence the list changed hands.
+ */
 function distributionIndex(exports: VanMinivanExport[]): Map<string, string> {
-	const index = new Map<string, string>();
+	const latest = new Map<string, VanMinivanExport>();
 	for (const exp of exports) {
-		const names = (exp.canvassers ?? []).map(canvasserName).filter(Boolean);
-		if (names.length === 0) continue;
+		if ((exp.canvassers ?? []).length === 0) continue;
 		const key = listNumberFromExportName(exp.name);
 		if (!key) continue;
-		const existing = index.get(key);
-		index.set(key, existing ? `${existing}, ${names.join(', ')}` : names.join(', '));
+		const current = latest.get(key);
+		if (!current || isLater(exp, current)) latest.set(key, exp);
+	}
+
+	const index = new Map<string, string>();
+	for (const [key, exp] of latest) {
+		// Deduplicated, so two canvassers VAN names only by id read as one
+		// "unknown canvasser" rather than the same phrase twice.
+		const names = [
+			...new Set((exp.canvassers ?? []).map((c) => canvasserName(c) || UNKNOWN_CANVASSER)),
+		];
+		index.set(key, names.join(', '));
 	}
 	return index;
 }
