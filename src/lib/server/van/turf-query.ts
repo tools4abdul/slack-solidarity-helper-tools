@@ -3,10 +3,12 @@
 // Three surfaces need the same four steps — filter to the chapter, order and
 // cut, fetch the claims for exactly what survived, then run every row through
 // toTurfView: the volunteer page, the map's viewport endpoint, and the /turfs
-// Slack command. They had drifted into two near-identical copies before the
-// third arrived, which is the situation checkout-store.ts was extracted to
-// avoid ("three copies of it would eventually disagree about one of the
-// checks").
+// Slack command. All three call this. They used to be three near-identical
+// copies that had already drifted — the web two missed the viewer's own claims
+// in other chapters (so a volunteer at their limit saw every turf as
+// claimable) and never marked turf as updating — which is the situation
+// checkout-store.ts was extracted to avoid ("three copies of it would
+// eventually disagree about one of the checks").
 //
 // What is NOT here: the gates. Session, blocklist, chapter validation and the
 // rate limiters stay in the routes, because each transport authenticates
@@ -16,18 +18,26 @@
 //
 // The ordering matters and is deliberate: rows are cut BEFORE views are built,
 // so a turf left out of a payload is never serialised at all rather than
-// serialised and then filtered.
+// serialised and then filtered. The one exception is `claimableOnly`, which has
+// to judge every row before it can know which ones to leave out.
 
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { refreshingRegionIds } from './refresh.js';
 import { latestWalkReports } from './checkout-store.js';
-import type { ClaimOptions, ClaimSnapshot } from '../../van/checkout.js';
+import { chunked } from './sql-chunk.js';
+import {
+	activeClaimFor,
+	canClaim,
+	type ClaimOptions,
+	type ClaimSnapshot,
+} from '../../van/checkout.js';
 import type { BoundingBox, LatLng } from '../../van/geometry.js';
 import { selectNearest, TURFS_PER_PAYLOAD, withinBounds } from '../../van/turf-paging.js';
-import { toTurfView, type TurfView } from '../../van/turf-view.js';
+import { toTurfView, turfSnapshot, type TurfView } from '../../van/turf-view.js';
 import { visibleToChapter } from './chapter-visibility.js';
+import type { VanTurfRow } from '../schema.js';
 
 type Db = ReturnType<typeof drizzle>;
 
@@ -37,8 +47,9 @@ export interface TurfQueryInput {
 	/** Where the volunteer is, when we know. Null means name-ordered. */
 	location?: LatLng | null;
 	limit?: number;
-	/** Where in the ordering this page starts. The Slack command's "Show next
-	 *  5"; both web callers leave it at zero. */
+	/** Where in the ordering this page starts, counting unpinned rows only.
+	 *  The Slack command's "Show next 5"; both web callers leave it at zero.
+	 *  Take the next value from `nextOffset` rather than computing it. */
 	offset?: number;
 	/** Restrict to a map viewport before paging. The map endpoint's bbox. */
 	bounds?: BoundingBox | null;
@@ -55,6 +66,21 @@ export interface TurfQueryInput {
 	 * than the default.
 	 */
 	includeHeldByViewer?: boolean;
+	/**
+	 * Leave out turf nobody could take right now: checked out, assigned in VAN,
+	 * walked out, retired, or without a list number. The viewer's own turf
+	 * stays.
+	 *
+	 * For the Slack list, which is five rows on a phone and should spend them on
+	 * turf a volunteer can act on. The web map keeps taken turf on purpose — a
+	 * hole in the map reads as a bug.
+	 *
+	 * The per-volunteer cap is NOT a reason to leave a turf out. It is about the
+	 * viewer, not the turf, and hiding everything from someone at their limit
+	 * would read as "no turf here" instead of "give one back first". Those rows
+	 * still come back with `claimable: false` and the limit message.
+	 */
+	claimableOnly?: boolean;
 	now?: Date;
 	claimOptions?: ClaimOptions;
 }
@@ -62,7 +88,8 @@ export interface TurfQueryInput {
 export interface TurfQueryResult {
 	turfs: TurfView[];
 	/**
-	 * The chapter's total, not this payload's remainder.
+	 * The chapter's total, not this payload's remainder — after the
+	 * `claimableOnly` filter when it is on.
 	 *
 	 * Reporting the remainder made the page's own message drift as soon as
 	 * someone panned: the count of loaded turf grew while the "N more" figure
@@ -71,6 +98,12 @@ export interface TurfQueryResult {
 	total: number;
 	/** How many rows follow this page. What "Show next 5" reads. */
 	omitted: number;
+	/** This page's first row, zero-based, in the full ordering. */
+	start: number;
+	/** The `offset` for the page after this one. */
+	nextOffset: number;
+	/** Rows `claimableOnly` left out. Zero when it is off. */
+	unavailable: number;
 }
 
 /** The turf a viewer may see in one chapter, ordered, cut, and serialisable. */
@@ -84,6 +117,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		bounds = null,
 		mapRouteIds,
 		includeHeldByViewer = false,
+		claimableOnly = false,
 		now = new Date(),
 		claimOptions = {},
 	} = input;
@@ -96,7 +130,9 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// An empty `mapRouteIds` is a request for nothing, not a request for
 	// everything — `inArray` with an empty list is invalid SQL in some drivers
 	// and "no filter" in others, and neither is what the caller asked for.
-	if (mapRouteIds?.length === 0) return { turfs: [], total: 0, omitted: 0 };
+	if (mapRouteIds?.length === 0) {
+		return { turfs: [], total: 0, omitted: 0, start: 0, nextOffset: 0, unavailable: 0 };
+	}
 
 	const rows = await db
 		.select()
@@ -116,23 +152,43 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// Bounded twice when a viewport is given: by the box, then by the payload
 	// budget. A volunteer zoomed out to the whole county is still asking for a
 	// box, and without the second cap that box is the chapter.
-	const candidates = bounds ? withinBounds(rows, bounds) : rows;
+	const boxed = bounds ? withinBounds(rows, bounds) : rows;
+
+	// Claimability depends on the claims and walk reports, so the filtered path
+	// has to read both for every candidate before it can cut. The unfiltered
+	// path reads them for the cut page only.
+	let candidates: VanTurfRow[] = boxed;
+	let judged: {
+		claims: ClaimSnapshot[];
+		walkReports: Awaited<ReturnType<typeof latestWalkReports>>;
+	} | null = null;
+	if (claimableOnly) {
+		const ids = boxed.map((r) => r.mapRouteId);
+		const claims = await claimsFor(db, ids, viewer.slackUserId);
+		const walkReports = await latestWalkReports(db, ids);
+		// No cap: see `claimableOnly` for why being at the limit does not hide a turf.
+		const ignoringCap = { ...claimOptions, maxConcurrentClaims: Number.MAX_SAFE_INTEGER };
+		candidates = boxed.filter(
+			(row) =>
+				canClaim(turfSnapshot(row, walkReports), claims, viewer.slackUserId, now, ignoringCap).ok ||
+				activeClaimFor(row.mapRouteId, claims, now)?.slackUserId === viewer.slackUserId,
+		);
+		judged = { claims, walkReports };
+	}
+
 	// The viewer's own turf is pinned to the first page: it carries their list
 	// number, and it must not be sorted — or boxed — out of the one view that
 	// shows it. `myRouteIds` is only populated when the caller asked for held
 	// turf, so this changes nothing for callers that did not.
-	const { selected, omitted } = selectNearest(candidates, {
+	const { selected, omitted, start, nextOffset } = selectNearest(candidates, {
 		location,
 		limit,
 		offset,
 		alwaysInclude: myRouteIds,
 	});
 
-	const claims = await claimsFor(
-		db,
-		selected.map((r) => r.mapRouteId),
-		viewer.slackUserId,
-	);
+	const selectedIds = selected.map((r) => r.mapRouteId);
+	const claims = judged?.claims ?? (await claimsFor(db, selectedIds, viewer.slackUserId));
 
 	// One small read for the whole payload rather than a lookup per row. The
 	// table holds one row per region and only in-flight ones are returned, so
@@ -140,10 +196,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 	// skips it entirely, like the claim query above.
 	const refreshingRegions = selected.length > 0 ? await refreshingRegionIds(db) : new Set<number>();
 	// What volunteers last reported walking, for this page's turf only.
-	const walkReports = await latestWalkReports(
-		db,
-		selected.map((r) => r.mapRouteId),
-	);
+	const walkReports = judged?.walkReports ?? (await latestWalkReports(db, selectedIds));
 
 	return {
 		// toTurfView is the single gate on what reaches a viewer; see its header.
@@ -151,8 +204,11 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		turfs: selected.map((row) =>
 			toTurfView(row, claims, viewer, now, { ...claimOptions, refreshingRegions, walkReports }),
 		),
-		total: rows.length,
+		total: claimableOnly ? candidates.length : rows.length,
 		omitted,
+		start,
+		nextOffset,
+		unavailable: claimableOnly ? boxed.length - candidates.length : 0,
 	};
 }
 
@@ -171,7 +227,6 @@ async function activeRouteIdsFor(db: Db, slackUserId: string): Promise<number[]>
 	return rows.map((r) => r.mapRouteId);
 }
 
-/** Active claims on the given routes, as the pure rules want them. */
 /**
  * Live claims relevant to this payload: the turf being served, plus the
  * viewer's own wherever it is.
@@ -191,20 +246,28 @@ async function claimsFor(
 	viewerSlackUserId: string,
 ): Promise<ClaimSnapshot[]> {
 	if (mapRouteIds.length === 0) return [];
-	const rows = await db
-		.select()
-		.from(vanTurfCheckouts)
-		.where(
-			and(
-				or(
-					inArray(vanTurfCheckouts.mapRouteId, mapRouteIds),
-					eq(vanTurfCheckouts.slackUserId, viewerSlackUserId),
+	// Chunked because the `claimableOnly` path asks about a whole chapter. The
+	// viewer's own claims come back in every chunk, so they are de-duplicated —
+	// by route, which is safe because the partial unique index allows only one
+	// open claim per route.
+	const byRoute = new Map<number, typeof vanTurfCheckouts.$inferSelect>();
+	for (const batch of chunked(mapRouteIds)) {
+		const rows = await db
+			.select()
+			.from(vanTurfCheckouts)
+			.where(
+				and(
+					or(
+						inArray(vanTurfCheckouts.mapRouteId, batch),
+						eq(vanTurfCheckouts.slackUserId, viewerSlackUserId),
+					),
+					isNull(vanTurfCheckouts.releasedAt),
+					isNull(vanTurfCheckouts.completedAt),
 				),
-				isNull(vanTurfCheckouts.releasedAt),
-				isNull(vanTurfCheckouts.completedAt),
-			),
-		);
-	return rows.map((c) => ({
+			);
+		for (const row of rows) byRoute.set(row.mapRouteId, row);
+	}
+	return [...byRoute.values()].map((c) => ({
 		mapRouteId: c.mapRouteId,
 		slackUserId: c.slackUserId,
 		slackUserName: c.slackUserName,

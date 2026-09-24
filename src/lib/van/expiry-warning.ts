@@ -38,7 +38,7 @@ export type WarnableClaim = ClaimSnapshot & { expiryWarnedAt: string | null };
 /**
  * Whether this claim is due its one expiry warning.
  *
- * Four conditions, and the order is the interesting part:
+ * Three conditions, and the order is the interesting part:
  *
  *   1. Not already warned. The stamp is the idempotency key.
  *   2. Still held — `isActive` covers released, completed, AND already lapsed,
@@ -81,9 +81,10 @@ export interface ExpiryWarningInput {
  * telling-off gets muted, and a muted reminder is worse than none.
  *
  * **The MiniVAN list number is deliberately absent.** The recipient is the
- * holder, so including it would be permissible — but it is issued at claim time
- * and shown on the turf page, and adding a second place it gets sent means two
- * places to get wrong later. The link goes to the page that already has it.
+ * holder, so including it would be permissible — but they already have it from
+ * the claim, `/turfs-mine` and the turf page, and nothing about it changed. The
+ * one DM that does carry it is reconcile-store.ts's, when VAN replaced it and
+ * the holder's copy stopped working. The link goes to the page that has it.
  */
 export function renderExpiryWarning(input: ExpiryWarningInput): string {
 	const { turfName, regionName, doorCount, chapterId, expiresAt, hoursLeft, appUrl } = input;

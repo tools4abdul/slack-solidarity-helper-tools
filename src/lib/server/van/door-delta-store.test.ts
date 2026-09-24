@@ -86,7 +86,81 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+/** Any other route row, for the re-cut case: the walked route retired, and the
+ *  route VAN returned in its place. */
+async function route(r: {
+	mapRouteId: number;
+	name?: string;
+	doorCount: number;
+	lastRefreshedAt?: string | null;
+	firstSeenAt: string;
+	retiredAt?: string | null;
+}) {
+	await client.execute({
+		sql: `INSERT INTO van_turfs
+		        (map_route_id, map_region_id, folder_id, chapter_id, chapter_name, region_name,
+		         name, door_count, last_refreshed_at, first_seen_at, last_seen_at, retired_at)
+		      VALUES (?, 1, 1, 71, 'Washtenaw County', 'Ann Arbor', ?, ?, ?, ?, ?, ?)`,
+		args: [
+			r.mapRouteId,
+			r.name ?? 'Turf 01',
+			r.doorCount,
+			r.lastRefreshedAt ?? null,
+			r.firstSeenAt,
+			NOW.toISOString(),
+			r.retiredAt ?? null,
+		],
+	});
+}
+
 describe('stampDoorDeltas', () => {
+	// The shape a real re-cut leaves behind (schema.ts, verified live): the
+	// walked route retired with its pre-cut figures frozen, and a new route id
+	// carrying the current count.
+	it('measures a re-cut turf against the route that replaced it', async () => {
+		await route({
+			mapRouteId: 100,
+			doorCount: 250,
+			lastRefreshedAt: '2026-09-10T00:00:00.000Z',
+			firstSeenAt: '2026-09-01T00:00:00.000Z',
+			retiredAt: '2026-09-12T14:30:00.000Z',
+		});
+		await route({
+			mapRouteId: 200,
+			doorCount: 190,
+			lastRefreshedAt: '2026-09-12T14:00:00.000Z',
+			firstSeenAt: '2026-09-12T14:30:00.000Z',
+		});
+		await completion({ claimDoorCount: 250 });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result).toMatchObject({ measured: 1, unsynced: 0, doorsCleared: 60 });
+		expect(await deltas()).toEqual([60]);
+	});
+
+	it('leaves a re-cut turf unmeasured when nothing replaced it', async () => {
+		await route({
+			mapRouteId: 100,
+			doorCount: 250,
+			firstSeenAt: '2026-09-01T00:00:00.000Z',
+			retiredAt: '2026-09-12T14:30:00.000Z',
+		});
+		await route({
+			mapRouteId: 200,
+			name: 'Turf 02',
+			doorCount: 10,
+			firstSeenAt: NOW.toISOString(),
+		});
+		await completion({ claimDoorCount: 250 });
+
+		const result = await stampDoorDeltas(db, { now: NOW, appUrl: 'https://app.example' });
+
+		expect(result.measured).toBe(0);
+		expect(await deltas()).toEqual([null]);
+		expect(mockSendDm).not.toHaveBeenCalled();
+	});
+
 	it('stamps the doors that left and says nothing', async () => {
 		await turf({ doorCount: 190 });
 		await completion({ claimDoorCount: 250 });

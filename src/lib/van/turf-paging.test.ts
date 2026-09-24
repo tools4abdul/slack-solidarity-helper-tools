@@ -81,7 +81,36 @@ describe('selectNearest', () => {
 			const rows = many(300);
 			const page2 = selectNearest(rows, { limit: 150, offset: 150, alwaysInclude: [0] });
 			expect(page2.selected.some((t) => t.mapRouteId === 0)).toBe(false);
-			expect(page2.selected).toHaveLength(150);
+			// 299 unpinned rows, of which 150 were already past.
+			expect(page2.selected).toHaveLength(149);
+		});
+
+		// The regression: a pinned turf that sorts onto page two used to take a
+		// page-one slot AND still sit in page two's ordering, so one turf was
+		// shown twice and the turf it displaced was never shown at all.
+		it('shows every row exactly once across pages when a later row is pinned', () => {
+			const rows = 'ABCDEFGHIJKL'.split('').map((name, i) => turf(i + 1, name, 42, -83));
+			const H = 8;
+			const seen: string[] = [];
+			let offset = 0;
+			for (let page = 0; page < 5; page++) {
+				const result = selectNearest(rows, { limit: 5, offset, alwaysInclude: [H] });
+				seen.push(...result.selected.map((t) => t.name));
+				if (result.omitted === 0) break;
+				offset = result.nextOffset;
+			}
+			expect(seen).toEqual(['H', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'I', 'J', 'K', 'L']);
+		});
+
+		it('reports where each page starts, counting pinned rows at the front', () => {
+			const rows = 'ABCDEFGHIJKL'.split('').map((name, i) => turf(i + 1, name, 42, -83));
+			const page1 = selectNearest(rows, { limit: 5, alwaysInclude: [8] });
+			expect(page1.start).toBe(0);
+			expect(page1.nextOffset).toBe(4);
+			const page2 = selectNearest(rows, { limit: 5, offset: page1.nextOffset, alwaysInclude: [8] });
+			// Rows 1-5 were page one, so page two is "6–10".
+			expect(page2.start).toBe(5);
+			expect(page2.selected).toHaveLength(5);
 		});
 
 		it('ignores ids that are not in the rows at all', () => {
@@ -120,7 +149,7 @@ describe('selectNearest', () => {
 	});
 
 	it('handles an empty chapter', () => {
-		expect(selectNearest([])).toEqual({ selected: [], omitted: 0 });
+		expect(selectNearest([])).toEqual({ selected: [], omitted: 0, start: 0, nextOffset: 0 });
 	});
 });
 

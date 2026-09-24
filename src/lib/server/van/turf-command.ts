@@ -9,18 +9,21 @@
 // Two things this module is responsible for, both of which are the reason it is
 // one module rather than inlined into the two routes that call it:
 //
-//   1. The MiniVAN list number appears in exactly TWO builders —
+//   1. The MiniVAN list number appears in exactly TWO builders here —
 //      buildClaimedBlocks and buildMineBlocks — and never in the browsable
 //      list. It is the credential: it is what pulls the doors down in MiniVAN,
 //      so putting it on a list of turf you do not hold would let anyone load
 //      any turf regardless of who has it. toTurfView already nulls it on turf
 //      you don't hold; this file must not reintroduce it by reading a raw row.
 //
-//      What makes those two safe is the same property in both: the reply is
-//      ephemeral (slack-response-url.ts hardcodes response_type), so it has
-//      exactly one recipient, and the rows behind it are scoped to that same
-//      person — the claim they just made, or `loadHoldingsFor(theirUserId)`. A
-//      third builder may only render it if BOTH still hold.
+//      The rule, wherever the number is sent: it goes to the person holding
+//      the turf and nobody else. Here that is an ephemeral reply
+//      (slack-response-url.ts hardcodes response_type), which has exactly one
+//      recipient, built from rows scoped to that same person — the claim they
+//      just made, or `loadHoldingsFor(theirUserId)`. The only other sender is
+//      reconcile-store.ts, which DMs the holder a replacement number when VAN
+//      changes it under them. Never a channel, never a message anyone else can
+//      read.
 //   2. Button values round-trip through Slack, which makes them untrusted
 //      input on the way back. decodeTurfAction validates rather than trusts,
 //      and the caller re-checks the chapter against settings anyway.
@@ -31,21 +34,22 @@ import { statusLabel } from '../../van/turf-status.js';
 import { describeAge, oldestRefreshMinutes } from '../../van/turf-freshness.js';
 import type { TurfView } from '../../van/turf-view.js';
 import { normalizeZip } from './zip-centroid.js';
+import { TURFS_PER_PAYLOAD } from '../../van/turf-paging.js';
 
 /**
  * Turfs per Slack page.
  *
- * Five, not the web page's 150. A slash command reply is read on a phone in a
+ * Five, not the web page's TURFS_PER_PAYLOAD. A slash command reply is read on a phone in a
  * channel, and the useful question is "what's the closest thing I can take
  * right now", not "show me the county". Anyone who wants the county has the
  * map, which every reply links to.
  */
 export const SLACK_TURF_LIMIT = 5;
 
-/** Hard ceiling on how far the "Show next 5" button can walk. Matches the web
- *  payload budget, so a hand-crafted button value cannot page further through a
- *  chapter than the map itself would hand over. */
-export const MAX_SLACK_OFFSET = 150;
+/** Hard ceiling on how far the "Show next 5" button can walk. The web payload
+ *  budget, so a hand-crafted button value cannot page further through a chapter
+ *  than the map itself would hand over. */
+export const MAX_SLACK_OFFSET = TURFS_PER_PAYLOAD;
 
 /** Longest location argument we will pass to a geocoder. A street address is
  *  well under this; anything longer is a paste or an attack, and neither
@@ -62,6 +66,15 @@ export const TURF_PAGE_ACTION_ID = 'van_turf_page';
 // to return to.
 export const TURF_RELEASE_MINE_ACTION_ID = 'van_turf_release_mine';
 export const TURF_COMPLETE_ACTION_ID = 'van_turf_complete';
+/**
+ * The "Open the map" link buttons.
+ *
+ * A link button still sends Slack's interactivity payload when tapped, so it
+ * needs an id nothing acts on. Giving it TURF_PAGE_ACTION_ID — as /turfs-mine
+ * once did — sent that payload to the pager, which found no value and replaced
+ * the volunteer's list numbers with "That button has expired".
+ */
+export const TURF_OPEN_MAP_ACTION_ID = 'van_turf_open_map';
 
 /** The choices "Mark it done" offers in Slack: 5% steps, 100 first because a
  *  finished turf is the common case. Slack caps a menu at 100 options; this
@@ -237,9 +250,18 @@ export interface TurfListInput {
 	turfs: readonly TurfView[];
 	chapter: ChapterRef;
 	location?: LatLng | null;
+	/** The offset this page was asked for. Carried on each turf's buttons so
+	 *  acting on one redraws the same page. */
 	offset: number;
+	/** This page's first row, zero-based — see loadChapterTurfs. */
+	start: number;
+	/** The offset for "Show next 5". */
+	nextOffset: number;
 	omitted: number;
+	/** Turf the volunteer could take, plus their own. */
 	total: number;
+	/** Turf left out because nobody can take it right now. */
+	unavailable: number;
 	appUrl: string;
 	/** Echoed into the "open the map" link so the web page opens with the same
 	 *  location the list was sorted by. */
@@ -248,9 +270,39 @@ export interface TurfListInput {
 
 /** The command's main reply: the nearest few turfs, each claimable in place. */
 export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
-	const { turfs, chapter, location = null, offset, omitted, total, appUrl, zip = null } = input;
+	const {
+		turfs,
+		chapter,
+		location = null,
+		offset,
+		start,
+		nextOffset,
+		omitted,
+		total,
+		unavailable,
+		appUrl,
+		zip = null,
+	} = input;
 	const mapUrl = turfPageUrl(appUrl, chapter.chapterId, zip);
 	const chapterName = escapeMrkdwn(chapter.name);
+	const mapLink = `<${escapeMrkdwn(mapUrl)}|Open the map>`;
+
+	if (total === 0 && unavailable > 0) {
+		// Turf exists, none of it is free. Must not read as "nothing loaded".
+		return {
+			text: `Nothing in ${chapter.name} is free to claim right now.`,
+			blocks: [
+				{
+					type: 'section',
+					text: mrkdwn(`Nothing in *${chapterName}* is free to claim right now.`),
+				},
+				context(
+					`All ${unavailable} ${unavailable === 1 ? 'turf is' : 'turfs are'} checked out or ` +
+						`already walked. ${mapLink} to see them, or check back later.`,
+				),
+			],
+		};
+	}
 
 	if (total === 0) {
 		// Not the same as "everything is taken", and it must not read as that.
@@ -281,8 +333,8 @@ export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
 		{
 			type: 'section',
 			text: mrkdwn(
-				`*Turf in ${chapterName}*\n` +
-					`Showing ${offset + 1}–${offset + turfs.length} of ${total}` +
+				`*Turf you can take in ${chapterName}*\n` +
+					`Showing ${start + 1}–${start + turfs.length} of ${total}` +
 					(location ? ', nearest first' : ''),
 			),
 		},
@@ -304,17 +356,21 @@ export function buildTurfListBlocks(input: TurfListInput): SlackMessage {
 
 	blocks.push(
 		omitted > 0
-			? nextPageBlock(chapter.chapterId, offset + turfs.length, location)
+			? nextPageBlock(chapter.chapterId, nextOffset, location)
 			: startOverBlock(chapter.chapterId, location),
 	);
+	const hiddenNote =
+		unavailable === 0
+			? ''
+			: unavailable === 1
+				? ' 1 more is checked out or already walked, and is only on the map.'
+				: ` ${unavailable} more are checked out or already walked, and are only on the map.`;
 	blocks.push(
-		context(
-			`<${escapeMrkdwn(mapUrl)}|Open the map> to see these on a map, or browse the whole county.`,
-		),
+		context(`${mapLink} to see these on a map, or browse the whole county.${hiddenNote}`),
 	);
 
 	return {
-		text: `${turfs.length} turfs in ${chapter.name} (${offset + 1}–${offset + turfs.length} of ${total})`,
+		text: `${turfs.length} turf${turfs.length === 1 ? '' : 's'} in ${chapter.name} (${start + 1}–${start + turfs.length} of ${total})`,
 		blocks,
 	};
 }
@@ -407,13 +463,13 @@ export interface ClaimedInput {
 }
 
 /**
- * One of the two places a MiniVAN list number is rendered; see the module
+ * One of the two places here a MiniVAN list number is rendered; see the module
  * header for the rule both obey. The other is `buildMineBlocks`.
  *
  * Only ever posted as an ephemeral to the person who claimed the turf — an
  * ephemeral has exactly one recipient by construction, which is what makes
- * this safe to send into a channel at all. Never `in_channel`, never
- * chat.postMessage, never a DM.
+ * this safe to send into a channel at all. Never `in_channel`, and never
+ * chat.postMessage into a channel.
  */
 export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 	const { turf, chapter, printedListNumber, expiresAt, now, appUrl, location = null } = input;
@@ -446,11 +502,12 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 					// be: MiniVAN uploads canvass results to VAN itself, and the API
 					// exposes no way for this app to send them (plan.md §2 Constraint
 					// C). Someone who believes Slack synced for them has lost their
-					// morning's doors and will not find out for a week, when the
-					// unsynced nudge DM goes out. The web page's steps say the same
-					// thing in the same order; these two must not drift.
-					'*1.* Open MiniVAN on your phone\n' +
-						'*2.* Enter the list number above\n' +
+					// morning's doors, and nothing in this app is guaranteed to
+					// catch it (door-delta.ts only can once VAN recounts the turf).
+					// The web page's steps say the same thing in the same order;
+					// these two must not drift.
+					'*1.* Open MiniVAN on your phone and sign in\n' +
+						'*2.* Choose *Enter List Number* and type the number above\n' +
 						'*3.* Knock the doors, then hit *Sync* in MiniVAN before you close the app\n\n' +
 						'Your answers only reach VAN when MiniVAN syncs. Skip it and the turf looks ' +
 						'unwalked, and someone else gets sent to the same doors.',
@@ -482,7 +539,7 @@ export function buildClaimedBlocks(input: ClaimedInput): SlackMessage {
 					{
 						type: 'button',
 						text: { type: 'plain_text', text: 'Open the map' },
-						action_id: 'van_turf_open_map',
+						action_id: TURF_OPEN_MAP_ACTION_ID,
 						url: turfPageUrl(appUrl, chapter.chapterId),
 					},
 				],
@@ -600,7 +657,7 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 				{
 					type: 'button',
 					text: { type: 'plain_text', text: 'Open the map' },
-					action_id: TURF_PAGE_ACTION_ID,
+					action_id: TURF_OPEN_MAP_ACTION_ID,
 					url: turfPageUrl(appUrl, turf.chapterId),
 				},
 			],
@@ -609,9 +666,10 @@ export function buildMineBlocks(input: MineInput): SlackMessage {
 
 	// The warning that prompted this command existing. "Mark it done" records
 	// that YOU walked it; it cannot move your answers off your phone, and a
-	// volunteer who taps it instead of syncing loses the morning without being
-	// told for a week (door-delta.ts sends the nudge). Last block, because it
-	// is the thing to read before tapping anything above it.
+	// volunteer who taps it instead of syncing loses the morning, probably
+	// without being told (door-delta.ts can only nudge once VAN recounts the
+	// turf). Last block, because it is the thing to read before tapping
+	// anything above it.
 	blocks.push(
 		context(
 			'*Sync MiniVAN first.* "Mark it done" records that you walked the turf — ' +

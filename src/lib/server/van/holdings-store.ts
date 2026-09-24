@@ -145,8 +145,8 @@ export async function loadHoldingsFor(db: Db, slackUserId: string): Promise<MyHo
  *
  * Returns rows whose delta is still null as well as measured ones, because the
  * page has to tell "nothing to worry about" apart from "nothing has been
- * checked" — and with Story 5.6 still blocked on the VAN key, every row is
- * currently the latter.
+ * checked" — and a completion stays unchecked until VAN re-cuts its region,
+ * which with region re-cuts off only happens by hand.
  */
 export async function loadRecentCompletions(
 	db: Db,

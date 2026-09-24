@@ -12,17 +12,28 @@
 //     nobody and will be lost when the app is reinstalled. That is the nudge
 //     organizers actually asked for, and it is worth sending the same day.
 //
+// A re-cut does not update the walked route in place. It RETIRES it and returns
+// new routes with new ids (schema.ts, verified live 2026-09-08; the same fact
+// refresh-reconcile.ts is built on). So the count to compare against is usually
+// on the route that REPLACED the one walked, found the same way the
+// reconciliation finds it for a live claim: same map region, same name, and the
+// only such route. This check used to read the walked route only, whose row
+// stops updating the moment it is retired — so it could never measure anything.
+//
 // Pure: no DB, no Slack, no clock of its own. The decision of WHICH completions
 // can be measured, what the delta is, and what to say is all here;
 // door-delta-store.ts does the rows and the sending.
 
+import { turfNameKey } from './refresh-reconcile.js';
+
 /**
  * How long after a completion we keep waiting for a refresh to land.
  *
- * A delta needs evidence — VAN's own `dateRefreshed` moving past the completion
- * (see refresh.ts). Usually that is the same night. If a week goes by without
- * one, the key has no refresh access, the region was archived, or VAN never
- * populated the timestamp; in any of those cases the answer is not coming, and
+ * A delta needs evidence — a re-cut landing after the completion (see
+ * `measuredAgainst`). With region re-cuts switched on that is usually the same
+ * night; with them off it is whenever an organizer re-cuts the region by hand.
+ * If a week goes by without one, the region was not re-cut, was archived, or
+ * the turf came back renamed; in any of those cases the answer is not coming, and
  * a "did you sync?" nudge about turf someone walked last month is noise rather
  * than help.
  *
@@ -45,11 +56,29 @@ export interface CompletionCandidate {
 	turfName: string;
 	regionName: string;
 	chapterId: number;
-	/** VAN's door count now. */
+	/** VAN's door count now — or, on a retired route, when it was retired. */
 	doorCount: number;
 	/** VAN's `dateRefreshed` for this turf's region, as of the last catalog
 	 *  read. The evidence that a re-cut has happened since the completion. */
 	lastRefreshedAt: string | null;
+	/** Where to look for the route that replaced this one. */
+	mapRegionId: number;
+	/** Set once VAN stopped returning the route — normally because a re-cut
+	 *  replaced it. The count then comes from the replacement. */
+	retiredAt: string | null;
+}
+
+/** A live route that may have replaced a retired, completed one. */
+export interface ReplacementRoute {
+	mapRouteId: number;
+	mapRegionId: number;
+	name: string;
+	doorCount: number;
+	lastRefreshedAt: string | null;
+	/** When the catalog first saw this route id. A route first seen after the
+	 *  completion was cut after it, which is evidence of a re-cut even when VAN
+	 *  leaves `dateRefreshed` empty. */
+	firstSeenAt: string;
 }
 
 export type DoorDeltaAction =
@@ -65,9 +94,55 @@ export type DoorDeltaAction =
 
 export interface DoorDeltaInput {
 	completions: readonly CompletionCandidate[];
+	/** Live routes in the regions of the retired completions. */
+	replacements?: readonly ReplacementRoute[];
 	now: Date;
 	appUrl: string;
 	horizonMs?: number;
+}
+
+/**
+ * The candidate as it should be measured: unchanged for a route VAN still
+ * returns, and carrying its replacement's count and evidence for one it
+ * retired. Null when a retired route has no single replacement — VAN renamed or
+ * split the turf, or nothing came back for it — because then there is nothing
+ * honest to compare the claim-time count with. Left unmeasured rather than
+ * guessed: a guess either credits doors nobody knocked or nudges someone who
+ * synced.
+ *
+ * The evidence is the later of the replacement's `dateRefreshed` and when it
+ * first appeared. Either one after the completion means the cut that produced
+ * it came after the volunteer's knocks.
+ */
+export function measuredAgainst(
+	candidate: CompletionCandidate,
+	replacements: readonly ReplacementRoute[] = [],
+): CompletionCandidate | null {
+	if (candidate.retiredAt === null) return candidate;
+
+	const key = turfNameKey(candidate.turfName);
+	const matches = replacements.filter(
+		(r) =>
+			r.mapRegionId === candidate.mapRegionId &&
+			r.mapRouteId !== candidate.mapRouteId &&
+			turfNameKey(r.name) === key,
+	);
+	if (matches.length !== 1) return null;
+	const replacement = matches[0]!;
+
+	return {
+		...candidate,
+		doorCount: replacement.doorCount,
+		lastRefreshedAt: laterOf(replacement.lastRefreshedAt, replacement.firstSeenAt),
+	};
+}
+
+function laterOf(a: string | null, b: string | null): string | null {
+	const ta = a ? Date.parse(a) : NaN;
+	const tb = b ? Date.parse(b) : NaN;
+	if (Number.isNaN(ta)) return Number.isNaN(tb) ? null : b;
+	if (Number.isNaN(tb)) return a;
+	return ta >= tb ? a : b;
 }
 
 /**
@@ -148,9 +223,11 @@ export function planDoorDeltas(input: DoorDeltaInput): DoorDeltaAction[] {
 	for (const candidate of completions) {
 		const completedMs = Date.parse(candidate.completedAt);
 		if (Number.isNaN(completedMs) || now.getTime() - completedMs > horizonMs) continue;
-		if (!refreshLandedSince(candidate)) continue;
 
-		const delta = doorDelta(candidate);
+		const measured = measuredAgainst(candidate, input.replacements);
+		if (!measured || !refreshLandedSince(measured)) continue;
+
+		const delta = doorDelta(measured);
 		if (delta === null) continue;
 
 		if (delta > 0) {

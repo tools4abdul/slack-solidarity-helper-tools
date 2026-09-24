@@ -15,10 +15,10 @@ import { postToResponseUrl, respondToSlack } from '$lib/server/slack-response-ur
 import { myTurfMessage, turfListMessage } from '$lib/server/van/turf-slack.js';
 import { errMessage } from '$lib/err-message.js';
 
-// Slash commands. Four kinds:
+// Slash commands. Five kinds:
 //
 //   /member-note          — opens the note/warning modal (see slack-modal.ts)
-//   /turfs                — nearest available turf, claimable in place
+//   /turfs                — nearest claimable turf, claimable in place
 //   /turfs-mine           — what you are holding, with its list numbers
 //                           (see van/turf-slack.ts)
 //   /list-commands        — every info command and its message, shown only to
@@ -27,14 +27,15 @@ import { errMessage } from '$lib/err-message.js';
 //                           blurbs, and posted **as the person who typed it**
 //
 // Everything but /turfs and /turfs-mine is for admins and moderators (see
-// slack-admin.ts);
-// moderators exist precisely to use these commands without the web admin.
+// slack-admin.ts); moderators exist precisely to use these commands without
+// the web admin.
 //
-// /turfs is the ONLY command here open to everyone, and deliberately so: it
-// serves the same data the /turfs web page serves, and that page is open to any
-// signed-in workspace member minus the turf blocklist. A Slack workspace member
-// is the same bar as a Slack-OAuth session, so this grants nothing new. Its
-// gates are van/turf-slack.ts's, not this file's.
+// /turfs and /turfs-mine are the ONLY commands here open to everyone, and
+// deliberately so: they serve the same data the /turfs web page serves, and
+// that page is open to any signed-in workspace member minus the turf
+// blocklist. A Slack workspace member is the same bar as a Slack-OAuth
+// session, so this grants nothing new. Their gates are van/turf-slack.ts's,
+// not this file's.
 //
 // Two things differ from the events route: Slack sends slash commands as
 // `application/x-www-form-urlencoded` (so the body is parsed with

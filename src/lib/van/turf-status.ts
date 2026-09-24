@@ -57,8 +57,11 @@ export function volunteerStatus(status: TurfStatus): VolunteerStatus {
 /**
  * Reduce a turf's real state to what `viewer` may see.
  *
- * Admins get everything, unchanged. Everyone else gets the collapsed status
- * and no holder identity.
+ * Everyone gets the collapsed status — `VolunteerStatus` is the only status
+ * that reaches a browser. Admins additionally get the holder's name and the
+ * claim's expiry, and the two together still tell them what was collapsed: a
+ * holder with no expiry is an assignment made in VAN. Everyone else gets no
+ * holder identity.
  *
  * `expiresInHours` is suppressed for non-admins too, which is worth spelling
  * out because it costs a genuinely useful "frees up in 11 hours" hint. The

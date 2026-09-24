@@ -214,8 +214,95 @@ describe('loadChapterTurfs', () => {
 				viewer: VIEWER,
 				mapRouteIds: [],
 			});
-			expect(result).toEqual({ turfs: [], total: 0, omitted: 0 });
+			expect(result).toEqual({
+				turfs: [],
+				total: 0,
+				omitted: 0,
+				start: 0,
+				nextOffset: 0,
+				unavailable: 0,
+			});
 			expect(queryCount()).toBe(0);
+		});
+	});
+
+	// The web page and the map endpoint read through here too, so a volunteer
+	// holding turf in another chapter is counted against their limit on every
+	// surface — not shown turf as claimable that the click then refuses.
+	it('counts the viewer’s claims in other chapters against their limit', async () => {
+		const elsewhere = [
+			claimRow({ mapRouteId: 900, slackUserId: 'U_VOL' }),
+			claimRow({ mapRouteId: 901, slackUserId: 'U_VOL' }),
+		];
+		const { db } = makeDb([[turfRow()], elsewhere]);
+		const { turfs } = await loadChapterTurfs(db, {
+			chapterId: 71,
+			viewer: VIEWER,
+			claimOptions: { maxConcurrentClaims: 2 },
+		});
+		expect(turfs[0]!.claimable).toBe(false);
+		expect(turfs[0]!.claimBlockedReason).toContain('You can hold 2');
+	});
+
+	it('marks turf in a region VAN is re-cutting as updating', async () => {
+		const { db } = makeDb([[turfRow({ mapRegionId: 10 })], [], [{ mapRegionId: 10 }]]);
+		const { turfs } = await loadChapterTurfs(db, { chapterId: 71, viewer: VIEWER });
+		expect(turfs[0]!.updating).toBe(true);
+	});
+
+	describe('claimableOnly', () => {
+		const rows = () => [
+			turfRow({ mapRouteId: 1, name: 'Free' }),
+			turfRow({ mapRouteId: 2, name: 'Taken' }),
+			turfRow({ mapRouteId: 3, name: 'Assigned', vanDistributedTo: 'Pat' }),
+			turfRow({ mapRouteId: 4, name: 'Unprinted', printedListNumber: null }),
+			turfRow({ mapRouteId: 5, name: 'Mine' }),
+		];
+		const claims = () => [
+			claimRow({ mapRouteId: 2, slackUserId: 'U_OTHER' }),
+			claimRow({ mapRouteId: 5, slackUserId: 'U_VOL' }),
+		];
+
+		it('leaves out turf nobody can take, and keeps the viewer’s own', async () => {
+			const { db } = makeDb([rows(), claims()]);
+			const result = await loadChapterTurfs(db, {
+				chapterId: 71,
+				viewer: VIEWER,
+				claimableOnly: true,
+			});
+			expect(result.turfs.map((t) => t.name).sort()).toEqual(['Free', 'Mine']);
+			expect(result.total).toBe(2);
+			expect(result.unavailable).toBe(3);
+		});
+
+		// Hiding everything from someone at their limit would read as "no turf
+		// here" rather than "give one back first".
+		it('does not hide turf just because the viewer is at their limit', async () => {
+			const { db } = makeDb([rows(), claims()]);
+			const { turfs } = await loadChapterTurfs(db, {
+				chapterId: 71,
+				viewer: VIEWER,
+				claimableOnly: true,
+				claimOptions: { maxConcurrentClaims: 1 },
+			});
+			const free = turfs.find((t) => t.name === 'Free');
+			expect(free).toBeDefined();
+			expect(free!.claimable).toBe(false);
+			expect(free!.claimBlockedReason).toContain('You can hold 1');
+		});
+
+		it('leaves out turf walked to 100%', async () => {
+			vi.mocked(latestWalkReports).mockResolvedValueOnce(
+				new Map([[1, { percent: 100, at: '2026-09-23T18:00:00.000Z' }]]),
+			);
+			const { db } = makeDb([[turfRow({ mapRouteId: 1 })], []]);
+			const result = await loadChapterTurfs(db, {
+				chapterId: 71,
+				viewer: VIEWER,
+				claimableOnly: true,
+			});
+			expect(result.turfs).toEqual([]);
+			expect(result.unavailable).toBe(1);
 		});
 	});
 

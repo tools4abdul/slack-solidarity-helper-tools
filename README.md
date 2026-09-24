@@ -94,8 +94,12 @@ Because the token is captured at login and stored only for admins and moderators
 
 ### The `/turfs` command
 
-Turf checkout without opening a browser. `/turfs` replies with the five nearest available
-turfs, each claimable from the message itself.
+Turf checkout without opening a browser. `/turfs` replies with the five nearest turfs you
+can claim, each claimable from the message itself. Turf nobody can take right now —
+checked out, assigned in VAN, walked out, or without a list number — is left out and
+counted in a line under the list; it is still on the web map, which every reply links to.
+Your own turf stays in the list. Being at your claim limit does not hide anything: those
+turfs still show, with the reason they cannot be claimed yet.
 
 Three ways to say where you are, resolved in that order:
 
@@ -109,8 +113,8 @@ If none of them resolve, the reply is a list of counties to pick from — the sa
 web page applies, where no county means no turf rather than a default one.
 
 **Anyone in the workspace can run it**, minus the block list at **Settings → Blocked from
-turf checkout**. This is the only slash command in the app that is not admin-only, and it
-grants nothing new: a Slack workspace member is the same bar as a Slack-OAuth session, and
+turf checkout**. It and `/turfs-mine` are the only slash commands in the app that are not
+admin-only, and they grant nothing new: a Slack workspace member is the same bar as a Slack-OAuth session, and
 the `/turfs` web page is already open to exactly these people.
 
 **Claim, Give back and Show next 5** are buttons on the reply. They re-run every gate the
@@ -121,8 +125,9 @@ something they can do. Each press replaces the message rather than adding one, s
 
 **The MiniVAN list number is shown only to whoever claimed the turf**, in an ephemeral
 message — which has exactly one recipient by construction. It is never posted to a
-channel, never DMed, and deliberately kept out of the notification fallback text, which is
-the one thing that renders on a locked phone.
+channel, and deliberately kept out of the notification fallback text, which is the one
+thing that renders on a locked phone. The only DM that carries it is the one telling the
+holder VAN replaced their number (see the reconciliation under the catalog sync).
 
 ### The `/turfs-mine` command
 
@@ -136,6 +141,8 @@ back to their list number, and no way to mark turf walked from Slack at all — 
 was web-only.
 
 Open to anyone in the workspace, minus the block list, on the same reasoning as `/turfs`.
+The block list and the per-user request budget are checked before **Mark it done** or
+**Give it back** writes anything.
 It takes no argument: `/turfs` needs a location to decide what is _near_ you, and this
 answers from rows that are already yours. For the same reason it is **not chapter-scoped** —
 someone holding turf in two counties is holding two turfs, and a "mine" that showed one of
@@ -143,14 +150,13 @@ them would be lying.
 
 Showing the list number here is safe for the two reasons it is safe in the claim reply, and
 it needs both: the response is ephemeral, so it has exactly one recipient, and the query is
-scoped to the caller's own Slack id. These are the only two places in the app that render
-it.
+scoped to the caller's own Slack id. These are the only two Slack replies that render it.
 
 **"Mark it done" is not syncing, and the message says so.** Completing a turf records that
 _you_ walked it; only MiniVAN can send your answers to VAN. That warning sits at the bottom
 of the list, below the buttons, because the volunteer most likely to tap it is the one who
-has not synced — and the cost of that mistake is a morning of doors nobody hears about
-until the unsynced nudge DM goes out days later.
+has not synced — and the cost of that mistake is a morning of doors that may never reach
+VAN: the unsynced nudge can only go out once VAN recounts the turf.
 
 **A typed address is never stored and never logged.** It is geocoded in memory, used to
 sort, and dropped; only the ZIP the geocoder matched it to is cached, in
@@ -465,9 +471,10 @@ form-encoded.
 - `/member-note` opens the note modal via `views.open`. Admins and moderators.
 - `/turfs` lists the nearest available turf — see [The `/turfs` command](#the-turfs-command).
 - `/turfs-mine` lists what the caller is holding, with their list numbers and per-turf actions — see [The `/turfs-mine` command](#the-turfs-mine-command).
-  **The only command here open to everyone**, deliberately: it serves the same data as
-  the `/turfs` web page, which is already open to any signed-in member minus the turf
-  block list. Its gates are `$lib/server/van/turf-slack.ts`'s.
+  `/turfs` and `/turfs-mine` are **the only commands here open to everyone**, deliberately:
+  they serve the same data as the `/turfs` web page, which is already open to any
+  signed-in member minus the turf block list. Their gates are
+  `$lib/server/van/turf-slack.ts`'s.
 - `/list-commands` replies ephemerally with every row in `info_commands`. Admins and
   moderators. A list too long for one Slack message (~40k characters) is sent as several,
   in order, through `response_url` — which Slack caps at five posts.
@@ -742,7 +749,9 @@ After every catalog read, each live claim is compared against what VAN now says 
 
 **Nothing this app builds writes canvass results.** MiniVAN sends them to VAN natively when the volunteer taps Sync, so our job is verification, not transport — and the verification is one subtraction.
 
-A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region. Once VAN's own `dateRefreshed` for that turf moves past the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
+A claim records VAN's door count when it is taken (`van_turf_checkouts.claim_door_count`). Completing the turf asks for a refresh of its region — sent only when **Re-cut regions in VAN** is on; otherwise the check waits for an organizer to re-cut the region by hand. Once a re-cut lands after the completion, the check runs: `claim_door_count` minus the current count, written to `confirmed_door_delta`.
+
+**The current count is usually on a different route.** A re-cut retires the walked route rather than updating it (see _Route ids do not survive a refresh_ above), so the retired row's count is frozen at its pre-cut value. The check pairs it to its replacement exactly as the reconciliation does — same region, same name, exactly one match — and takes the count from there. The evidence that the re-cut came after the completion is the replacement's `dateRefreshed`, or failing that the moment the catalog first saw it. No unique replacement means no measurement: a renamed or split turf is left NULL rather than guessed at.
 
 - **The count dropped.** The knocks are in VAN. Nothing is sent.
 - **It did not move.** Almost always the results are still on a phone. The volunteer gets one DM asking them to open MiniVAN and tap Sync, and the completion shows up under **Suspect completions** on `/turfs/organizer`.
@@ -863,17 +872,15 @@ The volunteer turf page. Any signed-in Slack member may use it, minus the block 
 
 **Two numbers are tunable at Settings → Turf checkout**: how long a claim lasts (default 48 hours) and how many turfs one volunteer may hold at once (default 2). Both are read wherever they matter — the page's claim button, the map's viewport endpoint, the claim route that enforces them, the `/turfs` Slack command and its Claim buttons, and the copy telling a volunteer how long they've got — so the greyed-out button, the promise on it and the expiry written to the ledger cannot drift apart, and the same volunteer gets the same rules whether they open the page or type the command. Out-of-range values are refused on write and clamped again on read, so a row predating the bounds degrades to something sane rather than handing someone a claim that lapses in a minute.
 
-Four gates, all server-side: session, block list, chapter, and a rate limit on switching chapters. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
+Four gates, all server-side: session, block list, chapter, and the two rate limits below. The chapter filter runs in the load function _before serialising_ — shipping every chapter and filtering in the browser would make the compartment cosmetic, because the payload is the boundary. Before a chapter is chosen the page returns no turf at all.
 
 **The MiniVAN list number is only sent for turf you currently hold.** It is the credential — it is what pulls the doors down in MiniVAN — so serialising it for every turf on the map would let anyone load any turf regardless of who holds it, making the checkout ledger advisory. It is issued by the claim response and withdrawn on release, expiry, or completion.
 
-**Payload budget.** A page load sends at most the 500 nearest turfs plus the chapter's total, and the map fetches more by viewport from `GET /api/turfs?chapter=&bbox=minLat,minLng,maxLat,maxLng`. 500 is measured rather than guessed (see `$lib/van/turf-paging.ts`): a real row is ~611 bytes, so 500 rows is ~300 KB of JSON that compresses ~7x to ~40 KB on the wire, and holding that many costs the map ~0.5 ms a frame on a mid-range phone because it culls to the viewport and draws small turfs as pins. That endpoint re-applies every gate the page load does — it returns the same data, so a weaker guard on it would just be the way around the page's guard. `?demo` pages the same way against fabricated data, so the walkthrough exercises the real request path.
+**Payload budget.** A page load sends at most the 600 nearest turfs plus the chapter's total, and the map fetches more by viewport from `GET /api/turfs?chapter=&bbox=minLat,minLng,maxLat,maxLng`. 600 is measured rather than guessed (see `$lib/van/turf-paging.ts`): a real row is ~611 bytes, so 600 rows is ~370 KB of JSON that compresses ~7x to ~50 KB on the wire, and holding that many costs the map ~0.5 ms a frame on a mid-range phone because it culls to the viewport and draws small turfs as pins. That endpoint re-applies every gate the page load does — it returns the same data, so a weaker guard on it would just be the way around the page's guard.
 
-A **total** is reported rather than a remainder. "Showing 150 of 1,000" keeps both halves describing the same set; "840 more" drifts the moment someone pans, because the loaded count grows while the remainder describes whichever viewport answered last.
+**One query behind all three surfaces.** The page load, `GET /api/turfs` and the `/turfs` Slack command all read turf through `loadChapterTurfs` (`$lib/server/van/turf-query.ts`), so they agree on claimability, the claim limit, walk reports and the _Updating_ chip.
 
-**`?demo` renders the same page against fabricated data** (admin-only). It replaced a separate `/turfs/demo` route, which had drifted from the real page in three ways — its own copy of the layout, its own claim handling, and its own turf type. The old URL 308s to `/turfs?demo`.
-
-The demo branch is the first thing the load function does and returns _before any database access_, so demo mode cannot read real turf even if a later gate were wrong — a structural property rather than a flag checked correctly in several places. Claim actions mutate component state and never reach the network. `DemoTurf` is now an alias of `TurfView`, so adding a field to what volunteers see breaks the fixture until it supplies one too. `?demo&view=admin` previews the organizer payload — it feeds `visibleTurfState` server-side, so the wire format genuinely differs.
+A **total** is reported rather than a remainder. "Showing 600 of 2,000" keeps both halves describing the same set; "840 more" drifts the moment someone pans, because the loaded count grows while the remainder describes whichever viewport answered last.
 
 **Rate limits are shared between the page and the API**, in `$lib/server/van/rate-limit-store.ts`. Two of them, doing different jobs:
 

@@ -260,6 +260,15 @@ describe('/turfs/organizer missed-sync pane', () => {
 		expect(data.completionsExamined).toBe(1);
 	});
 
+	// The empty state says what the check is waiting on, and that depends on
+	// whether the sync asks VAN for re-cuts or an organizer has to.
+	it('passes on whether region re-cuts are switched on', async () => {
+		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, vanRegionRefreshEnabled: true });
+		expect((await run(event(ADMIN))).regionRefreshEnabled).toBe(true);
+		mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS, vanRegionRefreshEnabled: false });
+		expect((await run(event(ADMIN))).regionRefreshEnabled).toBe(false);
+	});
+
 	it('flags only a measured zero', async () => {
 		mockCompletions.mockResolvedValue([
 			completionRow({ checkoutId: 1, confirmedDoorDelta: null }),

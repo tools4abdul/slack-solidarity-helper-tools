@@ -317,6 +317,9 @@ describe('/turfs load', () => {
 			const stopped = results.find((r) => r.rateLimited > 0);
 			expect(stopped).toBeDefined();
 			expect(stopped!.turfs).toEqual([]);
+			// Told apart from the chapter limit, whose message promises that
+			// chapters already seen still open — which is not true here.
+			expect(stopped!.rateLimitReason).toBe('requests');
 			// A wait, not a block — the chapter list still renders.
 			expect(stopped!.blocked).toBeNull();
 			expect(stopped!.chapters.length).toBeGreaterThan(0);
@@ -357,6 +360,7 @@ describe('/turfs load', () => {
 			expect(results.filter((r) => r.rateLimited > 0).length).toBeGreaterThan(0);
 			const stopped = results.find((r) => r.rateLimited > 0)!;
 			expect(stopped.turfs).toEqual([]);
+			expect(stopped.rateLimitReason).toBe('chapters');
 			// Not a block: the chapter list is still there and the message is a
 			// wait, not a refusal.
 			expect(stopped.blocked).toBeNull();
@@ -443,76 +447,6 @@ describe('/turfs load', () => {
 		});
 	});
 
-	describe('demo mode', () => {
-		const ADMIN = { ...VOLUNTEER, slackUserId: 'U_DEMO_ADMIN', isAdmin: true };
-
-		// The safety property: the demo branch returns before any database
-		// access, so demo mode cannot read real turf even if a later gate were
-		// wrong. Structural, not a flag checked correctly in several places.
-		it('never touches the database', async () => {
-			mockSelect.mockImplementation(() => {
-				throw new Error('demo mode must not query the database');
-			});
-			mockBlockedIds.mockRejectedValue(new Error('demo mode must not read the blocklist'));
-			mockSettings.mockRejectedValue(new Error('demo mode must not read settings'));
-
-			const result = await run(event(ADMIN, 'demo&chapter=71'));
-			expect(result.demo).toBe(true);
-			expect(result.turfs.length).toBeGreaterThan(0);
-		});
-
-		it('serves fabricated turf, not the real chapter list', async () => {
-			const result = await run(event(ADMIN, 'demo'));
-			expect(result.demo).toBe(true);
-			// The real chapterChannelMap is Washtenaw/Wayne; the demo's is not.
-			expect(result.chapters.map((c: { name: string }) => c.name)).not.toContain(
-				'Washtenaw County',
-			);
-		});
-
-		it('gates behind a chapter like the real page', async () => {
-			const result = await run(event(ADMIN, 'demo'));
-			expect(result.chapter).toBeNull();
-			expect(result.turfs).toEqual([]);
-		});
-
-		// A non-admin passing ?demo gets the real page rather than an error:
-		// the parameter is a preview affordance, not a mode to be locked out of.
-		it('is ignored for a non-admin, who gets the real page', async () => {
-			const result = await run(event(VOLUNTEER, 'demo&chapter=71'));
-			expect(result.demo).toBe(false);
-			expect(result.turfs[0]!.name).toBe('Turf 01');
-		});
-
-		it('hides holder names in the volunteer preview', async () => {
-			const result = await run(event(ADMIN, 'demo&chapter=71'));
-			expect(result.asAdmin).toBe(false);
-			expect(result.turfs.every((t: { heldBy: string | null }) => t.heldBy === null)).toBe(true);
-		});
-
-		// Not a display toggle — the payload itself differs.
-		it('puts holder names on the wire only in the organizer preview', async () => {
-			const result = await run(event(ADMIN, 'demo&chapter=71&view=admin'));
-			expect(result.asAdmin).toBe(true);
-			expect(result.turfs.some((t: { heldBy: string | null }) => t.heldBy !== null)).toBe(true);
-		});
-
-		// The rule, not a blanket assertion: one seed is deliberately held by the
-		// viewer so the walkthrough can show the code card. Everything else must
-		// come through without a number, exactly as toTurfView does.
-		it('issues list numbers only on turf you hold, as the real page does', async () => {
-			const result = await run(event(ADMIN, 'demo&chapter=71'));
-			type Row = { printedListNumber: string | null; status: string };
-			const rows = result.turfs as Row[];
-			const withNumber = rows.filter((t) => t.printedListNumber !== null);
-			expect(withNumber.length).toBeGreaterThan(0);
-			expect(withNumber.every((t) => t.status === 'held-by-you')).toBe(true);
-			expect(
-				rows.filter((t) => t.status !== 'held-by-you').every((t) => t.printedListNumber === null),
-			).toBe(true);
-		});
-	});
-
 	describe('logging', () => {
 		it('stays silent for an ordinary session', async () => {
 			// The point of the threshold: a volunteer reopening their own county
@@ -596,17 +530,6 @@ describe('/turfs load — configured claim options', () => {
 		expect(new Set(seen)).toEqual(new Set([72]));
 	});
 
-	// The demo returns before any database access on purpose, so it has no
-	// settings to read and correctly falls back.
-	it('leaves the demo walkthrough on the built-in default', async () => {
-		const data = await run(event({ ...viewer, isAdmin: true }, 'demo&chapter=1'));
-		expect(data.demo).toBe(true);
-		expect(data.claimTtlHours).toBe(48);
-	});
-
-	// The cap has to reach toTurfView, not just travel in the payload: the page
-	// greys the button out, and it must grey it out on the same rule the claim
-	// route refuses on.
 	it('greys out a turf once the volunteer is at the configured cap', async () => {
 		const heldElsewhere = {
 			mapRouteId: 900,

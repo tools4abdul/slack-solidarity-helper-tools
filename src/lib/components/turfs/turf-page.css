@@ -1,29 +1,9 @@
-/* Shared stylesheet for the turf-checkout pages: the real volunteer page
-   at /turfs and the organizer walkthrough at /turfs/demo.
-
-   Shared rather than copied per route because the demo exists precisely to
-   rehearse the real page's layout — two copies would drift, and the demo
-   would stop being a faithful preview of what volunteers get. The
-   .demo-banner rules below are the one demo-only block. */
+/* Stylesheet for the volunteer turf-checkout page at /turfs. */
 
 main {
 	max-width: 1200px;
 	margin: var(--space-6) auto;
 	padding: 0 var(--space-5);
-}
-
-/* --- Demo banner -------------------------------------------------------- */
-
-.demo-banner {
-	border: 1px solid var(--color-warning);
-	border-left-width: 4px;
-	background: var(--color-cream-light);
-	border-radius: var(--radius-md);
-	padding: var(--space-3) var(--space-4);
-	margin-bottom: var(--space-5);
-	font-size: var(--font-size-md);
-	line-height: 1.55;
-	color: var(--color-text);
 }
 
 /* --- Step 1: chapter gate ----------------------------------------------- */
@@ -139,37 +119,6 @@ main {
 	align-items: center;
 	gap: var(--space-4);
 	flex-wrap: wrap;
-}
-
-/* Mixed against the bar's own text colour rather than given fixed values, so
-   the switch keeps its footing whatever the chapter bar is themed to. */
-.view-switch {
-	display: inline-flex;
-	border: 1px solid color-mix(in srgb, var(--color-header-text) 45%, transparent);
-	border-radius: var(--radius-md);
-	overflow: hidden;
-}
-
-.view-option {
-	padding: 5px 12px;
-	font-size: var(--font-size-sm);
-	font-weight: 600;
-	color: var(--color-header-text);
-	text-decoration: none;
-	background: transparent;
-}
-
-.view-option + .view-option {
-	border-left: 1px solid color-mix(in srgb, var(--color-header-text) 45%, transparent);
-}
-
-.view-option:hover {
-	background: color-mix(in srgb, var(--color-header-text) 16%, transparent);
-}
-
-.view-option.is-active {
-	background: var(--color-header-text);
-	color: var(--color-header-bg);
 }
 
 /* Only rendered when the server actually sent a holder name, i.e. organizer
@@ -437,12 +386,6 @@ main {
 
 	.turf-layout {
 		display: contents;
-	}
-
-	/* The only thing that can come between the app header and the chapter bar,
-	   and it needs the gap the bar deliberately doesn't take. */
-	.demo-banner {
-		margin-top: var(--space-4);
 	}
 
 	/* A subheader band rather than a card: full width, squared off, and flush
@@ -998,32 +941,6 @@ main {
 	color: var(--color-text-muted);
 	line-height: 1.5;
 	max-width: 62ch;
-}
-
-/* --- Footer ------------------------------------------------------------- */
-
-/* --- Demo footer -------------------------------------------------------- */
-
-/* Only rendered in demo mode. It exists because the banner says the data is
-   fake but not what that leaves standing — and the answer ("everything except
-   the data") is the whole reason the walkthrough is worth an organizer's
-   time. */
-.demo-footer {
-	margin-top: 40px;
-	padding-top: var(--space-4);
-	border-top: 1px solid var(--color-border-subtle);
-	font-size: var(--font-size-sm);
-	color: var(--color-text-faint);
-	line-height: 1.6;
-}
-
-.demo-footer p {
-	margin: 0 0 6px;
-}
-
-.demo-footer code {
-	font-family: var(--font-mono);
-	font-size: 0.95em;
 }
 
 /* --- Sort bar ------------------------------------------------------------ */

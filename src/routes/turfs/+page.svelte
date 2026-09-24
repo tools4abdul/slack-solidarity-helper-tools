@@ -1,10 +1,6 @@
 <script lang="ts">
 	// The volunteer turf-checkout page.
 	//
-	// The organizer walkthrough at /turfs?demo is the same layout over
-	// fabricated data; both share turf-page.css and TurfMap so the demo stays a
-	// faithful preview rather than drifting into a separate design.
-	//
 	// What the server decided, and this file must not second-guess: which
 	// chapter's turf is in `data.turfs` (the payload is the compartment), the
 	// visible status of each turf, and whether a list number was issued. This
@@ -117,27 +113,9 @@
 		const byId: Record<number, TurfView> = {};
 		for (const turf of Object.values(paged)) byId[turf.mapRouteId] = turf;
 		for (const turf of data.turfs ?? []) byId[turf.mapRouteId] = turf;
-		const all = Object.values(byId);
-		if (!data.demo) return all;
-		// In demo mode the ledger is this component's own state, since there is
-		// no server round trip to re-derive status from.
-		return all.map((turf) =>
-			demoStatus[turf.mapRouteId]
-				? {
-						...turf,
-						status: demoStatus[turf.mapRouteId]!,
-						claimable: demoStatus[turf.mapRouteId] === 'available',
-						printedListNumber:
-							demoStatus[turf.mapRouteId] === 'held-by-you' ? DEMO_LIST_NUMBER : null,
-					}
-				: turf,
-		);
+		return Object.values(byId);
 	});
 
-	/** Demo turf carries no list number in its payload — the real page only
-	 *  issues one on a successful claim, and the walkthrough has to show that
-	 *  same behaviour or it stops previewing the real flow. */
-	const DEMO_LIST_NUMBER = '35536745-88712';
 	const drawable = $derived(mappableTurfs(turfs));
 	const unmappable = $derived(turfs.length - drawable.length);
 	const total = $derived(totalNow ?? data.total ?? 0);
@@ -161,14 +139,11 @@
 
 		loadingMore = true;
 		try {
-			// Demo mode pages against the same endpoint, so the walkthrough
-			// exercises the real request/merge path rather than a stand-in.
 			// Built as a string rather than URLSearchParams: this is a one-shot
 			// value, not reactive state, and the lint rule that would otherwise
 			// push it to SvelteURLSearchParams exists for the latter.
-			const demoQuery = data.demo ? `&demo=${data.asAdmin ? '&view=admin' : ''}` : '';
 			const res = await fetch(
-				`/api/turfs?chapter=${data.chapter.chapterId}&bbox=${encodeURIComponent(bbox)}${demoQuery}`,
+				`/api/turfs?chapter=${data.chapter.chapterId}&bbox=${encodeURIComponent(bbox)}`,
 			);
 			if (!res.ok) {
 				// Let the same viewport be retried once the user moves back to it,
@@ -251,10 +226,6 @@
 		});
 	});
 
-	/** Demo claims mutate this and nothing else. Keyed by turf, and reset on
-	 *  reload — the point is to rehearse the flow, not to persist anything. */
-	let demoStatus = $state<Record<number, 'held-by-you' | 'available'>>({});
-
 	/**
 	 * Bring a just-claimed turf's card into view and put focus on it.
 	 *
@@ -281,19 +252,6 @@
 	}
 
 	async function act(turf: TurfView, action: 'claim' | 'release' | 'complete', percent?: number) {
-		// Checked first and returning early, so a demo action can never reach
-		// the network. The fabricated route ids would almost certainly 404
-		// against van_turfs anyway, but "almost certainly" is not a guarantee
-		// worth resting a write path on.
-		if (data.demo) {
-			demoStatus[turf.mapRouteId] = action === 'claim' ? 'held-by-you' : 'available';
-			if (action === 'claim') {
-				selectedId = turf.mapRouteId;
-				await revealClaimedTurf(turf.mapRouteId);
-			} else delete copied[turf.mapRouteId];
-			return;
-		}
-
 		busy[turf.mapRouteId] = true;
 		error = null;
 		try {
@@ -331,6 +289,10 @@
 		} finally {
 			delete busy[turf.mapRouteId];
 		}
+	}
+
+	function moreHours(hours: number): string {
+		return hours === 1 ? '1 more hour' : `${hours} more hours`;
 	}
 
 	function listNumberFor(turf: TurfView): string | null {
@@ -378,14 +340,6 @@
 <svelte:head><title>{data.pageTitle}</title></svelte:head>
 
 <main>
-	{#if data.demo}
-		<div class="demo-banner" role="note">
-			<strong>Demonstration.</strong> Every turf, door count and list number on this page is invented,
-			and nothing here touches VAN or the database. Checking turf out changes what you see and nothing
-			else. This is the same page volunteers use — only the data is fake.
-		</div>
-	{/if}
-
 	{#if data.blocked}
 		<!-- Deliberately plain: not an error, not a 404, and not an accusation.
 		     And no turf data alongside it — the load function returned none. -->
@@ -396,16 +350,20 @@
 	{:else if data.rateLimited > 0}
 		<!-- Not an accusation and not a dead end. Someone hitting this while
 		     actually canvassing has done something unusual, so it says what
-		     happened and when it clears. -->
+		     happened and when it clears — and which limit it was, because only
+		     the chapter limit leaves chapters already seen open. -->
+		{@const minutes = Math.ceil(data.rateLimited / 60)}
+		{@const wait = `${minutes} minute${minutes === 1 ? '' : 's'}`}
 		<section class="chapter-gate">
 			<h2>Slow down a moment</h2>
 			<p class="gate-help">
-				You've opened a lot of different chapters in the last hour. Turf for a new chapter will load
-				again in about {Math.ceil(data.rateLimited / 60)} minute{Math.ceil(
-					data.rateLimited / 60,
-				) === 1
-					? ''
-					: 's'}. Chapters you've already looked at still open normally.
+				{#if data.rateLimitReason === 'chapters'}
+					You've opened a lot of different chapters in the last hour. Turf for a new chapter will
+					load again in about {wait}. Chapters you've already looked at still open normally.
+				{:else}
+					The page has loaded turf a lot of times in a short while. It will load again in about
+					{wait}.
+				{/if}
 			</p>
 			<p class="gate-help"><a href={resolve('/turfs')}>Back to the chapter list</a></p>
 		</section>
@@ -421,10 +379,7 @@
 			<ul class="chapter-list">
 				{#each data.chapters as chapter (chapter.chapterId)}
 					<li>
-						<a
-							class="chapter-choice"
-							href="{resolve('/turfs')}?{data.demo ? 'demo&' : ''}chapter={chapter.chapterId}"
-						>
+						<a class="chapter-choice" href="{resolve('/turfs')}?chapter={chapter.chapterId}">
 							<span class="chapter-name">{chapter.name}</span>
 							<span class="chapter-go" aria-hidden="true">→</span>
 						</a>
@@ -439,28 +394,7 @@
 				<span class="chapter-current">{data.chapter.name}</span>
 			</div>
 			<div class="bar-actions">
-				{#if data.demo}
-					<!-- Not a display toggle: it feeds visibleTurfState in the load
-					     function, so the PAYLOAD differs. Switching to Organizer is
-					     what actually puts holder names on the wire — check devtools
-					     if you don't believe it. -->
-					<span class="view-switch" role="group" aria-label="Preview as">
-						<a
-							class="view-option"
-							class:is-active={!data.asAdmin}
-							href="{resolve('/turfs')}?demo&chapter={data.chapter.chapterId}">Volunteer</a
-						>
-						<a
-							class="view-option"
-							class:is-active={data.asAdmin}
-							href="{resolve('/turfs')}?demo&chapter={data.chapter.chapterId}&view=admin"
-							>Organizer</a
-						>
-					</span>
-				{/if}
-				<a class="change-chapter" href="{resolve('/turfs')}{data.demo ? '?demo' : ''}"
-					>Change chapter</a
-				>
+				<a class="change-chapter" href={resolve('/turfs')}>Change chapter</a>
 			</div>
 		</div>
 
@@ -476,7 +410,7 @@
 					<header>
 						<h2>{turf.name}</h2>
 						{#if turf.expiresInHours !== null}
-							<span class="expiry">Yours for {turf.expiresInHours} more hours</span>
+							<span class="expiry">Yours for {moreHours(turf.expiresInHours)}</span>
 						{/if}
 					</header>
 
@@ -605,7 +539,7 @@
 						{location}
 						onselect={select}
 						tiles={data.tiles}
-						onviewport={data.demo ? undefined : loadViewport}
+						onviewport={loadViewport}
 					/>
 					<ul class="legend">
 						<!-- The ramp is only useful if it can be read off, so the bands
@@ -702,7 +636,7 @@
 				</div>
 
 				{#if total > shown}
-					<!-- A list that silently stops at 150 of 1,000 reads as "there is
+					<!-- A list that silently stops at 600 of 2,000 reads as "there is
 					     no more turf", which is the most misleading thing this page
 					     could say. Phrased as "N of T" rather than "M more": both
 					     halves then come from the same set, so panning cannot make
@@ -894,22 +828,6 @@
 				{/if}
 			</div>
 		</div>
-	{/if}
-
-	{#if data.demo}
-		<footer class="demo-footer">
-			<p>
-				<strong>What's real:</strong> everything except the data. This is the page volunteers use —
-				the same load function, the same map, the same checkout rules. The turf shapes are computed
-				by the production <code>$lib/van/geometry</code> code from fake door coordinates, so the hulls
-				behave exactly as they will with live data.
-			</p>
-			<p>
-				<strong>What's fake:</strong> the turfs, door counts and list numbers, and the checkout
-				ledger — checking turf out here changes what you see and touches nothing else. See
-				<code>specs/010-van-turf-checkout/plan.md</code>.
-			</p>
-		</footer>
 	{/if}
 </main>
 

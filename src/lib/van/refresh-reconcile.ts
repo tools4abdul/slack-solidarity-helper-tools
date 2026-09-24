@@ -136,8 +136,10 @@ export interface ReconcileInput {
 
 /** Loose name match, in the shape catalog.ts uses for the same job: casing and
  *  inner whitespace drift as organizers rename turf, and a pairing that missed
- *  because of a double space would cost a volunteer their block. */
-function nameKey(name: string): string {
+ *  because of a double space would cost a volunteer their block. Shared with
+ *  door-delta.ts, which pairs a completed route to its replacement the same
+ *  way. */
+export function turfNameKey(name: string): string {
 	return name.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
@@ -266,14 +268,14 @@ export function findReplacement(
 	claim: RecutClaim,
 	replacements: readonly ReplacementTurf[],
 ): ReplacementTurf | null {
-	const key = nameKey(claim.turf.name);
+	const key = turfNameKey(claim.turf.name);
 	const matches = replacements.filter(
 		(r) =>
 			r.mapRegionId === claim.turf.mapRegionId &&
 			r.retiredAt === null &&
 			!r.claimed &&
 			r.mapRouteId !== claim.mapRouteId &&
-			nameKey(r.name) === key,
+			turfNameKey(r.name) === key,
 	);
 	return matches.length === 1 ? matches[0] : null;
 }
