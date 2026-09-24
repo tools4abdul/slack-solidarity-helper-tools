@@ -42,9 +42,10 @@ export const TURFS_PER_PAYLOAD = 600;
  * What every selector needs to place a turf.
  *
  * Two spellings of the same thing, because selection happens at two points: on
- * raw `van_turfs` rows for the real page — before the view is built, so a turf
+ * raw `van_turfs` rows for the web page — before the view is built, so a turf
  * cut from the payload is never serialised at all — and on already-built
- * `TurfView`s for the demo, which has no database behind it. Rather than two
+ * `TurfView`s for the Slack list, which has to know what is claimable before
+ * it can decide what to leave out (see loadChapterTurfs). Rather than two
  * near-identical functions that could sort differently, the accessor takes
  * whichever field is present.
  */
@@ -61,7 +62,7 @@ export interface Locatable {
 export interface Selection<T> {
 	selected: T[];
 	/** How many rows the chapter holds that this payload leaves out. Shown to
-	 *  the volunteer, because a list that silently stops at 150 of 1,000 reads
+	 *  the volunteer, because a list that silently stops at 600 of 2,000 reads
 	 *  as "there is no more turf" — the most misleading thing this page could
 	 *  say.
 	 *
@@ -69,6 +70,13 @@ export interface Selection<T> {
 	 *  Slack command's "show more" reads to decide whether there is a next page
 	 *  at all. */
 	omitted: number;
+	/** Where this page's first row sits in the full ordering, zero-based, with
+	 *  pinned rows counted at the front. What "Showing 6–10" is built from. */
+	start: number;
+	/** The `offset` to ask for next. Not `offset + selected.length`: pinned rows
+	 *  ride on the first page without using up an offset, so counting them
+	 *  would skip one row per pinned turf. */
+	nextOffset: number;
 }
 
 function pointOf(row: Locatable): LatLng | null {
@@ -96,7 +104,9 @@ function pointOf(row: Locatable): LatLng | null {
  * by the limit, and are not counted as `omitted` — they are being shown.
  *
  * `offset` walks further down that same ordering, for the Slack command's
- * paging. It lives here rather than in the caller because this function is the
+ * paging. It counts the UNPINNED rows only: pinned rows are shown on the first
+ * page and left out of every later one, so each row appears exactly once
+ * across the pages. Read the next page's offset from `nextOffset`. It lives here rather than in the caller because this function is the
  * one place that decides what "the nearest N" means: the map pages by viewport
  * and the command pages by offset, and if the two disagreed about the ordering
  * they would hand a volunteer the same turf twice, or skip one. The sort is
@@ -141,20 +151,24 @@ export function selectNearest<T extends Locatable>(
 	// Pinned only on the FIRST page. Repeating them on every page of the Slack
 	// list would hand the same turf back under each "More" press, and the page
 	// the volunteer is on by then is a list they are browsing, not the answer to
-	// "where is my turf".
+	// "where is my turf". They are kept out of `rest` on every page, though —
+	// leaving them in on later pages shifted the offsets, so a held turf that
+	// sorted onto page two was shown twice and pushed another turf off both.
 	const pinnedIds = new Set(options.alwaysInclude ?? []);
-	const pinned =
-		offset === 0 && pinnedIds.size > 0
-			? ordered.filter((row) => pinnedIds.has(row.mapRouteId))
-			: [];
+	const allPinned =
+		pinnedIds.size > 0 ? ordered.filter((row) => pinnedIds.has(row.mapRouteId)) : [];
+	const pinned = offset === 0 ? allPinned : [];
 	const rest =
-		pinned.length > 0 ? ordered.filter((row) => !pinnedIds.has(row.mapRouteId)) : ordered;
+		allPinned.length > 0 ? ordered.filter((row) => !pinnedIds.has(row.mapRouteId)) : ordered;
 	// Pinned rows spend the budget too, so a payload never exceeds the cap.
 	const room = Math.max(0, limit - pinned.length);
+	const page = rest.slice(offset, offset + room);
 
 	return {
-		selected: [...pinned, ...rest.slice(offset, offset + room)],
-		omitted: Math.max(0, rest.length - (offset + room)),
+		selected: [...pinned, ...page],
+		omitted: Math.max(0, rest.length - (offset + page.length)),
+		start: offset === 0 ? 0 : allPinned.length + offset,
+		nextOffset: offset + page.length,
 	};
 }
 

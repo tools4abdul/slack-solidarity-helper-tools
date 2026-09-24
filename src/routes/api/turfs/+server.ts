@@ -1,9 +1,7 @@
 import { json } from '@sveltejs/kit';
-import { and, isNull, inArray } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
-import { vanTurfCheckouts, vanTurfs } from '$lib/server/schema.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
 import { chaptersSeen, recordChapterView } from '$lib/van/chapter-rate-limit.js';
@@ -13,17 +11,8 @@ import {
 	pruneRateLimitStores,
 	turfRequests,
 } from '$lib/server/van/rate-limit-store.js';
-import {
-	parseBounds,
-	selectNearest,
-	TURFS_PER_PAYLOAD,
-	withinBounds,
-} from '$lib/van/turf-paging.js';
-import { toTurfView } from '$lib/van/turf-view.js';
-import type { ClaimSnapshot } from '$lib/van/checkout.js';
-import { demoTurfs, DEMO_CHAPTERS } from '$lib/van/demo-turfs.js';
-import { visibleToChapter } from '$lib/server/van/chapter-visibility.js';
-import { latestWalkReports } from '$lib/server/van/checkout-store.js';
+import { parseBounds } from '$lib/van/turf-paging.js';
+import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
 
 // Turf inside a map viewport, for paging a chapter too large to serialise in
 // one payload (plan.md 6.2b — a 1,000-turf chapter is ~800 KB).
@@ -38,34 +27,18 @@ import { latestWalkReports } from '$lib/server/van/checkout-store.js';
 // Two limits, doing different jobs. The chapter limiter is shared with the
 // page, so switching chapters costs the same whether you do it in a browser or
 // with curl, and panning around one chapter stays free. The request budget
-// covers what the chapter limiter cannot see: the 150-row cap is a payload
-// budget, so walking the bbox grid pulls a whole chapter down a screen at a
-// time without ever switching chapters.
+// covers what the chapter limiter cannot see: the TURFS_PER_PAYLOAD cap is a
+// payload budget, so walking the bbox grid pulls a whole chapter down a screen
+// at a time without ever switching chapters.
+//
+// The rows themselves come from loadChapterTurfs, the same query the page load
+// and the Slack command use, so a turf reads the same on pan as it did on load.
 
 export const GET: RequestHandler = async ({ locals, url }) => {
 	const session = locals.session;
 	if (!session) return json({ error: 'Not signed in' }, { status: 401 });
 
 	const bounds = parseBounds(url.searchParams.get('bbox'));
-
-	// Demo paging, and — like the page load's demo branch — the first thing
-	// that happens, returning before any database access. Same admin gate, same
-	// fabricated source.
-	//
-	// It deliberately skips both rate limiters. An organizer rehearsing the
-	// flow must not spend the budget they need for real work, and there is
-	// nothing here to enumerate: the data is invented and the chapter list is
-	// a constant.
-	if (url.searchParams.has('demo') && session.isAdmin) {
-		const demoChapterId = Number(url.searchParams.get('chapter'));
-		if (!DEMO_CHAPTERS.some((c) => c.chapterId === demoChapterId)) {
-			return json({ error: 'Unknown chapter' }, { status: 400 });
-		}
-		if (!bounds) return json({ error: 'Invalid bbox' }, { status: 400 });
-		const all = demoTurfs(demoChapterId, { isAdmin: url.searchParams.get('view') === 'admin' });
-		const { selected } = selectNearest(withinBounds(all, bounds), { limit: TURFS_PER_PAYLOAD });
-		return json({ turfs: selected, total: all.length });
-	}
 
 	const now = Date.now();
 	pruneRateLimitStores(now);
@@ -129,65 +102,22 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// this endpoint exists to provide.
 	if (!bounds) return json({ error: 'Invalid bbox' }, { status: 400 });
 
-	const rows = await db
-		.select()
-		.from(vanTurfs)
-		.where(and(visibleToChapter(chapterId), isNull(vanTurfs.retiredAt)));
-
-	// Bounded twice: by the viewport, then by the payload budget. A volunteer
-	// zoomed out to the whole county is still asking for a box, and without the
-	// second cap that box is the chapter.
-	const inView = withinBounds(rows, bounds);
-	const { selected } = selectNearest(inView, { limit: TURFS_PER_PAYLOAD });
-
-	const routeIds = selected.map((r) => r.mapRouteId);
-	const claimRows =
-		routeIds.length === 0
-			? []
-			: await db
-					.select()
-					.from(vanTurfCheckouts)
-					.where(
-						and(
-							inArray(vanTurfCheckouts.mapRouteId, routeIds),
-							isNull(vanTurfCheckouts.releasedAt),
-							isNull(vanTurfCheckouts.completedAt),
-						),
-					);
-
-	const claims: ClaimSnapshot[] = claimRows.map((c) => ({
-		mapRouteId: c.mapRouteId,
-		slackUserId: c.slackUserId,
-		slackUserName: c.slackUserName,
-		claimedAt: c.claimedAt,
-		expiresAt: c.expiresAt,
-		releasedAt: c.releasedAt,
-		completedAt: c.completedAt,
-	}));
-
-	const viewer = { slackUserId: session.slackUserId, isAdmin: session.isAdmin };
-	// Same walk reports as the page load, or a turf walked to 100% would read
-	// as claimable on pan and be refused on click.
-	const walkReports = await latestWalkReports(
-		db,
-		selected.map((r) => r.mapRouteId),
-	);
-
-	return json({
-		// Same claim options as the page load. Before 7.4 both used the built-in
-		// defaults and agreed by accident; now that they are configurable, an
-		// endpoint that skipped them would mark turf claimable on pan that the
-		// page had greyed out — and the claim would then be refused on click.
-		turfs: selected.map((row) =>
-			toTurfView(row, claims, viewer, new Date(now), {
-				ttlHours: settings.vanTurfClaimTtlHours,
-				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
-				walkReports,
-			}),
-		),
-		// The chapter's total, matching the page load. A per-viewport remainder
-		// would disagree with the figure the page already showed the moment the
-		// volunteer panned.
-		total: rows.length,
+	const { turfs, total } = await loadChapterTurfs(db, {
+		chapterId,
+		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
+		bounds,
+		now: new Date(now),
+		// Same claim options as the page load. An endpoint that skipped them
+		// would mark turf claimable on pan that the page had greyed out — and
+		// the claim would then be refused on click.
+		claimOptions: {
+			ttlHours: settings.vanTurfClaimTtlHours,
+			maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
+		},
 	});
+
+	// `total` is the chapter's, matching the page load. A per-viewport remainder
+	// would disagree with the figure the page already showed the moment the
+	// volunteer panned.
+	return json({ turfs, total });
 };

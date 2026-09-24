@@ -24,6 +24,7 @@ import {
 	activeClaimFor,
 	type ClaimOptions,
 	type ClaimSnapshot,
+	type TurfSnapshot,
 } from './checkout.js';
 import { visibleTurfState, type VolunteerStatus } from './turf-status.js';
 import { campaignDayLabel } from '../campaign-time.js';
@@ -219,6 +220,23 @@ function geometryFor(
 	return { centre: null, bounds: null };
 }
 
+/** What the claim rules need to know about a row: its own state plus the last
+ *  walk report. Shared with turf-query.ts, which judges claimability before
+ *  deciding which rows become views. */
+export function turfSnapshot(
+	row: TurfRowInput,
+	walkReports?: ReadonlyMap<number, WalkReportInput>,
+): TurfSnapshot {
+	return {
+		mapRouteId: row.mapRouteId,
+		printedListNumber: row.printedListNumber,
+		retiredAt: row.retiredAt,
+		vanDistributedTo: row.vanDistributedTo,
+		doorCount: row.doorCount,
+		reportedPercent: walkReports?.get(row.mapRouteId)?.percent ?? null,
+	};
+}
+
 /**
  * Build the browser-visible view of one turf.
  *
@@ -234,14 +252,7 @@ export function toTurfView(
 	options: TurfViewOptions = {},
 ): TurfView {
 	const report = options.walkReports?.get(row.mapRouteId) ?? null;
-	const snapshot = {
-		mapRouteId: row.mapRouteId,
-		printedListNumber: row.printedListNumber,
-		retiredAt: row.retiredAt,
-		vanDistributedTo: row.vanDistributedTo,
-		doorCount: row.doorCount,
-		reportedPercent: report?.percent ?? null,
-	};
+	const snapshot = turfSnapshot(row, options.walkReports);
 
 	const rawStatus = turfStatus(snapshot, claims, viewer.slackUserId, now);
 	const active = activeClaimFor(row.mapRouteId, claims, now);

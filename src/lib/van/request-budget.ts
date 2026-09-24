@@ -3,9 +3,9 @@
 // This exists because of a hole the chapter limiter does not close. That one
 // counts DISTINCT CHAPTERS, which is right for the page — panning around one
 // county is free, as it must be — but it says nothing about volume within a
-// chapter. `GET /api/turfs?bbox=` caps each response at 150 rows, and that cap
-// is a payload budget, not an access control: walking the bbox grid pulls a
-// 1,000-turf chapter down 150 at a time in seven requests. `POST
+// chapter. `GET /api/turfs?bbox=` caps each response at TURFS_PER_PAYLOAD rows,
+// and that cap is a payload budget, not an access control: walking the bbox
+// grid pulls a chapter of any size down one payload at a time. `POST
 // /api/turfs/{id}` is worse in a quieter way — its 404-vs-409 answers are an
 // existence-and-status oracle, one route id at a time, with no chapter gate in
 // front of it.

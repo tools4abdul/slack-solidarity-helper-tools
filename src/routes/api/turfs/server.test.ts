@@ -107,50 +107,6 @@ describe('GET /api/turfs', () => {
 		expect(body.turfs[0].printedListNumber).toBeNull();
 	});
 
-	describe('demo paging', () => {
-		const ADMIN = { ...VOLUNTEER, slackUserId: 'U_DEMO_API', isAdmin: true };
-		const BIG = 'chapter=99&bbox=41,-73,43,-70&demo';
-
-		// Same structural guarantee as the page load's demo branch: it returns
-		// before any database access.
-		it('never touches the database', async () => {
-			mockSelect.mockImplementation(() => {
-				throw new Error('demo mode must not query the database');
-			});
-			mockSettings.mockRejectedValue(new Error('demo mode must not read settings'));
-			const res = await GET(event(ADMIN, BIG));
-			expect(res.status).toBe(200);
-			expect((await res.json()).turfs.length).toBeGreaterThan(0);
-		});
-
-		it('caps the demo payload like the real endpoint', async () => {
-			const body = await (await GET(event(ADMIN, BIG))).json();
-			expect(body.turfs.length).toBeLessThanOrEqual(TURFS_PER_PAYLOAD);
-			expect(body.total).toBe(1000);
-		});
-
-		it('honours the bbox', async () => {
-			const narrow = await (
-				await GET(event(ADMIN, 'chapter=99&bbox=42.0,-72.3,42.1,-72.2&demo'))
-			).json();
-			const wide = await (await GET(event(ADMIN, BIG))).json();
-			expect(narrow.turfs.length).toBeLessThan(wide.turfs.length);
-		});
-
-		it('rejects a demo chapter that does not exist', async () => {
-			const res = await GET(event(ADMIN, 'chapter=12345&bbox=41,-73,43,-70&demo'));
-			expect(res.status).toBe(400);
-		});
-
-		it('is ignored for a non-admin, who gets the real endpoint', async () => {
-			stubQueries([turfRow()]);
-			const res = await GET(event(VOLUNTEER, 'chapter=71&bbox=42,-84,43,-83&demo'));
-			// Falls through to the real path, which only knows chapter 71.
-			expect(res.status).toBe(200);
-			expect((await res.json()).turfs[0].name).toBe('Turf 01');
-		});
-	});
-
 	describe('rate limiting', () => {
 		// The hole this closes: for a while this route had no rate limit at all,
 		// so a loop over ?chapter= pulled the whole state while the page's

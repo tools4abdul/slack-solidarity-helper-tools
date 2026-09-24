@@ -15,6 +15,7 @@ import {
 	TURF_RELEASE_ACTION_ID,
 	TURF_RELEASE_MINE_ACTION_ID,
 	TURF_COMPLETE_ACTION_ID,
+	TURF_OPEN_MAP_ACTION_ID,
 	COMPLETE_PERCENTS,
 	turfPageUrl,
 	type Block,
@@ -169,8 +170,11 @@ describe('buildTurfListBlocks', () => {
 	const base = {
 		chapter: CHAPTER,
 		offset: 0,
+		start: 0,
+		nextOffset: 1,
 		omitted: 0,
 		total: 1,
+		unavailable: 0,
 		appUrl: APP_URL,
 	};
 
@@ -268,10 +272,27 @@ describe('buildTurfListBlocks', () => {
 				...base,
 				turfs: [view(), view({ mapRouteId: 2 })],
 				offset: 5,
+				start: 5,
+				nextOffset: 7,
 				omitted: 27,
 				total: 34,
 			});
 			expect(serialise(blocks)).toContain('6–7 of 34');
+		});
+
+		// The next page's offset comes from the query, not from counting the
+		// rows on this one: a pinned turf rides on page one without using an
+		// offset, and counting it skipped a turf.
+		it('uses the offset the query handed back for the next page', () => {
+			const { blocks } = buildTurfListBlocks({
+				...base,
+				turfs: [view(), view({ mapRouteId: 2 })],
+				nextOffset: 1,
+				omitted: 5,
+				total: 7,
+			});
+			const page = buttons(blocks).find((b) => b.action_id === TURF_PAGE_ACTION_ID);
+			expect(decodeTurfAction(page!.value)!.offset).toBe(1);
 		});
 
 		it('carries the location into the paging button so page 2 sorts the same', () => {
@@ -294,6 +315,26 @@ describe('buildTurfListBlocks', () => {
 				total: 10,
 			});
 			expect(serialise(blocks)).toContain("That's all 10 turfs");
+		});
+	});
+
+	describe('turf left out as unclaimable', () => {
+		it('says how many are only on the map', () => {
+			const { blocks } = buildTurfListBlocks({ ...base, turfs: [view()], unavailable: 3 });
+			expect(serialise(blocks)).toContain('3 more are checked out or already walked');
+		});
+
+		// Not the same as "nothing loaded" — the turf exists, it is all taken.
+		it('does not claim nothing is loaded when everything is taken', () => {
+			const { blocks, text } = buildTurfListBlocks({
+				...base,
+				turfs: [],
+				total: 0,
+				unavailable: 4,
+			});
+			expect(text).toContain('Nothing in Washtenaw County is free to claim');
+			expect(serialise(blocks)).toContain('All 4 turfs are checked out');
+			expect(serialise(blocks)).not.toContain('no turf loaded');
 		});
 	});
 
@@ -451,6 +492,17 @@ describe('buildMineBlocks', () => {
 
 	// The reason the command exists: the claim message is gone once it scrolls
 	// away, and it was the only place this number had ever appeared.
+	// A link button still sends an interaction payload. Sharing the pager's id
+	// sent that payload to the pager, which replaced this message — list
+	// numbers and all — with "That button has expired".
+	it('gives the map link an id no handler acts on', () => {
+		const map = buttons(buildMineBlocks(input()).blocks).find((b) =>
+			JSON.stringify(b).includes('Open the map'),
+		);
+		expect(map!.action_id).toBe(TURF_OPEN_MAP_ACTION_ID);
+		expect(map!.action_id).not.toBe(TURF_PAGE_ACTION_ID);
+	});
+
 	it('shows the list number the holder was issued', () => {
 		expect(serialise(buildMineBlocks(input()).blocks)).toContain('35536745-88712');
 	});

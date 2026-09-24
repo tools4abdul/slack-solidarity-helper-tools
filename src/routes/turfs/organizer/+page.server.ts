@@ -122,19 +122,21 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		holdings,
 		summary: summarise(holdings),
 		suspects,
-		// Distinguishes "every completion checked out fine" from "no completion
-		// has been checked yet" — opposite messages that must not share an empty
-		// state. It stays false until a post-completion refresh actually lands
-		// (see door-delta-store.ts), which on a key without refresh access is
-		// forever — so the empty state has to keep saying "not checked" rather
-		// than "all clear".
 		// Why the map is part shapes and part pins after a big sync — the line is
 		// only shown while there is something to explain (see the page).
 		geometry: {
 			...geometry,
 			label: geometryProgressLabel(geometry),
 		},
+		// Distinguishes "every completion checked out fine" from "no completion
+		// has been checked yet" — opposite messages that must not share an empty
+		// state. It stays false until a re-cut lands after a completion (see
+		// door-delta-store.ts) — so the empty state has to keep saying "not
+		// checked" rather than "all clear".
 		deltaChecked: anyDeltaMeasured(completionRows),
+		// What sets that re-cut off, so the empty state can say what it is
+		// waiting on: the sync asking VAN, or an organizer doing it by hand.
+		regionRefreshEnabled: settings.vanRegionRefreshEnabled,
 		completionsExamined: completionRows.length,
 	};
 };

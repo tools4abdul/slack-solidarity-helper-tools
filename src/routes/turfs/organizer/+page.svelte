@@ -143,10 +143,17 @@
 			<!-- Not "all clear". Nothing has been measured, and saying otherwise
 			     would report a check that has never run as a passing one. -->
 			<p class="empty">
-				Not checked yet. After a volunteer marks turf done, VAN is refreshed and the door count
-				compared — a count that didn't move means MiniVAN was never synced and the results are still
-				on their phone. That check needs VAN API access, which isn't configured yet, so nothing here
-				has been verified either way.
+				Not checked yet. After a volunteer marks turf done, the next time VAN re-cuts that region
+				the new door count is compared with the count when they claimed it — a count that didn't
+				move usually means MiniVAN was never synced and the results are still on their phone.
+				{#if data.regionRefreshEnabled}
+					The sync asks VAN to re-cut a region once turf in it is finished, so this normally fills
+					in within a day.
+				{:else}
+					Automatic re-cuts are off (Settings → Turf checkout), so this only happens when an
+					organizer re-cuts a region in VAN by hand.
+				{/if}
+				Nothing here has been verified either way.
 				{#if data.completionsExamined > 0}
 					<br />
 					{data.completionsExamined.toLocaleString('en-US')} recent

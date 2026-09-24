@@ -1,12 +1,17 @@
 // Stamping confirmed door deltas, and nudging the volunteers whose came out at
 // zero.
 //
+// Most completions are measured against the route that REPLACED the one walked,
+// because a VAN re-cut retires routes rather than updating them — see the
+// header of door-delta.ts.
+//
 // The rules and the wording live in $lib/van/door-delta.ts and are pure; this
 // file loads the completions and writes the result. Called from
 // /api/internal/van-sync after the catalog and the reconciliation, because both
 // halves of the comparison come from that catalog read: van_turfs.doorCount is
-// what VAN says now, and van_turfs.lastRefreshedAt is the evidence that a
-// re-cut has happened since the turf was marked walked.
+// what VAN says now, and van_turfs.lastRefreshedAt (or, on a replacement route,
+// firstSeenAt) is the evidence that a re-cut has happened since the turf was
+// marked walked.
 //
 // Ordering: the stamp is written first, then the DM is sent best-effort. The
 // stamp is the measurement — the organizer view reads it, and Story 9 will read
@@ -15,15 +20,17 @@
 // account was deactivated, and the stamp is also what stops the nudge repeating
 // on all 37 ticks of the day.
 
-import { and, eq, gte, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { sendDm } from '../slack-dm.js';
+import { chunked } from './sql-chunk.js';
 import {
 	DELTA_HORIZON_MS,
 	planDoorDeltas,
 	type CompletionCandidate,
+	type ReplacementRoute,
 } from '../../van/door-delta.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -72,6 +79,8 @@ async function loadCandidates(db: Db, since: string): Promise<CompletionCandidat
 			chapterId: vanTurfs.chapterId,
 			doorCount: vanTurfs.doorCount,
 			lastRefreshedAt: vanTurfs.lastRefreshedAt,
+			mapRegionId: vanTurfs.mapRegionId,
+			retiredAt: vanTurfs.retiredAt,
 		})
 		.from(vanTurfCheckouts)
 		.innerJoin(vanTurfs, eq(vanTurfCheckouts.mapRouteId, vanTurfs.mapRouteId))
@@ -82,6 +91,39 @@ async function loadCandidates(db: Db, since: string): Promise<CompletionCandidat
 				gte(vanTurfCheckouts.completedAt, since),
 			),
 		) as unknown as Promise<CompletionCandidate[]>;
+}
+
+/**
+ * Live routes that could have replaced a retired, completed one.
+ *
+ * Scoped to the regions those completions were in — a re-cut replaces routes
+ * within a region, and reading the whole catalog on every tick would be the
+ * same answer for far more rows.
+ */
+async function loadReplacements(
+	db: Db,
+	candidates: readonly CompletionCandidate[],
+): Promise<ReplacementRoute[]> {
+	const regionIds = [
+		...new Set(candidates.filter((c) => c.retiredAt !== null).map((c) => c.mapRegionId)),
+	];
+	const out: ReplacementRoute[] = [];
+	for (const batch of chunked(regionIds)) {
+		out.push(
+			...(await db
+				.select({
+					mapRouteId: vanTurfs.mapRouteId,
+					mapRegionId: vanTurfs.mapRegionId,
+					name: vanTurfs.name,
+					doorCount: vanTurfs.doorCount,
+					lastRefreshedAt: vanTurfs.lastRefreshedAt,
+					firstSeenAt: vanTurfs.firstSeenAt,
+				})
+				.from(vanTurfs)
+				.where(and(inArray(vanTurfs.mapRegionId, batch), isNull(vanTurfs.retiredAt)))),
+		);
+	}
+	return out;
 }
 
 /**
@@ -98,14 +140,22 @@ export async function stampDoorDeltas(db: Db, options: DoorDeltaOptions): Promis
 	const result: DoorDeltaResult = { ...EMPTY };
 
 	let candidates: CompletionCandidate[];
+	let replacements: ReplacementRoute[];
 	try {
 		candidates = await loadCandidates(db, new Date(now.getTime() - horizonMs).toISOString());
+		replacements = await loadReplacements(db, candidates);
 	} catch (err) {
 		console.error(`${LOG} could not read completions to verify:`, errMessage(err));
 		return result;
 	}
 
-	const actions = planDoorDeltas({ completions: candidates, now, appUrl, horizonMs });
+	const actions = planDoorDeltas({
+		completions: candidates,
+		replacements,
+		now,
+		appUrl,
+		horizonMs,
+	});
 
 	for (const action of actions) {
 		try {

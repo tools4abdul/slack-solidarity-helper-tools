@@ -3,8 +3,10 @@ import {
 	doorDelta,
 	planDoorDeltas,
 	refreshLandedSince,
+	measuredAgainst,
 	renderUnsyncedNudge,
 	type CompletionCandidate,
+	type ReplacementRoute,
 } from './door-delta.js';
 
 const NOW = new Date('2026-09-12T18:00:00.000Z');
@@ -23,12 +25,28 @@ function candidate(over: Partial<CompletionCandidate> = {}): CompletionCandidate
 		chapterId: 71,
 		doorCount: 190,
 		lastRefreshedAt: '2026-09-12T14:00:00.000Z',
+		mapRegionId: 10,
+		retiredAt: null,
 		...over,
 	};
 }
 
-const plan = (completions: CompletionCandidate[], over: { horizonMs?: number } = {}) =>
-	planDoorDeltas({ completions, now: NOW, appUrl: APP, ...over });
+function replacement(over: Partial<ReplacementRoute> = {}): ReplacementRoute {
+	return {
+		mapRouteId: 200,
+		mapRegionId: 10,
+		name: 'Turf 01',
+		doorCount: 190,
+		lastRefreshedAt: '2026-09-12T14:00:00.000Z',
+		firstSeenAt: '2026-09-12T14:30:00.000Z',
+		...over,
+	};
+}
+
+const plan = (
+	completions: CompletionCandidate[],
+	over: { horizonMs?: number; replacements?: ReplacementRoute[] } = {},
+) => planDoorDeltas({ completions, now: NOW, appUrl: APP, ...over });
 
 describe('refreshLandedSince', () => {
 	it('is true only for a refresh after the completion', () => {
@@ -126,5 +144,74 @@ describe('the nudge text', () => {
 		// The out for the case where the volunteer did everything right.
 		expect(text).toContain('If you already synced, nothing is wrong');
 		expect(text).toContain(`${APP}/turfs?chapter=71`);
+	});
+});
+
+// A VAN re-cut retires the walked route and returns a new one with a new id, so
+// the measurement has to follow the turf to its replacement. Before this, every
+// completion's route was retired by the time any re-cut landed, its row never
+// updated again, and nothing was ever measured.
+describe('measuring a re-cut turf against its replacement', () => {
+	const retired = (over: Partial<CompletionCandidate> = {}) =>
+		candidate({
+			retiredAt: '2026-09-12T14:30:00.000Z',
+			// The retired row's own figures are frozen at the last read before
+			// the re-cut, so they must NOT be what is measured.
+			doorCount: 250,
+			lastRefreshedAt: '2026-09-10T00:00:00.000Z',
+			...over,
+		});
+
+	it('credits the doors that left between the claim and the replacement', () => {
+		expect(plan([retired()], { replacements: [replacement({ doorCount: 190 })] })).toEqual([
+			{ kind: 'measured', checkoutId: 1, delta: 60 },
+		]);
+	});
+
+	it('nudges when the replacement came back with every door still in it', () => {
+		const [action] = plan([retired()], { replacements: [replacement({ doorCount: 250 })] });
+		expect(action!.kind).toBe('unsynced');
+	});
+
+	it('matches names loosely, as the reconciliation does', () => {
+		const measured = measuredAgainst(retired(), [replacement({ name: '  turf   01 ' })]);
+		expect(measured?.doorCount).toBe(190);
+	});
+
+	it('takes a route first seen after the completion as evidence of the re-cut', () => {
+		const measured = measuredAgainst(retired(), [
+			replacement({ lastRefreshedAt: null, firstSeenAt: '2026-09-12T14:30:00.000Z' }),
+		]);
+		expect(refreshLandedSince(measured!)).toBe(true);
+	});
+
+	// The replacement already existed before the volunteer finished, so the cut
+	// that produced it could not have seen their knocks.
+	it('waits when the replacement predates the completion', () => {
+		expect(
+			plan([retired()], {
+				replacements: [
+					replacement({
+						lastRefreshedAt: '2026-09-12T08:00:00.000Z',
+						firstSeenAt: '2026-09-12T08:30:00.000Z',
+					}),
+				],
+			}),
+		).toEqual([]);
+	});
+
+	it.each([
+		['no replacement at all', []],
+		['a replacement in another region', [replacement({ mapRegionId: 11 })]],
+		['a differently named route', [replacement({ name: 'Turf 02' })]],
+		['two routes with the same name', [replacement(), replacement({ mapRouteId: 201 })]],
+	])('leaves it unmeasured with %s, rather than guessing', (_label, replacements) => {
+		expect(plan([retired()], { replacements })).toEqual([]);
+	});
+
+	it('still measures a route VAN updated in place', () => {
+		expect(plan([candidate()], { replacements: [] })).toEqual([
+			{ kind: 'measured', checkoutId: 1, delta: 60 },
+		]);
 	});
 });

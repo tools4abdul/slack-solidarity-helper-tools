@@ -107,13 +107,16 @@ async function buildList(
 	if (!chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL);
 
 	const offset = ctx.offset ?? 0;
-	const { turfs, total, omitted } = await loadChapterTurfs(db, {
+	const { turfs, total, omitted, start, nextOffset, unavailable } = await loadChapterTurfs(db, {
 		chapterId: chapter.chapterId,
 		viewer,
 		location,
 		limit: SLACK_TURF_LIMIT,
 		offset,
 		includeHeldByViewer: true,
+		// Five rows on a phone: spend them on turf the volunteer can act on.
+		// Taken turf stays on the map, which every reply links to.
+		claimableOnly: true,
 		claimOptions: gate.claimOptions,
 		now: new Date(now),
 	});
@@ -123,8 +126,11 @@ async function buildList(
 		chapter,
 		location,
 		offset,
+		start,
+		nextOffset,
 		omitted,
 		total,
+		unavailable,
 		appUrl: APP_URL,
 		zip,
 	});
@@ -214,29 +220,19 @@ export async function releaseFromSlack(
 /**
  * The turf this volunteer is holding, with its list numbers and its actions.
  *
- * Deliberately a LIGHTER gate than the nearby list: no chapter to resolve, no
- * location, no chapter rate limit. Those exist to stop one request revealing
- * the shape of the field operation across chapters (see this file's header);
- * this reads only rows that already belong to the caller, so there is nothing
- * to compartmentalise. Asking for a chapter would also be wrong in substance —
- * someone holding turf in two counties holds two turfs, and a command called
- * "mine" that showed one of them would be lying.
- *
- * The blocklist still applies. A blocked volunteer has already had their turf
- * released, so in practice this shows them an empty list, but the check stays
- * because "blocked" gates reads as well as writes (van/access.ts) and this
- * surface should not be the exception that discovers otherwise.
+ * Deliberately a LIGHTER gate than the nearby list — see passMineGate.
  */
 export async function myTurfMessage(db: Db, ctx: TurfRequestContext): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
+	const gate = await passMineGate(db, ctx.slackUserId, now);
+	if (gate) return gate;
+	return renderMine(db, ctx.slackUserId, now);
+}
 
-	const viewer = { slackUserId: ctx.slackUserId, isAdmin: await isSlackAdmin(ctx.slackUserId) };
-	const blockedIds = await loadVanBlockedIds(db);
-	const access = turfAccess(viewer, blockedIds, SLACK_SUPERUSER_ID);
-	if (!access.allowed) return plainMessage(access.message);
-
+/** The "my turf" list, for a request that has already been through the gate. */
+async function renderMine(db: Db, slackUserId: string, now: number): Promise<SlackMessage> {
 	return buildMineBlocks({
-		turfs: await mineFor(db, ctx.slackUserId, now),
+		turfs: await mineFor(db, slackUserId, now),
 		now: new Date(now),
 		appUrl: APP_URL,
 	});
@@ -254,6 +250,8 @@ export async function releaseMineFromSlack(
 	ctx: TurfRequestContext & { mapRouteId: number },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
+	const gate = await passMineGate(db, ctx.slackUserId, now);
+	if (gate) return gate;
 	const result = await endClaim(db, {
 		mapRouteId: ctx.mapRouteId,
 		slackUserId: ctx.slackUserId,
@@ -263,7 +261,7 @@ export async function releaseMineFromSlack(
 	const note = result.ok
 		? 'Given back. Thanks for saying so — someone else can take it now.'
 		: result.message;
-	return withNote(note, await myTurfMessage(db, ctx));
+	return withNote(note, await renderMine(db, ctx.slackUserId, now));
 }
 
 /**
@@ -275,14 +273,16 @@ export async function releaseMineFromSlack(
  *
  * The confirmation says what completing does NOT do. This action is the one a
  * volunteer is most likely to reach for INSTEAD of syncing, and the cost of
- * that mistake is a morning of doors nobody finds out about until the unsynced
- * nudge goes out days later.
+ * that mistake is a morning of doors that may never reach VAN — the unsynced
+ * nudge (door-delta.ts) can only fire once VAN recounts the turf.
  */
 export async function completeFromSlack(
 	db: Db,
 	ctx: TurfRequestContext & { mapRouteId: number; percent: number | null },
 ): Promise<SlackMessage> {
 	const now = ctx.now ?? Date.now();
+	const gate = await passMineGate(db, ctx.slackUserId, now);
+	if (gate) return gate;
 	const result = await endClaim(db, {
 		mapRouteId: ctx.mapRouteId,
 		slackUserId: ctx.slackUserId,
@@ -295,7 +295,7 @@ export async function completeFromSlack(
 		? 'Marked walked. If MiniVAN has not synced yet, open it and hit *Sync* — ' +
 			'your answers only reach VAN from there.'
 		: result.message;
-	return withNote(note, await myTurfMessage(db, ctx));
+	return withNote(note, await renderMine(db, ctx.slackUserId, now));
 }
 
 /** The caller's live claims, newest expiry last.
@@ -451,6 +451,48 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	}
 
 	return { ok: true, viewer, chapters, chapter, location, zip, claimOptions };
+}
+
+/**
+ * The gate for everything on the "my turf" list: showing it, giving turf back
+ * from it, and marking turf walked. Null when the request may go ahead,
+ * otherwise the message to show instead. Runs BEFORE any write, so a blocked
+ * or throttled volunteer changes nothing.
+ *
+ * Deliberately LIGHTER than passGates: no chapter to resolve, no location, no
+ * chapter rate limit. Those exist to stop one request revealing the shape of
+ * the field operation across chapters (see this file's header); this reads and
+ * writes only rows that already belong to the caller, so there is nothing to
+ * compartmentalise. Asking for a chapter would also be wrong in substance —
+ * someone holding turf in two counties holds two turfs, and a command called
+ * "mine" that showed one of them would be lying.
+ *
+ * The request budget and the blocklist still apply, the same as everywhere
+ * else. A blocked volunteer has already had their turf released, so in
+ * practice the block only shows them a sentence, but "blocked" gates reads as
+ * well as writes (van/access.ts) and this surface should not be the exception
+ * that discovers otherwise. One call spends one slot, like a web request —
+ * the redraw after a write goes through renderMine, not back through here.
+ */
+async function passMineGate(
+	db: Db,
+	slackUserId: string,
+	now: number,
+): Promise<SlackMessage | null> {
+	pruneRateLimitStores(now);
+	const [isAdmin, blockedIds] = await Promise.all([
+		isSlackAdmin(slackUserId),
+		loadVanBlockedIds(db),
+	]);
+
+	const budget = recordRequest(turfRequests, slackUserId, now, { exempt: isAdmin });
+	if (!budget.allowed) {
+		console.warn(`${LOG} turf request budget exhausted (slack mine): user=${slackUserId}`);
+		return plainMessage('That is a lot of requests. Give it a minute and try again.');
+	}
+
+	const access = turfAccess({ slackUserId, isAdmin }, blockedIds, SLACK_SUPERUSER_ID);
+	return access.allowed ? null : plainMessage(access.message);
 }
 
 function locationQuery(argument: ReturnType<typeof parseTurfArgument>): string {

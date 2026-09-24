@@ -8,6 +8,7 @@ const mockLoadChapterTurfs = vi.hoisted(() => vi.fn());
 const mockResolveLocation = vi.hoisted(() => vi.fn());
 const mockClaimTurf = vi.hoisted(() => vi.fn());
 const mockEndClaim = vi.hoisted(() => vi.fn());
+const mockLoadHoldingsFor = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/env.js', () => ({
 	APP_URL: 'https://app.example.org',
@@ -31,8 +32,16 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 	claimTurf: mockClaimTurf,
 	endClaim: mockEndClaim,
 }));
+vi.mock('$lib/server/van/holdings-store.js', () => ({ loadHoldingsFor: mockLoadHoldingsFor }));
 
-const { claimFromSlack, releaseFromSlack, turfListMessage } = await import('./turf-slack.js');
+const {
+	claimFromSlack,
+	completeFromSlack,
+	myTurfMessage,
+	releaseFromSlack,
+	releaseMineFromSlack,
+	turfListMessage,
+} = await import('./turf-slack.js');
 const { chapterVisits, turfRequests } = await import('./rate-limit-store.js');
 const { MAX_REQUESTS } = await import('../../van/request-budget.js');
 const { MAX_CHAPTER_SWITCHES } = await import('../../van/chapter-rate-limit.js');
@@ -94,7 +103,14 @@ describe('turfListMessage', () => {
 		mockBlockedIds.mockResolvedValue(new Set<string>());
 		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
 		mockResolveLocation.mockResolvedValue(null);
-		mockLoadChapterTurfs.mockResolvedValue({ turfs: [turfView()], total: 1, omitted: 0 });
+		mockLoadChapterTurfs.mockResolvedValue({
+			turfs: [turfView()],
+			total: 1,
+			omitted: 0,
+			start: 0,
+			nextOffset: 1,
+			unavailable: 0,
+		});
 	});
 
 	it('resolves the chapter from the channel it was run in', async () => {
@@ -282,7 +298,14 @@ describe('turfListMessage', () => {
 	});
 
 	it('pages at the requested offset', async () => {
-		mockLoadChapterTurfs.mockResolvedValue({ turfs: [turfView()], total: 30, omitted: 24 });
+		mockLoadChapterTurfs.mockResolvedValue({
+			turfs: [turfView()],
+			total: 30,
+			omitted: 24,
+			start: 5,
+			nextOffset: 6,
+			unavailable: 0,
+		});
 		const msg = await turfListMessage(makeDb(), {
 			slackUserId: freshUser(),
 			chapterId: 71,
@@ -290,7 +313,7 @@ describe('turfListMessage', () => {
 		});
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ offset: 5 }),
+			expect.objectContaining({ offset: 5, claimableOnly: true }),
 		);
 		expect(body(msg)).toContain('6–6 of 30');
 	});
@@ -462,7 +485,14 @@ describe('releaseFromSlack', () => {
 		mockBlockedIds.mockResolvedValue(new Set<string>());
 		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
 		mockResolveLocation.mockResolvedValue(null);
-		mockLoadChapterTurfs.mockResolvedValue({ turfs: [turfView()], total: 1, omitted: 0 });
+		mockLoadChapterTurfs.mockResolvedValue({
+			turfs: [turfView()],
+			total: 1,
+			omitted: 0,
+			start: 0,
+			nextOffset: 1,
+			unavailable: 0,
+		});
 		mockEndClaim.mockResolvedValue({ ok: true });
 	});
 
@@ -518,5 +548,57 @@ describe('releaseFromSlack', () => {
 			location: { lat: 42.28, lng: -83.74 },
 		});
 		expect(mockResolveLocation).not.toHaveBeenCalled();
+	});
+});
+
+describe('/turfs-mine actions', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		turfRequests.clear();
+		mockIsSlackAdmin.mockResolvedValue(false);
+		mockBlockedIds.mockResolvedValue(new Set<string>());
+		mockLoadHoldingsFor.mockResolvedValue([]);
+		mockEndClaim.mockResolvedValue({ ok: true });
+	});
+
+	// The gate runs before the write, not after it: a blocked volunteer used to
+	// be able to mark turf walked and only then be told they were blocked.
+	it.each([
+		[
+			'give it back',
+			(user: string) => releaseMineFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100 }),
+		],
+		[
+			'mark it done',
+			(user: string) =>
+				completeFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100, percent: 100 }),
+		],
+	])('refuses a blocked user before %s writes anything', async (_label, act) => {
+		const user = freshUser();
+		mockBlockedIds.mockResolvedValue(new Set([user]));
+		const msg = await act(user);
+		expect(mockEndClaim).not.toHaveBeenCalled();
+		expect(msg.text).toContain("isn't available for your account");
+	});
+
+	it('refuses once the request budget is spent, without writing', async () => {
+		const user = freshUser();
+		for (let i = 0; i < MAX_REQUESTS; i++) await myTurfMessage(makeDb(), { slackUserId: user });
+		const msg = await completeFromSlack(makeDb(), {
+			slackUserId: user,
+			mapRouteId: 100,
+			percent: 100,
+		});
+		expect(mockEndClaim).not.toHaveBeenCalled();
+		expect(msg.text).toContain('a lot of requests');
+	});
+
+	it('spends exactly one request slot per press, redraw included', async () => {
+		const user = freshUser();
+		await releaseMineFromSlack(makeDb(), { slackUserId: user, mapRouteId: 100 });
+		expect(mockEndClaim).toHaveBeenCalledOnce();
+		expect(turfRequests.get(user)).toHaveLength(1);
 	});
 });
