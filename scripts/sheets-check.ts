@@ -5,14 +5,15 @@
  *
  * Run it after adding the routing rules under Settings → Checkout spreadsheets
  * and after sharing each spreadsheet with the service account. It answers the
- * three questions that block the checkout log, in order:
+ * three questions that block the Packet Tracker sync, in order:
  *   1. Does the service-account key parse and mint a token at all?
  *   2. Is each spreadsheet SHARED with it? An unshared sheet answers 403, and
  *      that is by far the most common way this is half-configured — a dozen
  *      spreadsheets means a dozen chances to miss one.
- *   3. Does each already have the app's tab? Not having one is fine: the first
- *      sync creates it. Knowing which is which beats guessing at 8am on a
- *      canvass day.
+ *   3. Does each have the campaign's Packet Tracker tab, with every column the
+ *      app writes? The tab is the campaign's and the app never creates it, and
+ *      columns are found by header name — so a renamed header is a sync that
+ *      cannot write. Knowing which beats guessing at 8am on a canvass day.
  *
  * Usage (from project root):
  *   npm run sheets:check
@@ -29,7 +30,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
 import { createSheetsClient } from '../src/lib/server/google/sheets.js';
 import { vanSheetTargets, appConfig } from '../src/lib/server/schema.js';
-import { DEFAULT_SHEET_TAB_NAME } from '../src/lib/van/sheet-log.js';
+import { DEFAULT_SHEET_TAB_NAME, findLayout } from '../src/lib/van/packet-tracker.js';
 
 const raw = process.env['GOOGLE_SHEETS_SERVICE_ACCOUNT'] ?? '';
 if (!raw) {
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
 	const targets = await db.select().from(vanSheetTargets);
 	if (targets.length === 0) {
 		console.log(
-			'\nNo routing rules are configured, so the checkout log is off.\n' +
+			'\nNo routing rules are configured, so the Packet Tracker sync is off.\n' +
 				'Add them under Settings → Checkout spreadsheets.\n',
 		);
 		return;
@@ -101,27 +102,41 @@ async function main(): Promise<void> {
 			console.log(`      ${res.status || 'network'}: ${res.error}${hint}`);
 		} else if (!res.value.hasTab) {
 			missingTab += 1;
-			console.log(`  • ${label} — reachable, no "${tabName}" tab yet (the sync will create it)`);
+			console.log(
+				`  ✗ ${label} — reachable, but has no "${tabName}" tab (the app never creates it)`,
+			);
 			console.log(`      tabs: ${res.value.tabs.join(', ') || '(none)'}`);
 		} else {
-			console.log(`  ✓ ${label} — reachable, has the "${tabName}" tab`);
+			// Read-only, like describe: the columns are found by header name, so
+			// check they are all there before the sync tries to write.
+			const tab = await sheets.readTab({ spreadsheetId, tabName });
+			const layout = tab.ok ? findLayout(tab.value.values) : null;
+			if (!tab.ok) {
+				unreachable += 1;
+				console.log(`  ✗ ${label} — could not read "${tabName}": ${tab.error}`);
+			} else if (layout && !layout.ok) {
+				missingTab += 1;
+				console.log(`  ✗ ${label} — "${tabName}" is missing: ${layout.missing.join(', ')}`);
+			} else {
+				console.log(`  ✓ ${label} — reachable, "${tabName}" has every column`);
+			}
 		}
 		console.log(`      rules: ${prefixes.join(', ')}`);
 	}
 
 	console.log('');
-	if (unreachable > 0) {
+	if (unreachable + missingTab > 0) {
 		console.log(
-			`  ${unreachable} spreadsheet(s) cannot be written to. Checkouts for them will be\n` +
+			`  ${unreachable + missingTab} spreadsheet(s) cannot be written to. Checkouts for them will be\n` +
 				'  held — not lost — and the turf channel gets one alert per problem.\n',
 		);
 		process.exitCode = 1;
 		return;
 	}
 	console.log(
-		`  All reachable${missingTab > 0 ? `, ${missingTab} awaiting their tab` : ''}.\n` +
+		'  All reachable.\n' +
 			'  Check the routing itself at /turfs/sheet-map, then POST\n' +
-			'  /api/internal/van-sync?key=$INTERNAL_CRON_SECRET to drain.\n',
+			'  /api/internal/van-sync?key=$INTERNAL_CRON_SECRET to sync.\n',
 	);
 }
 

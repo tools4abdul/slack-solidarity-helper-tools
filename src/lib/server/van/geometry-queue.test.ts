@@ -29,7 +29,7 @@ beforeEach(async () => {
 			printed_list_created_at text, list_expiry_warned_for text, route_number integer,
 			route_size integer DEFAULT 0 NOT NULL, door_count integer DEFAULT 0 NOT NULL,
 			phone_count integer DEFAULT 0 NOT NULL, centroid_lat real, centroid_lng real, hull_json text,
-			hull_source_route_size integer, van_distributed_to text, van_assigned_at text, drift_alerted_at text,
+			hull_source_route_size integer, van_distributed_to text, van_assigned_at text, sheet_assigned_to text, drift_alerted_at text,
 			drift_alerted_kind text, first_seen_at text NOT NULL,
 			last_seen_at text NOT NULL, last_refreshed_at text, retired_at text)`,
 		`CREATE TABLE van_geometry_queue (

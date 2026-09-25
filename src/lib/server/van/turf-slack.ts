@@ -35,6 +35,7 @@ import { loadSettings, loadVanBlockedIds } from '../settings.js';
 import { isSlackAdmin } from '../slack-admin.js';
 import { displayName } from '../slack-display-name.js';
 import { claimTurf, endClaim } from './checkout-store.js';
+import { nudgePacketTracker, packetTrackerCheck } from './packet-tracker-live.js';
 import { loadChapterTurfs } from './turf-query.js';
 import { loadHoldingsFor } from './holdings-store.js';
 import { isActive } from '../../van/checkout.js';
@@ -153,6 +154,7 @@ export async function claimFromSlack(
 		slackUserName: await displayName(ctx.slackUserId),
 		now: new Date(now),
 		options: gate.claimOptions,
+		sheetCheck: packetTrackerCheck(db),
 	});
 
 	if (!result.ok) {
@@ -180,6 +182,7 @@ export async function claimFromSlack(
 	const claimed = turfs.find((t) => t.mapRouteId === ctx.mapRouteId);
 
 	console.log(`${LOG} slack claim: user=${ctx.slackUserId} route=${ctx.mapRouteId}`);
+	nudgePacketTracker(db, ctx.mapRouteId);
 	return buildClaimedBlocks({
 		turf: {
 			mapRouteId: ctx.mapRouteId,
@@ -212,6 +215,7 @@ export async function releaseFromSlack(
 		kind: 'release',
 	});
 
+	if (result.ok) nudgePacketTracker(db, ctx.mapRouteId);
 	const note = result.ok
 		? 'Given back. Thanks for saying so — someone else can take it now.'
 		: result.message;
@@ -259,6 +263,7 @@ export async function releaseMineFromSlack(
 		now: new Date(now),
 		kind: 'release',
 	});
+	if (result.ok) nudgePacketTracker(db, ctx.mapRouteId);
 	const note = result.ok
 		? 'Given back. Thanks for saying so — someone else can take it now.'
 		: result.message;
@@ -292,6 +297,7 @@ export async function completeFromSlack(
 		// Required; endClaim refuses without it and says what to pick.
 		reportedPercent: ctx.percent,
 	});
+	if (result.ok) nudgePacketTracker(db, ctx.mapRouteId);
 	const note = result.ok
 		? 'Marked walked. If MiniVAN has not synced yet, open it and hit *Sync* — ' +
 			'your answers only reach VAN from there.'

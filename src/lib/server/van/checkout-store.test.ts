@@ -1,4 +1,4 @@
-import { describe, afterEach, it, expect, beforeEach } from 'vitest';
+import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
@@ -379,6 +379,59 @@ describe('claimTurf — what the volunteer was told', () => {
 		// And the baseline Story 5.6 measures the completion against. van_turfs
 		// holds one door count and it moves, so it has to be captured here.
 		expect(res.rows[0].claim_door_count).toBe(250);
+	});
+});
+
+describe('claimTurf — the campaign’s Packet Tracker', () => {
+	const claim = (sheetCheck?: Parameters<typeof claimTurf>[1]['sheetCheck']) =>
+		claimTurf(db, {
+			mapRouteId: 100,
+			slackUserId: 'U_FIRST',
+			slackUserName: 'Dana',
+			now: NOW,
+			sheetCheck,
+		});
+
+	it('refuses turf the last sync saw in the tracker', async () => {
+		await client.execute(
+			"UPDATE van_turfs SET sheet_assigned_to = 'Organizer Olu' WHERE map_route_id = 100",
+		);
+
+		expect(await claim()).toMatchObject({ ok: false, status: 409 });
+	});
+
+	it('refuses turf the live check finds in the tracker, and records no claim', async () => {
+		const result = await claim(async () => 'Organizer Olu');
+
+		expect(result).toMatchObject({ ok: false, status: 409 });
+		expect(result.ok === false && result.message).toContain('already sent this turf');
+		expect((await client.execute('SELECT count(*) AS n FROM van_turf_checkouts')).rows[0].n).toBe(
+			0,
+		);
+	});
+
+	it('asks the tracker about the turf being claimed', async () => {
+		const sheetCheck = vi.fn(async () => null);
+		await claim(sheetCheck);
+
+		expect(sheetCheck).toHaveBeenCalledWith({
+			mapRouteId: 100,
+			regionName: 'Ann Arbor',
+			printedListNumber: 'L-100',
+		});
+	});
+
+	// Google being slow or down must not stop every claim in the campaign.
+	it('claims when the live check cannot tell', async () => {
+		expect(await claim(async () => undefined)).toMatchObject({ ok: true });
+	});
+
+	it('does not wait on Google for a claim refused anyway', async () => {
+		await insertClaim({ slack_user_id: 'U_OTHER', expires_at: '2026-08-30T00:00:00.000Z' });
+		const sheetCheck = vi.fn(async () => null);
+
+		expect(await claim(sheetCheck)).toMatchObject({ ok: false });
+		expect(sheetCheck).not.toHaveBeenCalled();
 	});
 });
 

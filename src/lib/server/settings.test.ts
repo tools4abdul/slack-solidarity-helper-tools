@@ -212,7 +212,7 @@ describe('loadSettings — Story 1 (env fallback when tables are empty)', () => 
 			vanTurfMaxConcurrentClaims: 2,
 			// Off with no row: a re-cut can leave turf unclaimable.
 			vanRegionRefreshEnabled: false,
-			vanSheetTabName: 'Turf Checkouts',
+			vanSheetTabName: 'Packet Tracker',
 		});
 
 		// Restore the module-level mock for subsequent tests.

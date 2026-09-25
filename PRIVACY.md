@@ -83,25 +83,33 @@ Being blocked from turf checkout stores your Slack ID, display name, the reason 
 and who set it (`van_blocked_users`). The reason is shown to other organisers; it is
 deliberately **not** repeated to you in the DM telling you your turf was released.
 
-**Turf checkouts are also copied into the campaign's own Google Sheets**, when an organiser has
-configured that. One row is appended each time a turf is checked out and again when that ends,
-carrying **the time, what happened, the turf name, its VAN region, the MiniVAN list number you
-were issued, and your Slack display name**. Your Slack ID, your email, the reason behind a block
-and anything about a voter are never written there.
+**Turf checkouts are also recorded in the campaign's own Google Sheets**, when an organiser has
+configured that — in the "Packet Tracker" tab the campaign already uses to track who has which
+turf. Each turf you take gets **one row**, kept up to date as you go: **the turf name, how many
+voters and doors it has, the MiniVAN list number you were issued, your Slack display name, the
+date and time you claimed it, when you set off, whether you walked it in MiniVAN, and — once you
+mark it walked — how much of it you knocked.** If you hand a
+turf back without ever opening it in MiniVAN, the row is blanked. Your phone number, Slack ID,
+email, the reason behind a block and anything about a voter are never written there. Each row
+carries a hidden tag holding an internal checkout number, which is how the app finds its own rows
+again; it identifies nobody.
 
-Two things follow from this that are worth being explicit about:
+Three things follow from this that are worth being explicit about:
 
 - **Those spreadsheets are the campaign's, not this app's.** Anyone the campaign has shared one
   with can read every row in it, including your name beside the turf you walked. This app cannot
-  see who that is and cannot take a row back once it is written — the log is append-only by
-  design, so that a re-cut turf can never overwrite somebody else's row.
+  see who that is. Rows the campaign types by hand are never changed by the app, and a row of
+  ours that someone has edited or deleted is left as they left it.
 - **It is the one place a list number goes beyond the person it was issued to.** Everywhere else
   the app treats that number as a credential — it is what pulls the doors down in MiniVAN — and
   withholds it from organiser pages and keeps it out of logs. Writing it to a sheet the campaign
   already uses to run canvasses was a deliberate decision, taken because the sheet is how they
   track which lists are out.
-
-Nothing in those sheets is ever read back into the app.
+- **The app reads the tracker back, to avoid handing out turf the campaign already has.** From
+  the rows the campaign typed itself it keeps only which list numbers are out and the canvasser
+  name beside each, stored against that turf until the row changes. Organisers see that name the
+  way they see a VAN assignment; volunteers are only told the turf is taken. Nothing else in the
+  sheet is kept.
 
 If an organiser hands turf out inside VAN rather than through this app, VAN reports who it went
 to, and **the canvasser names on that export are stored** against the turf
@@ -209,7 +217,7 @@ by hand, not a scheduled job, and this document is the record of it. The retenti
 describes what happens **until** then.
 
 **One exception, stated plainly: the campaign's Google Sheets are outside this.** The turf
-checkout rows copied into them (see § "Turf checkout") live in spreadsheets the campaign owns,
+checkout rows written into them (see § "Turf checkout") live in spreadsheets the campaign owns,
 and deleting this app's own records does not touch them. Clearing those is the campaign's to do,
 and asking for it means asking them, not us.
 

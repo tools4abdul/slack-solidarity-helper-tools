@@ -4,10 +4,10 @@
 // the network.
 //
 // Shaped exactly like van-env.ts: a discriminated result rather than a throw,
-// because the app must run normally with the sheet log unconfigured. Most
+// because the app must run normally with the Packet Tracker unconfigured. Most
 // deployments of this tool have no campaign spreadsheet at all, and a turf page
 // that 500s over a missing Google key would be a far worse outcome than a
-// checkout log that simply is not running.
+// Packet Tracker that simply is not being updated.
 //
 // Note there is no GOOGLE_SHEET_ID. Which spreadsheet a row goes to is decided
 // per turf from the van_sheet_targets rules in /settings — the campaign keeps
@@ -67,14 +67,22 @@ function parseServiceAccount(raw: string):
 	return { ok: true, config: { clientEmail, privateKey } };
 }
 
-/** The configured Sheets client, or why there isn't one. */
+let shared: SheetsClient | null = null;
+
+/** The configured Sheets client, or why there isn't one.
+ *
+ *  One client per process, because the client caches its access token: the
+ *  claim path's live check would otherwise mint a fresh token — an extra round
+ *  trip to Google — on every claim. */
 export function sheetsClient(): SheetsClientResult {
+	if (shared) return { ok: true, client: shared };
 	if (!GOOGLE_SHEETS_SERVICE_ACCOUNT) {
 		return { ok: false, error: 'GOOGLE_SHEETS_SERVICE_ACCOUNT is not set' };
 	}
 	const parsed = parseServiceAccount(GOOGLE_SHEETS_SERVICE_ACCOUNT);
 	if (!parsed.ok) return parsed;
-	return { ok: true, client: createSheetsClient(parsed.config) };
+	shared = createSheetsClient(parsed.config);
+	return { ok: true, client: shared };
 }
 
 /** The service account's address, for the settings page and the README's

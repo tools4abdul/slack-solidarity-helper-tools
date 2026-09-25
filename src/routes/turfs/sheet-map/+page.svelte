@@ -38,8 +38,8 @@
 
 	{#if !data.configured}
 		<p class="notice">
-			No rules are configured yet, so the checkout log is off. Every region the catalog has synced
-			is listed below — write rules covering them under
+			No rules are configured yet, so the Packet Tracker sync is off. Every region the catalog has
+			synced is listed below — write rules covering them under
 			<a href="{resolve('/settings')}#van-sheet-targets">Settings → Checkout spreadsheets</a>.
 		</p>
 	{:else}

@@ -15,16 +15,8 @@ const CONFIG: ServiceAccountConfig = {
 	privateKey,
 };
 
-const HEADER = ['When', 'Event', 'Turf', 'Region', 'List #', 'Volunteer', 'Checkout ID'] as const;
-const ROW = [
-	'2026-09-19 10:07',
-	'Checked out',
-	'Turf 01',
-	'R10C_Wayne_Taylor',
-	'35536745-88712',
-	'Dana',
-	'41',
-];
+/** A Packet Tracker row as the store sends it: nulls are cells left alone. */
+const ROW = ["'Turf 01", '120', '64', "'35536745-88712", "'Dana", null, '09/19/2026'];
 
 function tokenResponse(): Response {
 	return new Response(JSON.stringify({ access_token: 'ya29.test', expires_in: 3600 }), {
@@ -32,13 +24,12 @@ function tokenResponse(): Response {
 	});
 }
 
-/** Sheets' answer when the range names a tab that is not there. */
-function missingTabResponse(): Response {
-	return new Response(
-		JSON.stringify({ error: { message: "Unable to parse range: 'Turf Checkouts'!A:G" } }),
-		{ status: 400 },
-	);
+function ok(body: unknown): Response {
+	return new Response(JSON.stringify(body), { status: 200 });
 }
+
+/** A write that matched one tagged row. */
+const WROTE = () => ok({ totalUpdatedRows: 1 });
 
 let warnSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -54,18 +45,10 @@ afterEach(() => {
 
 describe('authentication', () => {
 	it('signs a JWT bearer assertion with the service account claims', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(WROTE());
 		const client = createSheetsClient(CONFIG, { fetchFn, now: () => 1_700_000_000_000 });
 
-		await client.appendRows({
-			spreadsheetId: 'sheet-1',
-			tabName: 'Log',
-			header: HEADER,
-			rows: [ROW],
-		});
+		await client.writeTaggedRow({ spreadsheetId: 'sheet-1', key: 'k', value: '41', row: ROW });
 
 		const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe('https://oauth2.googleapis.com/token');
@@ -92,11 +75,29 @@ describe('authentication', () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValue(new Response('{}', { status: 200 }));
+			.mockImplementation(async () => WROTE());
 		const client = createSheetsClient(CONFIG, { fetchFn, now: () => 1_700_000_000_000 });
 
-		await client.appendRows({ spreadsheetId: 'a', tabName: 'Log', header: HEADER, rows: [ROW] });
-		await client.appendRows({ spreadsheetId: 'b', tabName: 'Log', header: HEADER, rows: [ROW] });
+		await client.writeTaggedRow({ spreadsheetId: 'a', key: 'k', value: '1', row: ROW });
+		await client.writeTaggedRow({ spreadsheetId: 'b', key: 'k', value: '2', row: ROW });
+
+		const tokenCalls = fetchFn.mock.calls.filter(
+			([url]) => url === 'https://oauth2.googleapis.com/token',
+		);
+		expect(tokenCalls).toHaveLength(1);
+	});
+
+	// readTab sends its two reads in parallel; a cold client must not mint a
+	// token for each.
+	it('mints one token for parallel requests on a cold client', async () => {
+		const fetchFn = vi.fn(async (url: string) => {
+			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
+			if (url.includes('/values/')) return ok({ values: [] });
+			return ok({ sheets: [{ properties: { sheetId: 7, title: 'Packet Tracker' } }] });
+		});
+		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
+
+		await client.readTab({ spreadsheetId: 'a', tabName: 'Packet Tracker' });
 
 		const tokenCalls = fetchFn.mock.calls.filter(
 			([url]) => url === 'https://oauth2.googleapis.com/token',
@@ -111,71 +112,193 @@ describe('authentication', () => {
 			{ fetchFn },
 		);
 
-		const res = await client.appendRows({
-			spreadsheetId: 'a',
-			tabName: 'Log',
-			header: HEADER,
-			rows: [ROW],
-		});
+		const res = await client.writeTaggedRow({ spreadsheetId: 'a', key: 'k', value: '1', row: ROW });
 
 		expect(res.ok).toBe(false);
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
 });
 
-describe('appendRows', () => {
-	it('appends to the tab with RAW values and INSERT_ROWS', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(new Response('{}', { status: 200 }));
-		const client = createSheetsClient(CONFIG, { fetchFn });
-
-		const res = await client.appendRows({
-			spreadsheetId: 'sheet-1',
-			tabName: 'Turf Checkouts',
-			header: HEADER,
-			rows: [ROW],
+describe('readTab', () => {
+	it('returns the tab id and its rows as displayed', async () => {
+		const fetchFn = vi.fn(async (url: string) => {
+			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
+			if (url.includes('/values/'))
+				return ok({
+					values: [
+						['Packet Name', 'Voters'],
+						['Turf 01', 120],
+					],
+				});
+			return ok({
+				sheets: [
+					{ properties: { sheetId: 1, title: 'Walk Sheet' } },
+					{ properties: { sheetId: 7, title: 'Packet Tracker' } },
+				],
+			});
 		});
+		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
 
-		expect(res).toEqual({ ok: true, value: { appended: 1, createdTab: false } });
-		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
-		expect(url).toContain('/spreadsheets/sheet-1/values/');
-		expect(url).toContain(encodeURIComponent("'Turf Checkouts'!A:G"));
-		expect(url).toContain('valueInputOption=RAW');
-		expect(url).toContain('insertDataOption=INSERT_ROWS');
-		expect(JSON.parse(init.body as string)).toEqual({ values: [ROW] });
+		const res = await client.readTab({ spreadsheetId: 'sheet-1', tabName: 'Packet Tracker' });
+
+		expect(res).toEqual({
+			ok: true,
+			value: {
+				sheetId: 7,
+				values: [
+					['Packet Name', 'Voters'],
+					['Turf 01', '120'],
+				],
+			},
+		});
+		const valuesUrl = fetchFn.mock.calls.map(([u]) => u).find((u) => u.includes('/values/'))!;
+		expect(valuesUrl).toContain(encodeURIComponent("'Packet Tracker'"));
+		expect(valuesUrl).toContain('valueRenderOption=FORMATTED_VALUE');
 	});
 
-	it('creates the tab with its header row, then retries the append', async () => {
+	// The tab is the campaign's. The old log created its own; this must not.
+	it('reports a missing tab as a 404 and creates nothing', async () => {
+		const fetchFn = vi.fn(async (url: string) => {
+			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
+			if (url.includes('/values/')) {
+				return new Response(JSON.stringify({ error: { message: 'Unable to parse range' } }), {
+					status: 400,
+				});
+			}
+			return ok({ sheets: [{ properties: { sheetId: 1, title: 'Walk Sheet' } }] });
+		});
+		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
+
+		const res = await client.readTab({ spreadsheetId: 'sheet-1', tabName: 'Packet Tracker' });
+
+		expect(res).toMatchObject({ ok: false, status: 404 });
+		expect(fetchFn.mock.calls.some(([url]) => url.includes(':batchUpdate'))).toBe(false);
+	});
+
+	it('quotes a tab name containing an apostrophe rather than breaking the range', async () => {
+		const fetchFn = vi.fn(async (url: string) => {
+			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
+			if (url.includes('/values/')) return ok({ values: [] });
+			return ok({ sheets: [{ properties: { sheetId: 7, title: "Dana's Tracker" } }] });
+		});
+		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
+
+		await client.readTab({ spreadsheetId: 'sheet-1', tabName: "Dana's Tracker" });
+
+		const valuesUrl = fetchFn.mock.calls.map(([u]) => u).find((u) => u.includes('/values/'))!;
+		expect(valuesUrl).toContain(encodeURIComponent("'Dana''s Tracker'"));
+	});
+});
+
+describe('findTaggedRows', () => {
+	it('searches by key and returns each row with its current position', async () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(missingTabResponse())
-			.mockResolvedValueOnce(new Response('{}', { status: 200 })) // addSheet
-			.mockResolvedValueOnce(new Response('{}', { status: 200 })) // header row
-			.mockResolvedValueOnce(new Response('{}', { status: 200 })); // retry
+			.mockResolvedValueOnce(
+				ok({
+					matchedDeveloperMetadata: [
+						{
+							developerMetadata: {
+								metadataValue: '41',
+								location: { dimensionRange: { sheetId: 7, startIndex: 12 } },
+							},
+						},
+						// A tag somebody's copy-paste put on a column is not a row.
+						{ developerMetadata: { metadataValue: '42', location: {} } },
+					],
+				}),
+			);
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.appendRows({
+		const res = await client.findTaggedRows({ spreadsheetId: 'sheet-1', key: 'k' });
+
+		expect(res).toEqual({ ok: true, value: [{ value: '41', sheetId: 7, rowIndex: 12 }] });
+		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
+		expect(url).toContain('/developerMetadata:search');
+		expect(JSON.parse(init.body as string)).toEqual({
+			dataFilters: [{ developerMetadataLookup: { metadataKey: 'k' } }],
+		});
+	});
+});
+
+describe('insertTaggedRow', () => {
+	it('inserts and tags the row in one atomic batch', async () => {
+		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(ok({}));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.insertTaggedRow({
 			spreadsheetId: 'sheet-1',
-			tabName: 'Turf Checkouts',
-			header: HEADER,
-			rows: [ROW],
+			sheetId: 7,
+			rowIndex: 30,
+			key: 'k',
+			value: '41',
 		});
 
-		expect(res).toEqual({ ok: true, value: { appended: 1, createdTab: true } });
+		expect(res).toEqual({ ok: true, value: true });
+		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
+		expect(url).toContain('/spreadsheets/sheet-1:batchUpdate');
+		const range = { sheetId: 7, dimension: 'ROWS', startIndex: 30, endIndex: 31 };
+		expect(JSON.parse(init.body as string)).toEqual({
+			requests: [
+				{ insertDimension: { range, inheritFromBefore: true } },
+				{
+					createDeveloperMetadata: {
+						developerMetadata: {
+							metadataKey: 'k',
+							metadataValue: '41',
+							visibility: 'DOCUMENT',
+							location: { dimensionRange: range },
+						},
+					},
+				},
+			],
+		});
+	});
+});
 
-		const [addUrl, addInit] = fetchFn.mock.calls[2] as [string, RequestInit];
-		expect(addUrl).toContain(':batchUpdate');
-		expect(JSON.parse(addInit.body as string)).toEqual({
-			requests: [{ addSheet: { properties: { title: 'Turf Checkouts' } } }],
+describe('writeTaggedRow', () => {
+	it('writes by tag, USER_ENTERED, with nulls left in place', async () => {
+		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(WROTE());
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.writeTaggedRow({
+			spreadsheetId: 'sheet-1',
+			key: 'k',
+			value: '41',
+			row: ROW,
 		});
 
-		const [headerUrl, headerInit] = fetchFn.mock.calls[3] as [string, RequestInit];
-		expect(headerUrl).toContain(encodeURIComponent("'Turf Checkouts'!A1:G1"));
-		expect(headerInit.method).toBe('PUT');
-		expect(JSON.parse(headerInit.body as string)).toEqual({ values: [HEADER] });
+		expect(res).toEqual({ ok: true, value: { found: true } });
+		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
+		expect(url).toContain('/values:batchUpdateByDataFilter');
+		expect(JSON.parse(init.body as string)).toEqual({
+			valueInputOption: 'USER_ENTERED',
+			data: [
+				{
+					dataFilter: { developerMetadataLookup: { metadataKey: 'k', metadataValue: '41' } },
+					majorDimension: 'ROWS',
+					values: [ROW],
+				},
+			],
+		});
+	});
+
+	it('says when no row carries the tag', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok({ totalUpdatedRows: 0 }));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.writeTaggedRow({
+			spreadsheetId: 'sheet-1',
+			key: 'k',
+			value: '41',
+			row: ROW,
+		});
+
+		expect(res).toEqual({ ok: true, value: { found: false } });
 	});
 
 	it('does not retry a 403 — an unshared sheet stays unshared', async () => {
@@ -192,66 +315,33 @@ describe('appendRows', () => {
 			);
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.appendRows({
+		const res = await client.writeTaggedRow({
 			spreadsheetId: 'sheet-1',
-			tabName: 'Log',
-			header: HEADER,
-			rows: [ROW],
+			key: 'k',
+			value: '41',
+			row: ROW,
 		});
 
 		expect(res).toMatchObject({ ok: false, status: 403 });
 		expect(res.ok === false && res.error).toContain('does not have permission');
-		// Token + one append. No second attempt.
+		// Token + one write. No second attempt.
 		expect(fetchFn).toHaveBeenCalledTimes(2);
-	});
-
-	it('sends nothing at all for an empty batch', async () => {
-		const fetchFn = vi.fn();
-		const client = createSheetsClient(CONFIG, { fetchFn });
-
-		const res = await client.appendRows({
-			spreadsheetId: 'sheet-1',
-			tabName: 'Log',
-			header: HEADER,
-			rows: [],
-		});
-
-		expect(res).toEqual({ ok: true, value: { appended: 0, createdTab: false } });
-		expect(fetchFn).not.toHaveBeenCalled();
 	});
 
 	it('does not start a request with no time left in the run', async () => {
 		const fetchFn = vi.fn();
 		const client = createSheetsClient(CONFIG, { fetchFn, now: () => 1_000 });
 
-		const res = await client.appendRows({
+		const res = await client.writeTaggedRow({
 			spreadsheetId: 'sheet-1',
-			tabName: 'Log',
-			header: HEADER,
-			rows: [ROW],
+			key: 'k',
+			value: '41',
+			row: ROW,
 			deadline: 1_500,
 		});
 
 		expect(res.ok).toBe(false);
 		expect(fetchFn).not.toHaveBeenCalled();
-	});
-
-	it('quotes a tab name containing an apostrophe rather than breaking the range', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(new Response('{}', { status: 200 }));
-		const client = createSheetsClient(CONFIG, { fetchFn });
-
-		await client.appendRows({
-			spreadsheetId: 'sheet-1',
-			tabName: "Dana's Log",
-			header: HEADER,
-			rows: [ROW],
-		});
-
-		const [url] = fetchFn.mock.calls[1] as [string];
-		expect(url).toContain(encodeURIComponent("'Dana''s Log'!A:G"));
 	});
 });
 
@@ -263,23 +353,12 @@ describe('privacy', () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(missingTabResponse())
-			.mockResolvedValueOnce(new Response('{}', { status: 200 }))
-			.mockResolvedValueOnce(new Response('{}', { status: 200 }))
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ error: { message: 'backend error' } }), { status: 500 }),
-			)
 			.mockResolvedValue(
 				new Response(JSON.stringify({ error: { message: 'backend error' } }), { status: 500 }),
 			);
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		await client.appendRows({
-			spreadsheetId: 'sheet-1',
-			tabName: 'Turf Checkouts',
-			header: HEADER,
-			rows: [ROW],
-		});
+		await client.writeTaggedRow({ spreadsheetId: 'sheet-1', key: 'k', value: '41', row: ROW });
 
 		const written = [...warnSpy.mock.calls, ...logSpy.mock.calls].flat().join(' ');
 		expect(written).not.toContain('35536745-88712');
