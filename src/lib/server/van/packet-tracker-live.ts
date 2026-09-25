@@ -10,6 +10,7 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { sheetsClient } from '../google-env.js';
 import { loadSettings, loadVanSheetTargets } from '../settings.js';
+import { postAlert } from '../slack.js';
 import { withSyncLock } from '../sync-lock.js';
 import { liveAssignment, syncPacketTracker, type TrackerResult } from './packet-tracker-store.js';
 
@@ -83,7 +84,18 @@ export function nudgePacketTracker(db: Db, mapRouteId: number): void {
 				channelId: '',
 				onlyMapRouteId: mapRouteId,
 			});
-			if (result !== null) return;
+			if (result !== null) {
+				// Notes about this checkout — a packet the tracker does not list,
+				// say — are recorded as told once written, so they are posted here
+				// rather than dropped: the sync will not say them again.
+				if (result.warnings.length > 0) {
+					const { slackTurfChannelId } = await loadSettings(db);
+					if (slackTurfChannelId) {
+						await postAlert(slackTurfChannelId, result.warnings.join('\n'), LOG);
+					}
+				}
+				return;
+			}
 			const wait = NUDGE_RETRY_MS[attempt];
 			if (wait === undefined) return;
 			await new Promise((r) => setTimeout(r, wait));

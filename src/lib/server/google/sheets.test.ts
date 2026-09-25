@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
-import { createSheetsClient, type ServiceAccountConfig } from './sheets.js';
+import { columnLetter, createSheetsClient, type ServiceAccountConfig } from './sheets.js';
 
 // A real key pair, generated once: the JWT assertion has to actually sign, and
 // a fixture key would either expire as a concept or need committing.
@@ -15,8 +15,19 @@ const CONFIG: ServiceAccountConfig = {
 	privateKey,
 };
 
-/** A Packet Tracker row as the store sends it: nulls are cells left alone. */
-const ROW = ["'Turf 01", '120', '64', "'35536745-88712", "'Dana", null, '09/19/2026'];
+/** A claim's cells as the store sends them: [column index, value]. */
+const CELLS: Array<[number, string]> = [
+	[5, "'Dana"],
+	[6, '10:07 AM'],
+	[7, '09/19/2026'],
+	[12, 'Unwalked'],
+];
+const write = (spreadsheetId = 'sheet-1') => ({
+	spreadsheetId,
+	tabName: 'Packet Tracker',
+	rowIndex: 30,
+	cells: CELLS,
+});
 
 function tokenResponse(): Response {
 	return new Response(JSON.stringify({ access_token: 'ya29.test', expires_in: 3600 }), {
@@ -28,8 +39,7 @@ function ok(body: unknown): Response {
 	return new Response(JSON.stringify(body), { status: 200 });
 }
 
-/** A write that matched one tagged row. */
-const WROTE = () => ok({ totalUpdatedRows: 1 });
+const WROTE = () => ok({ totalUpdatedCells: 4 });
 
 let warnSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -48,7 +58,7 @@ describe('authentication', () => {
 		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(WROTE());
 		const client = createSheetsClient(CONFIG, { fetchFn, now: () => 1_700_000_000_000 });
 
-		await client.writeTaggedRow({ spreadsheetId: 'sheet-1', key: 'k', value: '41', row: ROW });
+		await client.writeCells(write());
 
 		const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe('https://oauth2.googleapis.com/token');
@@ -78,8 +88,8 @@ describe('authentication', () => {
 			.mockImplementation(async () => WROTE());
 		const client = createSheetsClient(CONFIG, { fetchFn, now: () => 1_700_000_000_000 });
 
-		await client.writeTaggedRow({ spreadsheetId: 'a', key: 'k', value: '1', row: ROW });
-		await client.writeTaggedRow({ spreadsheetId: 'b', key: 'k', value: '2', row: ROW });
+		await client.writeCells(write('a'));
+		await client.writeCells(write('b'));
 
 		const tokenCalls = fetchFn.mock.calls.filter(
 			([url]) => url === 'https://oauth2.googleapis.com/token',
@@ -95,10 +105,7 @@ describe('authentication', () => {
 		);
 		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
 
-		await Promise.all([
-			client.writeTaggedRow({ spreadsheetId: 'a', key: 'k', value: '1', row: ROW }),
-			client.writeTaggedRow({ spreadsheetId: 'b', key: 'k', value: '2', row: ROW }),
-		]);
+		await Promise.all([client.writeCells(write('a')), client.writeCells(write('b'))]);
 
 		const tokenCalls = fetchFn.mock.calls.filter(
 			([url]) => url === 'https://oauth2.googleapis.com/token',
@@ -113,94 +120,32 @@ describe('authentication', () => {
 			{ fetchFn },
 		);
 
-		const res = await client.writeTaggedRow({ spreadsheetId: 'a', key: 'k', value: '1', row: ROW });
+		const res = await client.writeCells(write('a'));
 
 		expect(res.ok).toBe(false);
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
 });
 
-describe('readTracker', () => {
-	const grid = (over: Record<string, unknown> = {}) => ({
-		sheets: [
-			{
-				properties: { sheetId: 7, title: 'Packet Tracker' },
-				data: [
-					{
-						startRow: 0,
-						rowData: [
-							{ values: [{ formattedValue: 'Packet Name' }, { formattedValue: 'Voters' }] },
-							{ values: [{ formattedValue: 'Turf 01' }, { formattedValue: '120' }, {}] },
-							{ values: [{}, {}] },
-							{},
-						],
-						rowMetadata: [
-							{},
-							{
-								developerMetadata: [
-									{ metadataKey: 'k', metadataValue: '41' },
-									{ metadataKey: 'someone-else', metadataValue: '9' },
-								],
-							},
-							{},
-							{ developerMetadata: [{ metadataKey: 'k', metadataValue: '42' }] },
-						],
-						...over,
-					},
-				],
-			},
-		],
-	});
-
+describe('readTab', () => {
 	// Google caps reads at 60 a minute; the tracker makes one per spreadsheet.
-	it('gets cells, tab id and row tags in ONE request', async () => {
+	it('reads the whole tab, as displayed, in ONE request', async () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(ok(grid()));
+			.mockResolvedValueOnce(ok({ values: [[], ['Packet Name', 'Voters'], ['Turf 01', 120]] }));
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.readTracker({
-			spreadsheetId: 'sheet-1',
-			tabName: 'Packet Tracker',
-			tagKey: 'k',
-		});
+		const res = await client.readTab({ spreadsheetId: 'sheet-1', tabName: 'Packet Tracker' });
 
 		expect(fetchFn).toHaveBeenCalledTimes(2); // token + one read
-		expect(res.ok).toBe(true);
-		if (!res.ok) return;
-		expect(res.value.sheetId).toBe(7);
-		// Trailing empty cells and rows are not content — a blanked row of ours
-		// at the bottom must not push the next insert further down.
-		expect(res.value.values).toEqual([
-			['Packet Name', 'Voters'],
-			['Turf 01', '120'],
-		]);
-		expect([...res.value.tags]).toEqual([
-			['41', 1],
-			['42', 3],
-		]);
-		const [url] = fetchFn.mock.calls[1] as [string];
-		expect(url).toContain('includeGridData=true');
-		expect(url).toContain(`ranges=${encodeURIComponent("'Packet Tracker'")}`);
-		expect(decodeURIComponent(url)).toContain('rowMetadata(developerMetadata(');
-	});
-
-	it('offsets rows by the grid’s start row', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(ok(grid({ startRow: 2 })));
-		const client = createSheetsClient(CONFIG, { fetchFn });
-
-		const res = await client.readTracker({
-			spreadsheetId: 's',
-			tabName: 'Packet Tracker',
-			tagKey: 'k',
+		expect(res).toEqual({
+			ok: true,
+			value: [[], ['Packet Name', 'Voters'], ['Turf 01', '120']],
 		});
-
-		expect(res.ok && res.value.values[2]).toEqual(['Packet Name', 'Voters']);
-		expect(res.ok && res.value.tags.get('41')).toBe(3);
+		const [url] = fetchFn.mock.calls[1] as [string];
+		expect(url).toContain(`/values/${encodeURIComponent("'Packet Tracker'")}?`);
+		expect(url).toContain('valueRenderOption=FORMATTED_VALUE');
 	});
 
 	// The tab is the campaign's. The old log created its own; this must not.
@@ -216,150 +161,123 @@ describe('readTracker', () => {
 			);
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.readTracker({
-			spreadsheetId: 's',
-			tabName: 'Packet Tracker',
-			tagKey: 'k',
-		});
+		const res = await client.readTab({ spreadsheetId: 's', tabName: 'Packet Tracker' });
 
 		expect(res).toMatchObject({ ok: false, status: 404 });
 		expect(fetchFn).toHaveBeenCalledTimes(2);
 	});
 
 	it('quotes a tab name containing an apostrophe rather than breaking the range', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(ok({ sheets: [] }));
+		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(ok({}));
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		await client.readTracker({ spreadsheetId: 's', tabName: "Dana's Tracker", tagKey: 'k' });
+		await client.readTab({ spreadsheetId: 's', tabName: "Dana's Tracker" });
 
 		const [url] = fetchFn.mock.calls[1] as [string];
 		expect(url).toContain(encodeURIComponent("'Dana''s Tracker'"));
 	});
 });
 
-describe('insertTaggedRow', () => {
-	it('inserts and tags the row in one atomic batch', async () => {
+describe('readRow', () => {
+	it('reads one row by its 1-based A1 number', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok({ values: [['Turf 01', '120']] }));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.readRow({
+			spreadsheetId: 's',
+			tabName: 'Packet Tracker',
+			rowIndex: 30,
+		});
+
+		expect(res).toEqual({ ok: true, value: ['Turf 01', '120'] });
+		const [url] = fetchFn.mock.calls[1] as [string];
+		expect(url).toContain(encodeURIComponent("'Packet Tracker'!31:31"));
+	});
+
+	it('reads an empty row as empty', async () => {
 		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(ok({}));
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.insertTaggedRow({
-			spreadsheetId: 'sheet-1',
-			sheetId: 7,
-			rowIndex: 30,
-			key: 'k',
-			value: '41',
-		});
+		const res = await client.readRow({ spreadsheetId: 's', tabName: 'T', rowIndex: 0 });
 
-		expect(res).toEqual({ ok: true, value: true });
-		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
-		expect(url).toContain('/spreadsheets/sheet-1:batchUpdate');
-		const range = { sheetId: 7, dimension: 'ROWS', startIndex: 30, endIndex: 31 };
-		expect(JSON.parse(init.body as string)).toEqual({
-			requests: [
-				{ insertDimension: { range, inheritFromBefore: true } },
-				{
-					createDeveloperMetadata: {
-						developerMetadata: {
-							metadataKey: 'k',
-							metadataValue: '41',
-							visibility: 'DOCUMENT',
-							location: { dimensionRange: range },
-						},
-					},
-				},
-			],
-		});
+		expect(res).toEqual({ ok: true, value: [] });
 	});
 });
 
-describe('writeTaggedRow', () => {
-	it('writes by tag, USER_ENTERED, with nulls left in place', async () => {
+describe('writeCells', () => {
+	it('writes each cell by A1 address, USER_ENTERED, in one request', async () => {
 		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(WROTE());
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.writeTaggedRow({
-			spreadsheetId: 'sheet-1',
-			key: 'k',
-			value: '41',
-			row: ROW,
-		});
+		const res = await client.writeCells(write());
 
-		expect(res).toEqual({ ok: true, value: { found: true } });
+		expect(res).toEqual({ ok: true, value: true });
 		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
-		expect(url).toContain('/values:batchUpdateByDataFilter');
+		expect(url).toContain('/spreadsheets/sheet-1/values:batchUpdate');
 		expect(JSON.parse(init.body as string)).toEqual({
 			valueInputOption: 'USER_ENTERED',
 			data: [
-				{
-					dataFilter: { developerMetadataLookup: { metadataKey: 'k', metadataValue: '41' } },
-					majorDimension: 'ROWS',
-					values: [ROW],
-				},
+				{ range: "'Packet Tracker'!F31", values: [["'Dana"]] },
+				{ range: "'Packet Tracker'!G31", values: [['10:07 AM']] },
+				{ range: "'Packet Tracker'!H31", values: [['09/19/2026']] },
+				{ range: "'Packet Tracker'!M31", values: [['Unwalked']] },
 			],
 		});
 	});
 
-	it('says when no row carries the tag', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValueOnce(ok({ totalUpdatedRows: 0 }));
+	it('sends nothing for no cells', async () => {
+		const fetchFn = vi.fn();
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.writeTaggedRow({
-			spreadsheetId: 'sheet-1',
-			key: 'k',
-			value: '41',
-			row: ROW,
-		});
-
-		expect(res).toEqual({ ok: true, value: { found: false } });
+		expect(await client.writeCells({ ...write(), cells: [] })).toEqual({ ok: true, value: true });
+		expect(fetchFn).not.toHaveBeenCalled();
 	});
 
-	it('does not retry a 403 — an unshared sheet stays unshared', async () => {
-		const fetchFn = vi
-			.fn()
-			.mockResolvedValueOnce(tokenResponse())
-			.mockResolvedValue(
-				new Response(
-					JSON.stringify({ error: { message: 'The caller does not have permission' } }),
-					{
-						status: 403,
-					},
-				),
-			);
-		const client = createSheetsClient(CONFIG, { fetchFn });
+	// What the campaign's protected ranges answer. Not retried: it will not change.
+	it('does not retry a 400 or a 403', async () => {
+		for (const status of [400, 403]) {
+			const fetchFn = vi
+				.fn()
+				.mockResolvedValueOnce(tokenResponse())
+				.mockResolvedValue(
+					new Response(
+						JSON.stringify({ error: { message: 'You are trying to edit a protected cell' } }),
+						{ status },
+					),
+				);
+			const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.writeTaggedRow({
-			spreadsheetId: 'sheet-1',
-			key: 'k',
-			value: '41',
-			row: ROW,
-		});
+			const res = await client.writeCells(write());
 
-		expect(res).toMatchObject({ ok: false, status: 403 });
-		expect(res.ok === false && res.error).toContain('does not have permission');
-		// Token + one write. No second attempt.
-		expect(fetchFn).toHaveBeenCalledTimes(2);
+			expect(res).toMatchObject({ ok: false, status });
+			expect(fetchFn).toHaveBeenCalledTimes(2);
+		}
 	});
 
-	it('does not start a request with no time left in the run', async () => {
+	it('reports 408, having sent nothing, with no time left in the run', async () => {
 		const fetchFn = vi.fn();
 		const client = createSheetsClient(CONFIG, { fetchFn, now: () => 1_000 });
 
-		const res = await client.writeTaggedRow({
-			spreadsheetId: 'sheet-1',
-			key: 'k',
-			value: '41',
-			row: ROW,
-			deadline: 1_500,
-		});
+		const res = await client.writeCells({ ...write(), deadline: 1_500 });
 
-		expect(res.ok).toBe(false);
+		expect(res).toMatchObject({ ok: false, status: 408 });
 		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+describe('columnLetter', () => {
+	it.each([
+		[0, 'A'],
+		[12, 'M'],
+		[25, 'Z'],
+		[26, 'AA'],
+		[51, 'AZ'],
+		[52, 'BA'],
+	])('%i is %s', (index, letters) => {
+		expect(columnLetter(index)).toBe(letters);
 	});
 });
 
@@ -376,12 +294,11 @@ describe('privacy', () => {
 			);
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		await client.writeTaggedRow({ spreadsheetId: 'sheet-1', key: 'k', value: '41', row: ROW });
+		await client.writeCells(write());
 
 		const written = [...warnSpy.mock.calls, ...logSpy.mock.calls].flat().join(' ');
-		expect(written).not.toContain('35536745-88712');
 		expect(written).not.toContain('Dana');
-		expect(written).not.toContain('Turf 01');
+		expect(written).not.toContain('09/19/2026');
 	});
 });
 

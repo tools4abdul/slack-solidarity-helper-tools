@@ -128,10 +128,10 @@ const geometryResult = {
 
 const driftResult = { announced: 0, cleared: 0, failed: false, skipped: 'nothing-new' };
 const sheetLogResult = {
-	appended: 0,
+	filled: 0,
 	updated: 0,
 	failed: 0,
-	rateLimited: 0,
+	deferred: 0,
 	unrouted: 0,
 	unroutedRegions: [] as string[],
 	assignmentsChanged: 0,
@@ -523,9 +523,9 @@ describe('POST /api/internal/van-sync', () => {
 		});
 
 		it('reports what it wrote', async () => {
-			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, appended: 4 });
+			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, filled: 4 });
 			const res = await POST(event());
-			expect((await res.json()).sheetLog.appended).toBe(4);
+			expect((await res.json()).sheetLog.filled).toBe(4);
 		});
 
 		// Most deployments of this tool have no campaign spreadsheet. An

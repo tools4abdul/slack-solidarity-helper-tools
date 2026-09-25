@@ -12,7 +12,7 @@ ALTER TABLE `van_turfs` ADD `sheet_assigned_to` text;--> statement-breakpoint
 --- row if it happened after switch-on; from before it, it is history the
 --- campaign did not ask for.
 UPDATE `van_turf_checkouts`
-   SET `sheet_state` = '{"spreadsheetId":null,"tagged":false,"cells":null}'
+   SET `sheet_state` = '{"spreadsheetId":null,"cells":null}'
  WHERE `released_at` IS NOT NULL;--> statement-breakpoint
 --- The tab setting named the app's own "Turf Checkouts" log, which it created.
 --- The Packet Tracker is the campaign's tab, so a leftover value would point

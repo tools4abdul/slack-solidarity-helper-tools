@@ -85,31 +85,25 @@ deliberately **not** repeated to you in the DM telling you your turf was release
 
 **Turf checkouts are also recorded in the campaign's own Google Sheets**, when an organiser has
 configured that — in the "Packet Tracker" tab the campaign already uses to track who has which
-turf. Each turf you take gets **one row**, kept up to date as you go: **the turf name, how many
-voters and doors it has, the MiniVAN list number you were issued, your Slack display name, the
-date and time you claimed it, when you set off, whether you walked it in MiniVAN, and — once you
-mark it walked — how much of it you knocked.** If you hand a
-turf back without ever opening it in MiniVAN, the row is blanked. Your phone number, Slack ID,
-email, the reason behind a block and anything about a voter are never written there. Each row
-carries a hidden tag holding an internal checkout number, which is how the app finds its own rows
-again; it identifies nobody.
+packet. The campaign lists each packet there in advance; when you take one, the app fills in
+**your Slack display name, the date and time you claimed it, when you set off, that you walked it
+in MiniVAN, its status, and — once you mark it walked — how many doors you knocked** on that
+packet's row. If you hand a turf back without ever opening it in MiniVAN, what the app filled in
+is cleared. Your phone number, Slack ID, email, the reason behind a block and anything about a
+voter are never written there. The app does not write the MiniVAN list number anywhere: it only
+matches against the numbers the campaign already listed.
 
-Three things follow from this that are worth being explicit about:
+Two things follow from this that are worth being explicit about:
 
 - **Those spreadsheets are the campaign's, not this app's.** Anyone the campaign has shared one
-  with can read every row in it, including your name beside the turf you walked. This app cannot
-  see who that is. Rows the campaign types by hand are never changed by the app, and a row of
-  ours that someone has edited or deleted is left as they left it.
-- **It is the one place a list number goes beyond the person it was issued to.** Everywhere else
-  the app treats that number as a credential — it is what pulls the doors down in MiniVAN — and
-  withholds it from organiser pages and keeps it out of logs. Writing it to a sheet the campaign
-  already uses to run canvasses was a deliberate decision, taken because the sheet is how they
-  track which lists are out.
+  with can read every row in it, including your name beside the packet you walked. This app
+  cannot see who that is. What the campaign types is never changed by the app, and an entry of
+  ours that someone has since edited is left as they left it.
 - **The app reads the tracker back, to avoid handing out turf the campaign already has.** From
-  the rows the campaign typed itself it keeps only which list numbers are out and the canvasser
-  name beside each, stored against that turf until the row changes. Organisers see that name the
-  way they see a VAN assignment; volunteers are only told the turf is taken. Nothing else in the
-  sheet is kept.
+  the entries the campaign made itself it keeps only which list numbers are out and the
+  canvasser name beside each, stored against that turf until the entry changes. Organisers see
+  that name the way they see a VAN assignment; volunteers are only told the turf is taken.
+  Nothing else in the sheet is kept.
 
 If an organiser hands turf out inside VAN rather than through this app, VAN reports who it went
 to, and **the canvasser names on that export are stored** against the turf
@@ -217,7 +211,7 @@ by hand, not a scheduled job, and this document is the record of it. The retenti
 describes what happens **until** then.
 
 **One exception, stated plainly: the campaign's Google Sheets are outside this.** The turf
-checkout rows written into them (see § "Turf checkout") live in spreadsheets the campaign owns,
+checkout entries written into them (see § "Turf checkout") live in spreadsheets the campaign owns,
 and deleting this app's own records does not touch them. Clearing those is the campaign's to do,
 and asking for it means asking them, not us.
 
@@ -228,7 +222,7 @@ and asking for it means asking them, not us.
 | Help-to-join queue (`requests`)     | Until removed by an admin, and in any case the election; no automatic expiry                                                                                                    |
 | Notes and warnings                  | Kept until the election. Warning numbering is a running count, so deleting one before then silently renumbers the rest — early removal is a deliberate act, not routine cleanup |
 | Turf checkout ledger                | Kept until the election, as the record of who had which turf when                                                                                                               |
-| Turf rows copied to campaign sheets | Not ours to delete — they live in the campaign's own spreadsheets and outlast this app's records                                                                                |
+| Turf entries in campaign sheets     | Not ours to delete — they live in the campaign's own spreadsheets and outlast this app's records                                                                                |
 | Retired turf rows                   | Kept while the campaign runs, so a live claim still renders                                                                                                                     |
 | Slack invite sightings              | Kept after a link is removed — deleting them would erase the record of the fix. Names pages, not people                                                                         |
 | Daily signup / door-knock snapshots | Kept indefinitely. These are counts per (date, chapter), not per person                                                                                                         |

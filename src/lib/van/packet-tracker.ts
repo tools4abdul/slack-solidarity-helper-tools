@@ -1,41 +1,37 @@
-// The campaign's Packet Tracker tab: what our row for a checkout should say,
-// and what the campaign's own rows say about who already has which turf.
+// The campaign's Packet Tracker tab: what a checkout should fill in on its
+// packet's row, and what the campaign's own entries say about who already has
+// which turf.
 //
-// The campaign records every turf handed out — by us or by an organizer with a
-// clipboard — in one tab it owns, one row per turf taken. So this is not a log.
-// A checkout has at most ONE row, and that row is kept current:
+// The campaign lists every packet in advance — Packet Name, Voters, Doors and
+// List Number, in protected columns — alongside formula columns of its own
+// (`shift_key`, `Today?`, `Knocked %`). Handing a packet out means filling in
+// the canvasser columns on that packet's EXISTING row. So the app never adds,
+// deletes or moves a row; it finds the packet by List Number and fills in, or
+// clears, the columns a canvasser would:
 //
-//   claimed                  → row appended, Status Unwalked
+//   claimed                  → Canvasser, Shift Time, Date Sent Out,
+//                              Walk Mode filled, Status Unwalked
 //   list loaded in MiniVAN   → Time Departed filled, Status Out
-//   marked walked            → Doors Knocked and Knocked % filled,
-//                              Status Complete (100%) or Incomplete
-//   released, never loaded   → row cleared (see below)
+//   marked walked            → Doors Knocked filled, Status Complete (100%)
+//                              or Incomplete; the sheet computes Knocked %
+//   released, never loaded   → everything we filled in is cleared
 //   released after loading   → Status Incomplete
 //
-// "Cleared", not deleted. The Sheets API deletes rows by position only, and a
-// position read a moment earlier can belong to someone else's row by the time
-// the delete lands — tested 2026-09-24, and no guard request makes that batch
-// fail. Clearing is done by the row's hidden developer-metadata tag, which
-// Google resolves itself, so it cannot touch a row the campaign typed. A
-// campaign-entered row is never modified by this app, in any way.
+// Whatever the campaign typed is never overwritten or cleared: a packet is
+// only filled in when its canvasser columns are empty, and only cleared while
+// they still hold what we wrote. Verified against a live tracker 2026-09-24.
 //
-// Columns are found by header name, not position, because the tab is the
-// campaign's and they rearrange it. Pure — no DB, no network. The store is
-// packet-tracker-store.ts.
+// Columns are found by header name, not position — the header is on row 2 of
+// the campaign's tab, not row 1, and they rearrange it. Pure — no DB, no
+// network. The store is packet-tracker-store.ts.
 
 import { campaignTimeLabel, CAMPAIGN_TIME_ZONE } from '../campaign-time.js';
 
 /** The tab, when an admin has not named another. */
 export const DEFAULT_SHEET_TAB_NAME = 'Packet Tracker';
 
-/** The developer-metadata key on every row this app wrote; the value is the
- *  checkout id. Invisible in the sheet, and it stays with the row through
- *  sorts and inserts. It is the ONLY thing that makes a row ours. */
-export const ROW_TAG_KEY = 'solidarity-helper-checkout';
-
+/** Every column the app needs to find. */
 export const PACKET_COLUMNS = [
-	'Packet Name',
-	'Voters',
 	'Doors',
 	'List Number',
 	'Canvasser',
@@ -43,40 +39,44 @@ export const PACKET_COLUMNS = [
 	'Date Sent Out',
 	'Time Departed',
 	'Walk Mode',
-	'Phone Number',
 	'Doors Knocked',
 	'Status',
-	'Knocked %',
 ] as const;
 
 export type PacketColumn = (typeof PACKET_COLUMNS)[number];
 
-/** Written once, when the row is appended, and never again. Everything else
- *  is re-derived every run and rewritten only when it changes — so a campaign
- *  edit to one of these (a corrected name, say) is not reverted by a re-cut
- *  moving VAN's door count. */
-const WRITE_ONCE: ReadonlySet<PacketColumn> = new Set([
-	'Packet Name',
-	'Voters',
-	'Doors',
-	'List Number',
+/** The columns the app writes: a canvasser's half of the row. Not Packet
+ *  Name, Voters, Doors or List Number, which the campaign fills in and
+ *  protects; not Knocked %, which is the campaign's formula; not Phone Number,
+ *  which the app never sends. */
+export const FILL_COLUMNS = [
+	'Canvasser',
+	'Shift Time',
+	'Date Sent Out',
+	'Time Departed',
+	'Walk Mode',
+	'Doors Knocked',
+	'Status',
+] as const satisfies readonly PacketColumn[];
+
+export type FillColumn = (typeof FILL_COLUMNS)[number];
+
+export type PacketCells = Partial<Record<FillColumn, string>>;
+
+/** Written when the packet is first filled in, and never again — so a campaign
+ *  correction to one of them sticks. */
+const WRITE_ONCE: ReadonlySet<FillColumn> = new Set([
 	'Canvasser',
 	'Shift Time',
 	'Date Sent Out',
 	'Walk Mode',
 ]);
 
-/** The two cells checked before clearing a row. If either no longer holds what
- *  we wrote, somebody has typed over our row and it is theirs now. */
-const OWNERSHIP_COLUMNS: readonly PacketColumn[] = ['List Number', 'Canvasser'];
-
-/** A Status on a campaign row that means the turf is taken. Incomplete is
+/** A Status on a campaign entry that means the packet is out. Incomplete is
  *  not: that turf is back in play. */
 const BLOCKING_STATUSES: ReadonlySet<string> = new Set(['unwalked', 'out', 'complete']);
 
 export type PacketStatus = 'Unwalked' | 'Out' | 'Complete' | 'Incomplete';
-
-export type PacketCells = Partial<Record<PacketColumn, string>>;
 
 /** What a checkout row and its turf offer. Structurally satisfied by the
  *  store's candidate query. */
@@ -93,9 +93,7 @@ export interface PacketCheckout {
 	claimDoorCount: number | null;
 	turfName: string;
 	regionName: string;
-	/** People on the list (VAN's routeSize). */
-	routeSize: number;
-	/** VAN's door count now — the fallback for `claimDoorCount`. */
+	/** VAN's door count now — the last fallback for the door total. */
 	doorCount: number;
 }
 
@@ -118,37 +116,39 @@ function statusFor(checkout: PacketCheckout): PacketStatus | null {
 		return (checkout.reportedPercent ?? 0) >= 100 ? 'Complete' : 'Incomplete';
 	}
 	if (checkout.releasedAt) {
-		// Handed back without the list ever opening: the turf was never taken
-		// in any sense the campaign counts, so it has no row.
+		// Handed back without the list ever opening: the packet never really
+		// went out, so it is left as though it had not been handed out.
 		return checkout.loadedInMinivanAt ? 'Incomplete' : null;
 	}
 	return checkout.loadedInMinivanAt ? 'Out' : 'Unwalked';
 }
 
 /**
- * The row this checkout should have, or null when it should have none.
+ * What this checkout should have filled in on its packet's row, or null when
+ * it should have nothing there.
  *
- * Every column is present in the result, blanks included, so that "this cell
- * should now be empty" is a change the diff can see.
+ * `sheetDoors` is the packet's Doors as the campaign listed it. Doors Knocked
+ * is computed from that when it is readable, because the sheet's Knocked %
+ * formula divides by that cell — so the percentage it shows comes out as the
+ * one the volunteer reported.
+ *
+ * Every fill column is present in the result, blanks included, so that "this
+ * cell should now be empty" is a change the diff can see.
  */
-export function desiredRow(checkout: PacketCheckout): PacketCells | null {
+export function desiredCells(
+	checkout: PacketCheckout,
+	sheetDoors?: number | null,
+): PacketCells | null {
 	const status = statusFor(checkout);
 	if (status === null) return null;
 
-	const doors = checkout.claimDoorCount ?? checkout.doorCount;
+	const doors = sheetDoors ?? checkout.claimDoorCount ?? checkout.doorCount;
 	const walked = checkout.completedAt !== null && checkout.reportedPercent !== null;
 	const percent = walked ? checkout.reportedPercent! : null;
 
 	return {
-		'Packet Name': checkout.turfName,
-		Voters: String(checkout.routeSize),
-		Doors: String(doors),
-		// The number the volunteer was issued, not whatever VAN says today — a
-		// re-cut regenerates printed lists under live claims.
-		'List Number': checkout.issuedListNumber ?? '',
 		Canvasser: checkout.slackUserName,
-		// When they claimed it, in Slack or on the site: the moment they were
-		// at the canvass and taking turf.
+		// When they claimed it, in Slack or on the site.
 		'Shift Time': campaignTimeLabel(checkout.claimedAt),
 		'Date Sent Out': sheetDate(checkout.claimedAt),
 		'Time Departed': checkout.loadedInMinivanAt
@@ -156,38 +156,33 @@ export function desiredRow(checkout: PacketCheckout): PacketCells | null {
 			: '',
 		// This app only ever issues MiniVAN list numbers.
 		'Walk Mode': 'MiniVAN',
-		// Deliberately never sent. See PRIVACY.md.
-		'Phone Number': '',
 		// From the volunteer's reported percentage: VAN's API gives us no
 		// contact counts at the access level the campaign has.
 		'Doors Knocked': percent === null ? '' : String(Math.round((percent / 100) * doors)),
 		Status: status,
-		'Knocked %': percent === null ? '' : `${percent}%`,
 	};
 }
 
-/** Where each of our columns sits in the tab, and which row is the header. */
+/** Where each column sits in the tab, and which row is the header. */
 export interface ColumnLayout {
 	headerRowIndex: number;
 	/** 0-based column index per column. */
 	columns: Record<PacketColumn, number>;
-	/** One past the rightmost column we write. */
-	width: number;
 }
 
 function normaliseHeader(value: string): string {
 	return value.toLowerCase().replace(/[^a-z0-9%]/g, '');
 }
 
-/** How far down the header is looked for — room for a title row or two. */
+/** How far down the header is looked for. The campaign's is on row 2. */
 const HEADER_SEARCH_ROWS = 10;
 
 /**
  * Find the header row and every column in it.
  *
  * Returns the columns it could not find instead of a layout when any are
- * missing: writing a partial row into a tab whose shape we do not understand
- * is how cells land in the wrong column.
+ * missing: writing into a tab whose shape we do not understand is how cells
+ * land in the wrong column.
  */
 export function findLayout(
 	values: readonly (readonly string[])[],
@@ -209,57 +204,75 @@ export function findLayout(
 
 	const missing = PACKET_COLUMNS.filter((c) => !best?.found.has(c));
 	if (!best || missing.length > 0) return { ok: false, missing };
-
-	const columns = Object.fromEntries(best.found) as Record<PacketColumn, number>;
 	return {
 		ok: true,
 		layout: {
 			headerRowIndex: best.row,
-			columns,
-			width: Math.max(...Object.values(columns)) + 1,
+			columns: Object.fromEntries(best.found) as Record<PacketColumn, number>,
 		},
 	};
 }
 
-/** Columns holding free text. Everything else is a number, date, time or
- *  percentage we formatted ourselves. */
-const TEXT_COLUMNS: ReadonlySet<PacketColumn> = new Set([
-	'Packet Name',
-	'List Number',
-	'Canvasser',
-	'Walk Mode',
-	'Phone Number',
-	'Status',
-]);
+/** Hand-typed list numbers pick up stray spaces; nothing else is forgiven. */
+export function normaliseListNumber(value: string): string {
+	return value.replace(/\s+/g, '');
+}
+
+/** The rows listing this packet, by List Number. More than one is the
+ *  campaign's duplicate, and the caller writes to neither. */
+export function packetRows(
+	values: readonly (readonly string[])[],
+	layout: ColumnLayout,
+	listNumber: string,
+): number[] {
+	const wanted = normaliseListNumber(listNumber);
+	if (!wanted) return [];
+	const rows: number[] = [];
+	for (let i = layout.headerRowIndex + 1; i < values.length; i++) {
+		const cell = values[i]?.[layout.columns['List Number']] ?? '';
+		if (normaliseListNumber(cell) === wanted) rows.push(i);
+	}
+	return rows;
+}
+
+/** The packet's Doors, when the cell holds a number. */
+export function sheetDoors(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+): number | null {
+	const raw = (row?.[layout.columns.Doors] ?? '').replace(/,/g, '').trim();
+	if (!/^\d+$/.test(raw)) return null;
+	return Number(raw);
+}
+
+function cell(row: readonly string[] | undefined, layout: ColumnLayout, column: PacketColumn) {
+	return (row?.[layout.columns[column]] ?? '').trim();
+}
+
+/** Whether nobody has filled in this packet's canvasser columns. */
+export function isUnfilled(row: readonly string[] | undefined, layout: ColumnLayout): boolean {
+	return FILL_COLUMNS.every((column) => cell(row, layout, column) === '');
+}
 
 /**
- * A row as the values API wants it, with `null` for every cell to leave alone.
+ * Whether the packet's row still holds our entry.
  *
- * Null is what the Sheets values API treats as "skip", which is what lets an
- * update touch only the cells that changed and leave the campaign's own notes
- * in the rest of our row where they are.
- *
- * Written USER_ENTERED so the campaign's date, time and percent columns get
- * real values rather than strings. That would also parse a canvasser named
- * `=IMPORTXML(...)` as a formula, or a list number as a date, so every text
- * cell carries Sheets' leading apostrophe — which forces text and is not
- * displayed.
+ * The canvasser name is the mark: if someone has typed a different name there,
+ * the packet has been handed to them and the entry is theirs now.
  */
-export function rowValues(cells: PacketCells, layout: ColumnLayout): (string | null)[] {
-	const row: (string | null)[] = Array.from({ length: layout.width }, () => null);
-	for (const column of PACKET_COLUMNS) {
-		const value = cells[column];
-		if (value === undefined) continue;
-		row[layout.columns[column]] = TEXT_COLUMNS.has(column) && value !== '' ? `'${value}` : value;
-	}
-	return row;
+export function stillOurs(
+	row: readonly string[] | undefined,
+	layout: ColumnLayout,
+	written: PacketCells,
+): boolean {
+	return cell(row, layout, 'Canvasser') === (written.Canvasser ?? '').trim();
 }
 
 /** The cells to write to bring `last` (what we last wrote) up to `desired`.
  *  Write-once columns are never rewritten. Empty when nothing changed. */
 export function changedCells(last: PacketCells, desired: PacketCells): PacketCells {
 	const changes: PacketCells = {};
-	for (const column of PACKET_COLUMNS) {
+	for (const column of FILL_COLUMNS) {
 		if (WRITE_ONCE.has(column)) continue;
 		const value = desired[column] ?? '';
 		if ((last[column] ?? '') !== value) changes[column] = value;
@@ -267,56 +280,58 @@ export function changedCells(last: PacketCells, desired: PacketCells): PacketCel
 	return changes;
 }
 
-/** Every column blank — how a row is "removed". */
-export function blankCells(): PacketCells {
-	return Object.fromEntries(PACKET_COLUMNS.map((c) => [c, ''])) as PacketCells;
+/** Blanks for every cell we filled in — how an entry is taken back. */
+export function clearedCells(last: PacketCells): PacketCells {
+	const cleared: PacketCells = {};
+	for (const column of FILL_COLUMNS) if (last[column]) cleared[column] = '';
+	return cleared;
 }
 
 /**
- * Whether a tagged row still holds what we wrote to it.
+ * Cells as the values API wants them: one `[column index, value]` per cell.
  *
- * The check before clearing. The tag says we created the row; this says nobody
- * has since typed a different turf or canvasser over it. Blank cells pass — a
- * row we already cleared still counts as ours.
+ * Written USER_ENTERED so the campaign's date, time and number columns get
+ * real values rather than strings. That would also parse a canvasser named
+ * `=IMPORTXML(...)` as a formula, so the name carries Sheets' leading
+ * apostrophe, which forces text and is not displayed. The other columns hold
+ * values this app formats itself.
  */
-export function stillOurs(
-	row: readonly string[] | undefined,
-	layout: ColumnLayout,
-	written: PacketCells,
-): boolean {
-	return OWNERSHIP_COLUMNS.every((column) => {
-		const actual = (row?.[layout.columns[column]] ?? '').trim();
-		return actual === '' || actual === (written[column] ?? '').trim();
-	});
+export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[number, string]> {
+	const writes: Array<[number, string]> = [];
+	for (const column of FILL_COLUMNS) {
+		const value = cells[column];
+		if (value === undefined) continue;
+		writes.push([
+			layout.columns[column],
+			column === 'Canvasser' && value !== '' ? `'${value}` : value,
+		]);
+	}
+	return writes;
 }
 
 /**
- * Turf the campaign has handed out itself, by list number → canvasser.
+ * Packets the campaign has handed out itself, by list number → canvasser.
  *
- * Only rows WITHOUT our tag count: our own rows describe claims the ledger
- * already knows about. A row with no canvasser still blocks, labelled as the
- * tracker, because an unnamed assignment is still an assignment.
+ * `ours` maps a list number to the canvasser name we filled in; a row whose
+ * Canvasser matches is our own entry, which the ledger already knows about.
+ * A row with no canvasser still blocks, labelled as the tracker, because an
+ * unnamed assignment is still an assignment.
  */
 export function campaignAssignments(
 	values: readonly (readonly string[])[],
 	layout: ColumnLayout,
-	taggedRowIndexes: ReadonlySet<number>,
+	ours: ReadonlyMap<string, string>,
 ): Map<string, string> {
 	const assigned = new Map<string, string>();
 	for (let i = layout.headerRowIndex + 1; i < values.length; i++) {
-		if (taggedRowIndexes.has(i)) continue;
-		const row = values[i] ?? [];
-		const listNumber = normaliseListNumber(row[layout.columns['List Number']] ?? '');
+		const row = values[i];
+		const listNumber = normaliseListNumber(cell(row, layout, 'List Number'));
 		if (!listNumber) continue;
-		const status = (row[layout.columns.Status] ?? '').trim().toLowerCase();
-		if (!BLOCKING_STATUSES.has(status)) continue;
-		const canvasser = (row[layout.columns.Canvasser] ?? '').trim();
+		if (!BLOCKING_STATUSES.has(cell(row, layout, 'Status').toLowerCase())) continue;
+		const canvasser = cell(row, layout, 'Canvasser');
+		const mine = ours.get(listNumber);
+		if (mine !== undefined && mine.trim() === canvasser) continue;
 		assigned.set(listNumber, canvasser || 'Packet Tracker');
 	}
 	return assigned;
-}
-
-/** Hand-typed list numbers pick up stray spaces; nothing else is forgiven. */
-export function normaliseListNumber(value: string): string {
-	return value.replace(/\s+/g, '');
 }

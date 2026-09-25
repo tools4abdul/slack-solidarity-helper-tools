@@ -30,7 +30,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
 import { createSheetsClient, type SheetsResult } from '../src/lib/server/google/sheets.js';
 import { vanSheetTargets, appConfig } from '../src/lib/server/schema.js';
-import { DEFAULT_SHEET_TAB_NAME, ROW_TAG_KEY, findLayout } from '../src/lib/van/packet-tracker.js';
+import { DEFAULT_SHEET_TAB_NAME, findLayout } from '../src/lib/van/packet-tracker.js';
 
 const raw = process.env['GOOGLE_SHEETS_SERVICE_ACCOUNT'] ?? '';
 if (!raw) {
@@ -122,13 +122,11 @@ async function main(): Promise<void> {
 	let missingTab = 0;
 
 	for (const [spreadsheetId, { label, prefixes }] of bySheet) {
-		const tab = await paced(1, () =>
-			sheets.readTracker({ spreadsheetId, tabName, tagKey: ROW_TAG_KEY }),
-		);
+		const tab = await paced(1, () => sheets.readTab({ spreadsheetId, tabName }));
 		if (tab.ok) {
 			// The columns are found by header name, so check they are all there
 			// before the sync tries to write.
-			const layout = findLayout(tab.value.values);
+			const layout = findLayout(tab.value);
 			if (layout.ok) {
 				console.log(`  ✓ ${label} — reachable, "${tabName}" has every column`);
 			} else {
