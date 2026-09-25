@@ -1,4 +1,4 @@
-// Appending rows to a Google Sheet, as a service account.
+// Reading and writing the campaign's Packet Tracker tab, as a service account.
 //
 // Written like van/client.ts and geocode-batch.ts: config and `fetch` are
 // injected and nothing here imports `$env` or `$lib/server`, so it runs under
@@ -21,9 +21,16 @@
 // and PRIVACY.md must stay accurate about it.
 // ─────────────────────────────────────────────────────────────────────────
 //
+// Rows this app writes carry a developer-metadata tag (see
+// $lib/van/packet-tracker.ts). Writes to an existing row go through that tag
+// rather than a row number, so Google resolves which row is meant at the moment
+// of the write and a sort or insert by someone else cannot redirect them. There
+// is deliberately no delete: the API only deletes by position, and a position
+// cannot be made safe (see the header of packet-tracker.ts).
+//
 // Never throws. A Google outage must not fail a sync whose rows are already
-// written — every call returns a result the caller can act on, and the drain
-// leaves the events unstamped so a later run retries them.
+// written — every call returns a result the caller can act on, and the ledger
+// keeps what is unsent so a later run retries it.
 
 import { createSign } from 'node:crypto';
 
@@ -66,19 +73,51 @@ export interface SheetsClientOptions {
  *  network-level failure, which reads differently from any HTTP answer. */
 export type SheetsResult<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
 
+/** One row this app tagged. `rowIndex` is 0-based and true only at the moment
+ *  of the search — never write by it. */
+export interface TaggedRow {
+	value: string;
+	sheetId: number;
+	rowIndex: number;
+}
+
 export interface SheetsClient {
-	/** Append rows to `tabName`, creating the tab and its header row if it is
-	 *  not there. `deadline` is an epoch-ms ceiling for the whole operation. */
-	appendRows(input: {
+	/** The tab's numeric id and every row of it, as displayed. A missing tab is
+	 *  a 404 rather than a created one: the tab is the campaign's. */
+	readTab(input: {
 		spreadsheetId: string;
 		tabName: string;
-		header: readonly string[];
-		rows: readonly (readonly string[])[];
 		deadline?: number;
-	}): Promise<SheetsResult<{ appended: number; createdTab: boolean }>>;
+	}): Promise<SheetsResult<{ sheetId: number; values: string[][] }>>;
+	/** Every row in the spreadsheet carrying `key`. */
+	findTaggedRows(input: {
+		spreadsheetId: string;
+		key: string;
+		deadline?: number;
+	}): Promise<SheetsResult<TaggedRow[]>>;
+	/** Insert an empty row at `rowIndex` and tag it, in one atomic batch — so
+	 *  there is never an untagged row of ours, and never a tag on a row that is
+	 *  not. Inserting only shifts other rows down; it overwrites nothing. */
+	insertTaggedRow(input: {
+		spreadsheetId: string;
+		sheetId: number;
+		rowIndex: number;
+		key: string;
+		value: string;
+		deadline?: number;
+	}): Promise<SheetsResult<true>>;
+	/** Write cells into the row tagged `key`=`value`, USER_ENTERED. `null`
+	 *  cells are left as they are. `found: false` when no row has that tag. */
+	writeTaggedRow(input: {
+		spreadsheetId: string;
+		key: string;
+		value: string;
+		row: readonly (string | null)[];
+		deadline?: number;
+	}): Promise<SheetsResult<{ found: boolean }>>;
 	/** Whether the spreadsheet is reachable and whether it already has the tab.
 	 *  Read-only — what `sheets:check` uses to tell "never shared with us" from
-	 *  "shared, no tab yet" without writing anything. */
+	 *  "shared, no tab" without writing anything. */
 	describe(input: {
 		spreadsheetId: string;
 		tabName: string;
@@ -113,19 +152,19 @@ function parseError(body: string): string {
 	return body.slice(0, 300);
 }
 
-/** A range for the values API. The tab name is quoted because the ones people
- *  pick have spaces in them, and a single quote inside it would otherwise end
- *  the quoting early. */
-function rangeFor(tabName: string, columns: number): string {
-	const lastColumn = String.fromCharCode('A'.charCodeAt(0) + Math.max(0, columns - 1));
-	return `'${tabName.replace(/'/g, "''")}'!A:${lastColumn}`;
+/** A whole-tab range for the values API. The tab name is quoted because the
+ *  campaign's have spaces in them, and a single quote inside it would otherwise
+ *  end the quoting early. */
+function tabRange(tabName: string): string {
+	return `'${tabName.replace(/'/g, "''")}'`;
 }
 
-/** Whether a failed append means "that tab does not exist" rather than
- *  something an operator has to fix. Sheets answers a missing range with a 400
- *  whose message names the range it could not parse. */
-function isMissingTab(status: number, error: string): boolean {
-	return status === 400 && /unable to parse range/i.test(error);
+function parseJson<T>(body: string): T | null {
+	try {
+		return JSON.parse(body) as T;
+	} catch {
+		return null;
+	}
 }
 
 export function createSheetsClient(
@@ -154,7 +193,18 @@ export function createSheetsClient(
 		if (cached && cached.expiresAt - TOKEN_SKEW_MS > now()) {
 			return { ok: true, value: cached.value };
 		}
+		// Reads go out in parallel, and without this each would mint its own
+		// token on a cold client.
+		if (minting) return minting;
+		minting = mintToken(deadline).finally(() => {
+			minting = null;
+		});
+		return minting;
+	}
 
+	let minting: Promise<SheetsResult<string>> | null = null;
+
+	async function mintToken(deadline?: number): Promise<SheetsResult<string>> {
 		const issuedAt = Math.floor(now() / 1000);
 		const claims = {
 			iss: config.clientEmail,
@@ -286,91 +336,132 @@ export function createSheetsClient(
 		return { ok: false, status: lastStatus, error: lastError };
 	}
 
-	async function appendOnce(input: {
-		spreadsheetId: string;
-		tabName: string;
-		rows: readonly (readonly string[])[];
-		columns: number;
-		deadline?: number;
-	}): Promise<SheetsResult<number>> {
-		const range = encodeURIComponent(rangeFor(input.tabName, input.columns));
-		const url =
-			`${SHEETS_BASE}/${encodeURIComponent(input.spreadsheetId)}/values/${range}:append` +
-			`?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
-		const res = await request(
-			url,
-			{ method: 'POST', body: JSON.stringify({ values: input.rows }) },
-			input.deadline,
-		);
-		if (!res.ok) return res;
-		return { ok: true, value: input.rows.length };
-	}
-
-	/** Add the tab and write its header row. Only ever called after an append
-	 *  said the range does not exist. */
-	async function createTab(input: {
-		spreadsheetId: string;
-		tabName: string;
-		header: readonly string[];
-		deadline?: number;
-	}): Promise<SheetsResult<true>> {
-		const added = await request(
-			`${SHEETS_BASE}/${encodeURIComponent(input.spreadsheetId)}:batchUpdate`,
-			{
-				method: 'POST',
-				body: JSON.stringify({
-					requests: [{ addSheet: { properties: { title: input.tabName } } }],
-				}),
-			},
-			input.deadline,
-		);
-		if (!added.ok) return added;
-
-		const range = encodeURIComponent(
-			`'${input.tabName.replace(/'/g, "''")}'!A1:${String.fromCharCode(
-				'A'.charCodeAt(0) + Math.max(0, input.header.length - 1),
-			)}1`,
-		);
-		const wrote = await request(
-			`${SHEETS_BASE}/${encodeURIComponent(input.spreadsheetId)}/values/${range}` +
-				`?valueInputOption=RAW`,
-			{ method: 'PUT', body: JSON.stringify({ values: [input.header] }) },
-			input.deadline,
-		);
-		if (!wrote.ok) return wrote;
-		return { ok: true, value: true };
-	}
+	const base = (spreadsheetId: string) => `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}`;
 
 	return {
-		async appendRows({ spreadsheetId, tabName, header, rows, deadline }) {
-			if (rows.length === 0) return { ok: true, value: { appended: 0, createdTab: false } };
+		async readTab({ spreadsheetId, tabName, deadline }) {
+			const [meta, values] = await Promise.all([
+				request(
+					`${base(spreadsheetId)}?fields=sheets.properties(sheetId,title)`,
+					{ method: 'GET' },
+					deadline,
+				),
+				request(
+					`${base(spreadsheetId)}/values/${encodeURIComponent(tabRange(tabName))}` +
+						`?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
+					{ method: 'GET' },
+					deadline,
+				),
+			]);
+			if (!meta.ok) return meta;
+			const parsed = parseJson<{
+				sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>;
+			}>(meta.value);
+			const tab = parsed?.sheets?.find((s) => s.properties?.title === tabName);
+			if (!tab || typeof tab.properties?.sheetId !== 'number') {
+				return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
+			}
+			if (!values.ok) return values;
+			const body = parseJson<{ values?: unknown[][] }>(values.value);
+			return {
+				ok: true,
+				value: {
+					sheetId: tab.properties.sheetId,
+					values: (body?.values ?? []).map((row) => row.map((cell) => String(cell ?? ''))),
+				},
+			};
+		},
 
-			const first = await appendOnce({
-				spreadsheetId,
-				tabName,
-				rows,
-				columns: header.length,
+		async findTaggedRows({ spreadsheetId, key, deadline }) {
+			const res = await request(
+				`${base(spreadsheetId)}/developerMetadata:search`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						dataFilters: [{ developerMetadataLookup: { metadataKey: key } }],
+					}),
+				},
 				deadline,
-			});
-			if (first.ok) return { ok: true, value: { appended: first.value, createdTab: false } };
+			);
+			if (!res.ok) return res;
+			const body = parseJson<{
+				matchedDeveloperMetadata?: Array<{
+					developerMetadata?: {
+						metadataValue?: string;
+						location?: { dimensionRange?: { sheetId?: number; startIndex?: number } };
+					};
+				}>;
+			}>(res.value);
+			const rows: TaggedRow[] = [];
+			for (const match of body?.matchedDeveloperMetadata ?? []) {
+				const meta = match.developerMetadata;
+				const range = meta?.location?.dimensionRange;
+				if (!meta?.metadataValue || typeof range?.sheetId !== 'number') continue;
+				rows.push({
+					value: meta.metadataValue,
+					sheetId: range.sheetId,
+					rowIndex: range.startIndex ?? 0,
+				});
+			}
+			return { ok: true, value: rows };
+		},
 
-			if (!isMissingTab(first.status, first.error)) return first;
-
-			// The tab is not there. Create it with its header, then append once
-			// more. The sync lock means no other run can be doing the same.
-			console.log(`[sheets] creating tab "${tabName}" in ${spreadsheetId}`);
-			const created = await createTab({ spreadsheetId, tabName, header, deadline });
-			if (!created.ok) return created;
-
-			const retry = await appendOnce({
-				spreadsheetId,
-				tabName,
-				rows,
-				columns: header.length,
+		async insertTaggedRow({ spreadsheetId, sheetId, rowIndex, key, value, deadline }) {
+			const range = { sheetId, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 };
+			const res = await request(
+				`${base(spreadsheetId)}:batchUpdate`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						requests: [
+							// Inherit from the row above: the campaign's dropdowns and
+							// formats come with it.
+							{ insertDimension: { range, inheritFromBefore: rowIndex > 0 } },
+							{
+								createDeveloperMetadata: {
+									developerMetadata: {
+										metadataKey: key,
+										metadataValue: value,
+										visibility: 'DOCUMENT',
+										location: { dimensionRange: range },
+									},
+								},
+							},
+						],
+					}),
+				},
 				deadline,
-			});
-			if (!retry.ok) return retry;
-			return { ok: true, value: { appended: retry.value, createdTab: true } };
+			);
+			if (!res.ok) return res;
+			return { ok: true, value: true };
+		},
+
+		async writeTaggedRow({ spreadsheetId, key, value, row, deadline }) {
+			const res = await request(
+				`${base(spreadsheetId)}/values:batchUpdateByDataFilter`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						valueInputOption: 'USER_ENTERED',
+						data: [
+							{
+								dataFilter: {
+									developerMetadataLookup: { metadataKey: key, metadataValue: value },
+								},
+								majorDimension: 'ROWS',
+								values: [row],
+							},
+						],
+					}),
+				},
+				deadline,
+			);
+			if (!res.ok) return res;
+			const body = parseJson<{ totalUpdatedRows?: number; responses?: unknown[] }>(res.value);
+			// Google answers a filter that matched nothing with 200 and nothing
+			// updated — which is also what an all-null row looks like, so that
+			// case is decided by the caller never sending one.
+			return { ok: true, value: { found: (body?.totalUpdatedRows ?? 0) > 0 } };
 		},
 
 		async describe({ spreadsheetId, tabName, deadline }) {

@@ -11,7 +11,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 
 import { normaliseSheetKey, orderSheetTargets, type SheetTarget } from '../van/sheet-routing.js';
-import { DEFAULT_SHEET_TAB_NAME } from '../van/sheet-log.js';
+import { DEFAULT_SHEET_TAB_NAME } from '../van/packet-tracker.js';
 
 import {
 	chapterChannelMap,
@@ -170,7 +170,7 @@ export interface Settings {
 	/** Whether the sync may ask VAN to re-cut map regions. Off unless an admin
 	 *  turns it on — see the note on app_config.vanRegionRefreshEnabled. */
 	vanRegionRefreshEnabled: boolean;
-	/** The tab the turf checkout log is appended to, in every one of the
+	/** The Packet Tracker tab, in every one of the
 	 *  campaign's spreadsheets. Resolved, so callers never re-decide what a
 	 *  NULL means. */
 	vanSheetTabName: string;
@@ -205,7 +205,7 @@ export type AppConfigPatch = Partial<{
 	vanTurfClaimTtlHours: number;
 	vanTurfMaxConcurrentClaims: number;
 	vanRegionRefreshEnabled: boolean;
-	/** Which tab the turf checkout log writes to. '' restores the default. */
+	/** Which tab is the campaign's Packet Tracker. '' restores the default. */
 	vanSheetTabName: string;
 	/** Theme overrides, serialised. One JSON column rather than ~60 colour
 	 *  columns — see the comment on app_config.themeTokens in schema.ts.

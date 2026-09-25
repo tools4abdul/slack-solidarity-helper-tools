@@ -54,7 +54,7 @@ export interface SettingsPageData {
 	vanChapterFolderMappings: VanChapterFolderEntry[];
 	vanBlockedUsers: VanBlockedUserEntry[];
 	/** Region prefix → campaign spreadsheet, longest prefix first. Empty until
-	 *  an admin fills it in, which is also what keeps the sheet log off. */
+	 *  an admin fills it in, which is also what keeps the Packet Tracker sync off. */
 	vanSheetTargets: SheetTarget[];
 	/** The address every campaign spreadsheet must be shared with; null when no
 	 *  Google credential is configured. */

@@ -316,6 +316,20 @@
       "when": 1790216393947,
       "tag": "0044_flippant_puppet_master",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1790304054588,
+      "tag": "0045_packet_tracker",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1790304069630,
+      "tag": "0046_drop_sheet_log_stamps",
+      "breakpoints": true
     }
   ]
 }

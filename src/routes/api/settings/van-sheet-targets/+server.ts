@@ -9,7 +9,7 @@ import {
 } from '$lib/server/settings.js';
 import { normaliseSheetKey } from '$lib/van/sheet-routing.js';
 import { sheetsClient } from '$lib/server/google-env.js';
-import { DEFAULT_SHEET_TAB_NAME } from '$lib/van/sheet-log.js';
+import { DEFAULT_SHEET_TAB_NAME } from '$lib/van/packet-tracker.js';
 
 // Which spreadsheet each region's turf checkouts are logged to.
 //

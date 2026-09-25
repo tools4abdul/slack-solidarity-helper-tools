@@ -24,8 +24,9 @@ export interface TurfSnapshot {
 	 *  generated its printed list — see `canClaim`. */
 	printedListNumber: string | null;
 	retiredAt: string | null;
-	/** Canvassers VAN reports for this turf, when an organizer distributed it
-	 *  outside this app. Non-null = already in someone's hands. */
+	/** Who has this turf when it was handed out outside this app — canvassers
+	 *  VAN reports, or the campaign's Packet Tracker. Non-null = already in
+	 *  someone's hands. */
 	vanDistributedTo: string | null;
 	/** Doors VAN still shows as uncontacted. */
 	doorCount: number;

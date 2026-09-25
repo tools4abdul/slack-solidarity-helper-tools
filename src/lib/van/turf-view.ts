@@ -44,6 +44,9 @@ export interface TurfRowInput {
 	centroidLng: number | null;
 	hullJson: string | null;
 	vanDistributedTo: string | null;
+	/** Who the campaign's Packet Tracker says has it. Optional so fixtures
+	 *  predating the tracker need not name it. */
+	sheetAssignedTo?: string | null;
 	retiredAt: string | null;
 	lastRefreshedAt: string | null;
 }
@@ -231,7 +234,9 @@ export function turfSnapshot(
 		mapRouteId: row.mapRouteId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
-		vanDistributedTo: row.vanDistributedTo,
+		// Handed out outside this app either way — through VAN, or written into
+		// the campaign's Packet Tracker by an organizer.
+		vanDistributedTo: row.vanDistributedTo ?? row.sheetAssignedTo ?? null,
 		doorCount: row.doorCount,
 		reportedPercent: walkReports?.get(row.mapRouteId)?.percent ?? null,
 	};
@@ -259,7 +264,7 @@ export function toTurfView(
 	const visible = visibleTurfState(
 		{
 			status: rawStatus,
-			heldBy: active?.slackUserName ?? row.vanDistributedTo,
+			heldBy: active?.slackUserName ?? row.vanDistributedTo ?? row.sheetAssignedTo ?? null,
 			expiresInHours: active ? hoursRemaining(active, now) : null,
 		},
 		viewer,

@@ -352,11 +352,11 @@ export const appConfig = sqliteTable(
 		// that to every mapped folder every night, including shared folders other
 		// organizers cut.
 		vanRegionRefreshEnabled: integer('van_region_refresh_enabled', { mode: 'boolean' }),
-		// The tab the checkout log is appended to, in every one of the campaign's
-		// spreadsheets. One name for all of them: the app creates the tab and its
-		// header row on first write, so there is nothing to keep in step by hand,
-		// and a per-sheet name would be a dozen more chances to typo. NULL or ''
-		// means DEFAULT_SHEET_TAB_NAME in $lib/van/sheet-log.ts.
+		// The campaign's Packet Tracker tab, in every one of its spreadsheets. One
+		// name for all of them — the campaign uses the same tab everywhere, and a
+		// per-sheet name would be a dozen more chances to typo. The app never
+		// creates it. NULL or '' means DEFAULT_SHEET_TAB_NAME in
+		// $lib/van/packet-tracker.ts.
 		//
 		// Which spreadsheet a row goes to is van_sheet_targets, not this.
 		vanSheetTabName: text('van_sheet_tab_name'),
@@ -896,6 +896,15 @@ export const vanTurfs = sqliteTable(
 		 *  are our own volunteer loading the list and are recorded on the claim
 		 *  instead (`van_turf_checkouts.loaded_in_minivan_at`). See catalog.ts. */
 		vanAssignedAt: text('van_assigned_at'),
+		/** Who the campaign's Packet Tracker says has this turf, from a row it
+		 *  entered itself — matched on list number, Status Unwalked, Out or
+		 *  Complete. Null = the tracker does not have it out.
+		 *
+		 *  NOT sticky, unlike `vanAssignedAt`: re-read from the tracker every sync
+		 *  and cleared when the row goes, because the campaign's rows change and
+		 *  this is their word, not VAN's. Blocks a claim the same way
+		 *  `vanDistributedTo` does. See van/packet-tracker-store.ts. */
+		sheetAssignedTo: text('sheet_assigned_to'),
 		/** When the turf channel was last told this turf was drifting, and which
 		 *  direction it was drifting in.
 		 *
@@ -1011,38 +1020,27 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  Slack outage retries on the next tick instead of silently swallowing
 		 *  the one message that stops turf being lost. */
 		expiryWarnedAt: text('expiry_warned_at'),
-		/** When the "Checked out" row for this claim reached the campaign's
-		 *  Google Sheet, and when its ending row did.
+		/** What this checkout's Packet Tracker row last said, as Google confirmed
+		 *  it — JSON, see van/packet-tracker-store.ts for the shape.
 		 *
-		 *  Same stamp-only-on-success shape as expiryWarnedAt above, and the same
-		 *  reason: a write Google did not confirm must be retried, not forgotten.
-		 *
-		 *  These two columns are the whole of the sheet log's bookkeeping. The
-		 *  events are DERIVED from this table rather than enqueued by the code
-		 *  paths that end a claim — there are six of those today (endClaim, the
+		 *  The whole of the tracker's bookkeeping. The row the checkout SHOULD
+		 *  have is derived from this table on every run and compared with this;
+		 *  a difference is a write owed. Derived rather than enqueued by the code
+		 *  paths that end a claim — there are six of those (endClaim, the
 		 *  lapsed-claim clear inside claimTurf, sweepExpiredClaims, blocklist.ts,
-		 *  the retirement batch in sync.ts, and refresh-reconcile) and hooking
-		 *  each one is how the seventh gets missed. A path added later is logged
-		 *  without being told this feature exists.
+		 *  the retirement batch in sync.ts, refresh-reconcile) and hooking each
+		 *  one is how the seventh gets missed.
 		 *
-		 *  NULL means "not sent yet". Rows predating the feature were stamped by
-		 *  the migration, so switching it on does not replay the campaign's
-		 *  history into their spreadsheets. */
-		sheetClaimSentAt: text('sheet_claim_sent_at'),
-		sheetEndSentAt: text('sheet_end_sent_at'),
+		 *  NULL means nothing has been written yet. Released checkouts from before
+		 *  the Packet Tracker existed were stamped by the migration as "no row",
+		 *  so switching it on backfills only live and walked turf. */
+		sheetState: text('sheet_state'),
 	},
 	(table) => [
 		uniqueIndex('van_turf_checkouts_one_active')
 			.on(table.mapRouteId)
 			.where(sql`${table.releasedAt} IS NULL AND ${table.completedAt} IS NULL`),
 		index('van_turf_checkouts_holder').on(table.slackUserId),
-		// The drain's candidate read. Partial, because the rows it wants are the
-		// few that have not been sent — once a canvass season's worth of
-		// checkouts are stamped, a full index would be almost entirely dead
-		// weight pointing at rows this query never asks for.
-		index('van_turf_checkouts_sheet_pending')
-			.on(table.claimedAt)
-			.where(sql`${table.sheetClaimSentAt} IS NULL OR ${table.sheetEndSentAt} IS NULL`),
 	],
 );
 

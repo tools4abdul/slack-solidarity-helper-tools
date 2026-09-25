@@ -18,15 +18,7 @@ const mockReconcile = vi.hoisted(() => vi.fn());
 const mockRefreshSweep = vi.hoisted(() => vi.fn());
 const mockDoorDeltas = vi.hoisted(() => vi.fn());
 const mockDoorsHealth = vi.hoisted(() => vi.fn());
-const mockFlushSheetLog = vi.hoisted(() => vi.fn());
-const mockSheetsClient = vi.hoisted(() => vi.fn());
-// Rules configured in most tests so the drain's own wiring is exercised; the
-// unconfigured case has its own test below.
-const mockSheetTargets = vi.hoisted(() => ({
-	targets: [
-		{ prefix: 'R10C', prefixKey: 'r10c', label: 'R10C_Downriver CR', spreadsheetId: 'sheet-1' },
-	],
-}));
+const mockRunPacketTracker = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'cron-secret' }));
 // On in most tests so the sweep's own behaviour is exercised; the default-off
 // case has its own test below.
@@ -43,12 +35,11 @@ vi.mock('$lib/server/settings.js', () => ({
 		slackTurfChannelId: 'C_TURF',
 		vanTurfClaimTtlHours: 48,
 		vanRegionRefreshEnabled: mockSettings.vanRegionRefreshEnabled,
-		vanSheetTabName: 'Turf Checkouts',
+		vanSheetTabName: 'Packet Tracker',
 	}),
 	loadVanChapterFolders: async () => [
 		{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [2731] },
 	],
-	loadVanSheetTargets: async () => mockSheetTargets.targets,
 }));
 vi.mock('$lib/server/sync-lock.js', () => ({
 	acquireSyncLock: mockAcquire,
@@ -75,8 +66,9 @@ vi.mock('$lib/server/van/refresh.js', () => ({
 vi.mock('$lib/server/van/reconcile-store.js', () => ({ reconcileClaims: mockReconcile }));
 vi.mock('$lib/server/van/door-delta-store.js', () => ({ stampDoorDeltas: mockDoorDeltas }));
 vi.mock('$lib/server/van/doors-store.js', () => ({ doorsHealthWarning: mockDoorsHealth }));
-vi.mock('$lib/server/van/sheet-store.js', () => ({ flushSheetLog: mockFlushSheetLog }));
-vi.mock('$lib/server/google-env.js', () => ({ sheetsClient: mockSheetsClient }));
+vi.mock('$lib/server/van/packet-tracker-live.js', () => ({
+	runPacketTracker: mockRunPacketTracker,
+}));
 vi.mock('$lib/server/env.js', () => ({
 	get INTERNAL_CRON_SECRET() {
 		return mockEnv.INTERNAL_CRON_SECRET;
@@ -136,10 +128,12 @@ const geometryResult = {
 
 const driftResult = { announced: 0, cleared: 0, failed: false, skipped: 'nothing-new' };
 const sheetLogResult = {
-	written: 0,
+	appended: 0,
+	updated: 0,
 	failed: 0,
 	unrouted: 0,
 	unroutedRegions: [] as string[],
+	assignmentsChanged: 0,
 	budgetLapsed: false,
 	warnings: [] as string[],
 };
@@ -167,11 +161,7 @@ describe('POST /api/internal/van-sync', () => {
 		mockWarn.mockResolvedValue({ sent: 0, failed: 0 });
 		mockDrift.mockResolvedValue(driftResult);
 		mockListExpiry.mockResolvedValue({ announced: 0, failed: false, skipped: 'nothing-new' });
-		mockSheetsClient.mockReturnValue({ ok: true, client: {} });
-		mockSheetTargets.targets = [
-			{ prefix: 'R10C', prefixKey: 'r10c', label: 'R10C_Downriver CR', spreadsheetId: 'sheet-1' },
-		];
-		mockFlushSheetLog.mockResolvedValue(sheetLogResult);
+		mockRunPacketTracker.mockResolvedValue(sheetLogResult);
 	});
 
 	it('returns 401 for a wrong key', async () => {
@@ -512,68 +502,65 @@ describe('POST /api/internal/van-sync', () => {
 		expect(mockRelease).toHaveBeenCalledWith({}, 'van-catalog-sync', 'lock-token');
 	});
 
-	describe('the checkout sheet log', () => {
-		it('drains with the resolved tab name and the turf channel', async () => {
+	describe('the Packet Tracker', () => {
+		it('runs with the turf channel for its alerts', async () => {
 			await POST(event());
 
-			expect(mockFlushSheetLog).toHaveBeenCalledOnce();
-			const [, options] = mockFlushSheetLog.mock.calls[0]!;
-			expect(options.tabName).toBe('Turf Checkouts');
+			expect(mockRunPacketTracker).toHaveBeenCalledOnce();
+			const [, options] = mockRunPacketTracker.mock.calls[0]!;
 			expect(options.channelId).toBe('C_TURF');
-			expect(options.targets).toEqual([
-				{ prefix: 'R10C', prefixKey: 'r10c', label: 'R10C_Downriver CR', spreadsheetId: 'sheet-1' },
-			]);
+			expect(options.timeBudgetMs).toBeGreaterThan(0);
+		});
+
+		// After the catalog, which is what notices a list loaded in MiniVAN.
+		it('runs after the catalog and the reconciliation', async () => {
+			await POST(event());
+
+			const tracker = mockRunPacketTracker.mock.invocationCallOrder[0]!;
+			expect(mockRunCatalogSync.mock.invocationCallOrder[0]).toBeLessThan(tracker);
+			expect(mockReconcile.mock.invocationCallOrder[0]).toBeLessThan(tracker);
 		});
 
 		it('reports what it wrote', async () => {
-			mockFlushSheetLog.mockResolvedValue({ ...sheetLogResult, written: 4 });
+			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, appended: 4 });
 			const res = await POST(event());
-			expect((await res.json()).sheetLog.written).toBe(4);
+			expect((await res.json()).sheetLog.appended).toBe(4);
 		});
 
 		// Most deployments of this tool have no campaign spreadsheet. An
 		// integration nobody set up must be silent, not reassuring.
-		it('does not run, and says disabled, with no Google credential', async () => {
-			mockSheetsClient.mockReturnValue({ ok: false, error: 'not set' });
+		it('says disabled when it did not run', async () => {
+			mockRunPacketTracker.mockResolvedValue(null);
 			const res = await POST(event());
 
-			expect(mockFlushSheetLog).not.toHaveBeenCalled();
-			expect((await res.json()).sheetLog).toEqual({ disabled: true });
-		});
-
-		it('does not run with a credential but no routing rules', async () => {
-			mockSheetTargets.targets = [];
-			const res = await POST(event());
-
-			expect(mockFlushSheetLog).not.toHaveBeenCalled();
 			expect((await res.json()).sheetLog).toEqual({ disabled: true });
 		});
 
 		it('posts its advisory warnings with the sync notices', async () => {
-			mockFlushSheetLog.mockResolvedValue({
+			mockRunPacketTracker.mockResolvedValue({
 				...sheetLogResult,
-				warnings: ['[sheets] created the "Turf Checkouts" tab in R10C_Downriver CR'],
+				warnings: ['[sheets] the Packet Tracker row for Turf 01 (Dana) was deleted in the sheet'],
 			});
 			await POST(event());
 
 			expect(mockPostMessage).toHaveBeenCalledOnce();
-			expect(mockPostMessage.mock.calls[0]![0].text).toContain('created the "Turf Checkouts" tab');
+			expect(mockPostMessage.mock.calls[0]![0].text).toContain('was deleted in the sheet');
 		});
 
-		// flushSheetLog posts its own operator alert through postAlert, which is
+		// The tracker posts its own operator alert through postAlert, which is
 		// what keeps it to one message per ongoing problem. Repeating it here
 		// would put every failure in the channel twice — the same care the
 		// geometry dead letters get.
 		it('leaves the failure alert to the store rather than echoing it', async () => {
-			mockFlushSheetLog.mockResolvedValue({ ...sheetLogResult, failed: 3, warnings: [] });
+			mockRunPacketTracker.mockResolvedValue({ ...sheetLogResult, failed: 3, warnings: [] });
 			await POST(event());
 
 			expect(mockPostMessage).not.toHaveBeenCalled();
 		});
 
 		// A copy of the ledger must never fail a sync whose own rows are written.
-		it('still returns the catalog result when the drain throws', async () => {
-			mockFlushSheetLog.mockRejectedValue(new Error('libsql is gone'));
+		it('still returns the catalog result when the tracker throws', async () => {
+			mockRunPacketTracker.mockRejectedValue(new Error('libsql is gone'));
 			const res = await POST(event());
 
 			expect(res.status).toBe(200);

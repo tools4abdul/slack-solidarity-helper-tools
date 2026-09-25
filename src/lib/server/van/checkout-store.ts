@@ -130,6 +130,14 @@ export async function claimTurf(
 		slackUserName: string;
 		now: Date;
 		options?: ClaimOptions;
+		/** A live look at the campaign's Packet Tracker: who it says has this
+		 *  turf, null for nobody, undefined for "could not tell". See
+		 *  packet-tracker-live.ts. Omitted, the last sync's record stands. */
+		sheetCheck?: (turf: {
+			mapRouteId: number;
+			regionName: string;
+			printedListNumber: string | null;
+		}) => Promise<string | null | undefined>;
 	},
 ): Promise<ClaimResult> {
 	const { mapRouteId, slackUserId, slackUserName, now } = input;
@@ -141,7 +149,7 @@ export async function claimTurf(
 		mapRouteId: row.mapRouteId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
-		vanDistributedTo: row.vanDistributedTo,
+		vanDistributedTo: row.vanDistributedTo ?? row.sheetAssignedTo,
 		doorCount: row.doorCount,
 		reportedPercent: (await latestWalkReports(db, [mapRouteId])).get(mapRouteId)?.percent ?? null,
 	};
@@ -150,6 +158,28 @@ export async function claimTurf(
 	const claims = await relevantClaims(db, mapRouteId, slackUserId);
 	const decision = canClaim(snapshot, claims, slackUserId, now, options);
 	if (!decision.ok) return { ok: false, status: 409, message: decision.message };
+
+	// The tracker double-check, only once everything else says yes: it is a
+	// round trip to Google, and a claim refused for another reason should not
+	// wait on one. The sync reads the tracker every half hour; an organizer
+	// may have written this turf down since.
+	if (input.sheetCheck) {
+		const assignedTo = await input.sheetCheck({
+			mapRouteId,
+			regionName: row.regionName,
+			printedListNumber: row.printedListNumber,
+		});
+		if (assignedTo) {
+			const refused = canClaim(
+				{ ...snapshot, vanDistributedTo: assignedTo },
+				claims,
+				slackUserId,
+				now,
+				options,
+			);
+			if (!refused.ok) return { ok: false, status: 409, message: refused.message };
+		}
+	}
 
 	// Same default canClaim destructures, so the SQL below caps at the number
 	// the volunteer was just told about rather than a second opinion.

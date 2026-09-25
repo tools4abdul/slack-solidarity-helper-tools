@@ -119,7 +119,7 @@ function booleanField(label: string): FieldValidator<boolean> {
  * A Google Sheets tab name. `''` restores the built-in default.
  *
  * Tighter than a plain bounded text field because this string is interpolated
- * into an A1 range (`'Turf Checkouts'!A:G`). Apostrophes are what end the
+ * into an A1 range (`'Packet Tracker'`). Apostrophes are what end the
  * quoting early, and while sheets.ts doubles them on the way out, a name
  * carrying one is far more likely to be a mis-paste than a deliberate choice.
  * Newlines and brackets are rejected for the same reason: Sheets will not

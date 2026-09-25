@@ -31,7 +31,7 @@
 // into the right one, so there is no failure to notice later. sheet-store.ts
 // holds those events unsent and names them in the operator alert instead.
 //
-// Pure — no DB, no network, no clock. sheet-store.ts does the rows.
+// Pure — no DB, no network, no clock. packet-tracker-store.ts does the rows.
 
 /** One admin-authored rule. Mirrors a `van_sheet_targets` row, minus the audit
  *  columns. */

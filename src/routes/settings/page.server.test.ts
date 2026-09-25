@@ -75,7 +75,7 @@ const settingsFixture = {
 	vanTurfClaimTtlHours: 48,
 	vanTurfMaxConcurrentClaims: 2,
 	vanRegionRefreshEnabled: false,
-	vanSheetTabName: 'Turf Checkouts',
+	vanSheetTabName: 'Packet Tracker',
 };
 
 function makeEvent(overrides: {

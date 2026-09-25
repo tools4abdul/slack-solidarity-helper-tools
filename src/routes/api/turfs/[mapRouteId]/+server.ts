@@ -5,6 +5,7 @@ import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
+import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
 import { parseReportedPercent } from '$lib/van/checkout.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
@@ -86,8 +87,10 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				ttlHours: settings.vanTurfClaimTtlHours,
 				maxConcurrentClaims: settings.vanTurfMaxConcurrentClaims,
 			},
+			sheetCheck: packetTrackerCheck(db),
 		});
 		if (!result.ok) return json({ error: result.message }, { status: result.status });
+		nudgePacketTracker(db, mapRouteId);
 		return json({
 			expiresAt: result.expiresAt,
 			// Issued only on a successful claim. This response is the only path
@@ -104,6 +107,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		reportedPercent: action === 'complete' ? parseReportedPercent(percent) : null,
 	});
 	if (!result.ok) return json({ error: result.message }, { status: result.status });
+	nudgePacketTracker(db, mapRouteId);
 	// Story 5.6 hangs off completion, and finishes elsewhere: `endClaim` records
 	// a refresh request for this turf's region, the sweep sends it, and once
 	// VAN's re-cut lands the door-delta check stamps `confirmedDoorDelta` and
