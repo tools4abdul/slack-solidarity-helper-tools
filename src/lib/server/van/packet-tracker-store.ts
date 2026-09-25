@@ -41,6 +41,7 @@ import {
 	desiredCells,
 	findLayout,
 	isUnfilled,
+	priorCells,
 	normaliseListNumber,
 	packetRows,
 	sheetDoors,
@@ -76,17 +77,23 @@ const RATE_LIMITED = 429;
  * What `sheet_state` holds.
  *
  * `cells`: what we have filled in on the packet, as far as we know, or null
- * when nothing. `told`: the one-time notice already sent about this checkout,
- * so it is not repeated every run. `gone`: the packet was taken over or cleared
- * by someone else, so we leave this checkout alone for good rather than fight
- * them for it.
+ * when nothing. `prior`: what the packet had in those columns before we filled
+ * it in — the campaign's Unwalked default, usually — so taking our entry back
+ * restores it. `told`: the one-time notice already sent about this checkout, so
+ * it is not repeated every run; the packet is still re-checked each run.
+ * `gone`: our entry was taken over or removed by someone else, so we leave this
+ * checkout alone for good rather than fight them for it.
  */
 export interface SheetState {
 	spreadsheetId: string | null;
 	cells: PacketCells | null;
-	told?: 'not-listed' | 'duplicate';
+	prior?: PacketCells;
+	told?: Notice;
 	gone?: true;
 }
+
+type Notice = 'not-listed' | 'duplicate' | 'taken';
+const NOTICES: ReadonlySet<string> = new Set<Notice>(['not-listed', 'duplicate', 'taken']);
 
 const EMPTY_STATE: SheetState = { spreadsheetId: null, cells: null };
 
@@ -97,7 +104,8 @@ export function parseSheetState(raw: string | null): SheetState | null {
 		return {
 			spreadsheetId: typeof parsed.spreadsheetId === 'string' ? parsed.spreadsheetId : null,
 			cells: parsed.cells && typeof parsed.cells === 'object' ? parsed.cells : null,
-			...(parsed.told === 'not-listed' || parsed.told === 'duplicate' ? { told: parsed.told } : {}),
+			...(parsed.prior && typeof parsed.prior === 'object' ? { prior: parsed.prior } : {}),
+			...(parsed.told && NOTICES.has(parsed.told) ? { told: parsed.told } : {}),
 			...(parsed.gone ? { gone: true as const } : {}),
 		};
 	} catch {
@@ -426,11 +434,14 @@ async function syncCheckout(
 			return 'unchanged';
 		}
 		if (!isUnfilled(current, tab.layout)) {
-			// Somebody has an entry on this packet already. Theirs.
-			warnings.push(
-				`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
-			);
-			await save({ ...base, gone: true });
+			// Somebody has this packet. Theirs — but it is checked again every
+			// run, and filled in if their entry is cleared while ours is live.
+			if (state.told !== 'taken') {
+				warnings.push(
+					`${LOG} ${label} was claimed, but its packet already has someone else's entry in the Packet Tracker, so that entry was left as it is`,
+				);
+			}
+			await save({ ...base, told: 'taken' });
 			return 'unchanged';
 		}
 		writes = wanted;
@@ -444,7 +455,7 @@ async function syncCheckout(
 			return 'unchanged';
 		}
 		if (wanted === null) {
-			writes = clearedCells(state.cells);
+			writes = clearedCells(state.cells, state.prior);
 			next = null;
 		} else {
 			writes = changedCells(state.cells, wanted);
@@ -484,7 +495,13 @@ async function syncCheckout(
 		deadline,
 	});
 	if (!res.ok) return { error: res.error, status: res.status };
-	await save({ spreadsheetId: tab.spreadsheetId, cells: next });
+	// A first fill records what it covered, from the row as just re-read.
+	const prior = state.cells === null ? priorCells(fresh.value, tab.layout) : state.prior;
+	await save({
+		spreadsheetId: tab.spreadsheetId,
+		cells: next,
+		...(next && prior && Object.keys(prior).length > 0 ? { prior } : {}),
+	});
 	return state.cells === null ? 'filled' : 'updated';
 }
 

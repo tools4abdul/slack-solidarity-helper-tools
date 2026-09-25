@@ -7,6 +7,7 @@ import {
 	desiredCells,
 	findLayout,
 	isUnfilled,
+	priorCells,
 	packetRows,
 	sheetDate,
 	sheetDoors,
@@ -203,6 +204,14 @@ describe('isUnfilled and stillOurs', () => {
 		expect(isUnfilled(packet('1'), LAYOUT)).toBe(true);
 	});
 
+	// The campaign's default for a packet nobody has taken, seen live
+	// 2026-09-25: Status Unwalked with no canvasser.
+	it('sees an unnamed Unwalked packet as free, and a named one as taken', () => {
+		expect(isUnfilled(packet('1', { Status: 'Unwalked' }), LAYOUT)).toBe(true);
+		expect(isUnfilled(packet('1', { Status: ' unwalked ' }), LAYOUT)).toBe(true);
+		expect(isUnfilled(packet('1', { Status: 'Unwalked', Canvasser: 'Sam' }), LAYOUT)).toBe(false);
+	});
+
 	it('sees any canvasser cell filled in as taken', () => {
 		expect(isUnfilled(packet('1', { Status: 'Incomplete' }), LAYOUT)).toBe(false);
 		expect(isUnfilled(packet('1', { 'Walk Mode': 'Paper' }), LAYOUT)).toBe(false);
@@ -233,6 +242,23 @@ describe('changedCells and clearedCells', () => {
 	it('never rewrites the columns filled in at claim time', () => {
 		const before = { ...desiredCells(checkout())!, Canvasser: 'Dana R.' };
 		expect(changedCells(before, desiredCells(checkout())!)).toEqual({});
+	});
+
+	it('puts back what the packet had before, not a blank', () => {
+		const written = desiredCells(checkout())!;
+		expect(clearedCells(written, { Status: 'Unwalked' })).toEqual({
+			Canvasser: '',
+			'Shift Time': '',
+			'Date Sent Out': '',
+			'Walk Mode': '',
+		});
+		const out = { ...written, Status: 'Out' };
+		expect(clearedCells(out, { Status: 'Unwalked' }).Status).toBe('Unwalked');
+	});
+
+	it('records the packet’s own values in our columns', () => {
+		expect(priorCells(packet('1', { Status: 'Unwalked' }), LAYOUT)).toEqual({ Status: 'Unwalked' });
+		expect(priorCells(packet('1'), LAYOUT)).toEqual({});
 	});
 
 	it('clears exactly what we filled in', () => {
@@ -298,5 +324,14 @@ describe('campaignAssignments', () => {
 	it('names an unnamed holder as the tracker', () => {
 		const values = sheet(packet('1-1', { Status: 'Out' }));
 		expect(campaignAssignments(values, LAYOUT, new Map()).get('1-1')).toBe('Packet Tracker');
+	});
+
+	// Otherwise every packet nobody has taken would be refused.
+	it('does not count the campaign’s Unwalked default as an assignment', () => {
+		const values = sheet(
+			packet('1-1', { Status: 'Unwalked' }),
+			packet('2-2', { Status: 'Unwalked', Canvasser: 'Sam' }),
+		);
+		expect([...campaignAssignments(values, LAYOUT, new Map()).keys()]).toEqual(['2-2']);
 	});
 });

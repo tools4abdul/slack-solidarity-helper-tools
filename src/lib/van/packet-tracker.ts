@@ -73,8 +73,12 @@ const WRITE_ONCE: ReadonlySet<FillColumn> = new Set([
 ]);
 
 /** A Status on a campaign entry that means the packet is out. Incomplete is
- *  not: that turf is back in play. */
+ *  not: that turf is back in play. Unwalked only with a canvasser named — see
+ *  isUnfilled. */
 const BLOCKING_STATUSES: ReadonlySet<string> = new Set(['unwalked', 'out', 'complete']);
+
+/** What the campaign's Status says about a packet nobody has taken. */
+const UNTAKEN_STATUS = 'unwalked';
 
 export type PacketStatus = 'Unwalked' | 'Out' | 'Complete' | 'Incomplete';
 
@@ -249,9 +253,31 @@ function cell(row: readonly string[] | undefined, layout: ColumnLayout, column: 
 	return (row?.[layout.columns[column]] ?? '').trim();
 }
 
-/** Whether nobody has filled in this packet's canvasser columns. */
+/**
+ * Whether nobody has this packet: every canvasser column empty, except a
+ * Status of `Unwalked`.
+ *
+ * The campaign marks packets nobody has taken yet as Unwalked, with no
+ * canvasser — verified 2026-09-25, when that default made the app treat a
+ * free packet as someone else's. A named Unwalked packet is taken.
+ */
 export function isUnfilled(row: readonly string[] | undefined, layout: ColumnLayout): boolean {
-	return FILL_COLUMNS.every((column) => cell(row, layout, column) === '');
+	return FILL_COLUMNS.every((column) => {
+		const value = cell(row, layout, column);
+		return value === '' || (column === 'Status' && value.toLowerCase() === UNTAKEN_STATUS);
+	});
+}
+
+/** The row's own values in our columns before we fill it in — the campaign's
+ *  Unwalked default, typically — so that taking an entry back puts the packet
+ *  back exactly as it was. */
+export function priorCells(row: readonly string[] | undefined, layout: ColumnLayout): PacketCells {
+	const prior: PacketCells = {};
+	for (const column of FILL_COLUMNS) {
+		const value = cell(row, layout, column);
+		if (value) prior[column] = value;
+	}
+	return prior;
 }
 
 /**
@@ -280,10 +306,15 @@ export function changedCells(last: PacketCells, desired: PacketCells): PacketCel
 	return changes;
 }
 
-/** Blanks for every cell we filled in — how an entry is taken back. */
-export function clearedCells(last: PacketCells): PacketCells {
+/** How an entry is taken back: every cell we filled in returns to what the
+ *  packet had before (`prior`), or to blank. */
+export function clearedCells(last: PacketCells, prior: PacketCells = {}): PacketCells {
 	const cleared: PacketCells = {};
-	for (const column of FILL_COLUMNS) if (last[column]) cleared[column] = '';
+	for (const column of FILL_COLUMNS) {
+		if (last[column] !== undefined && last[column] !== (prior[column] ?? '')) {
+			cleared[column] = prior[column] ?? '';
+		}
+	}
 	return cleared;
 }
 
@@ -314,8 +345,9 @@ export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[num
  *
  * `ours` maps a list number to the canvasser name we filled in; a row whose
  * Canvasser matches is our own entry, which the ledger already knows about.
- * A row with no canvasser still blocks, labelled as the tracker, because an
- * unnamed assignment is still an assignment.
+ * An unnamed Out or Complete still blocks, labelled as the tracker, because an
+ * unnamed assignment is still an assignment; an unnamed Unwalked is the
+ * campaign's default for a free packet and does not.
  */
 export function campaignAssignments(
 	values: readonly (readonly string[])[],
@@ -327,8 +359,11 @@ export function campaignAssignments(
 		const row = values[i];
 		const listNumber = normaliseListNumber(cell(row, layout, 'List Number'));
 		if (!listNumber) continue;
-		if (!BLOCKING_STATUSES.has(cell(row, layout, 'Status').toLowerCase())) continue;
+		const status = cell(row, layout, 'Status').toLowerCase();
+		if (!BLOCKING_STATUSES.has(status)) continue;
 		const canvasser = cell(row, layout, 'Canvasser');
+		// The campaign's default for a packet nobody has taken. See isUnfilled.
+		if (!canvasser && status === UNTAKEN_STATUS) continue;
 		const mine = ours.get(listNumber);
 		if (mine !== undefined && mine.trim() === canvasser) continue;
 		assigned.set(listNumber, canvasser || 'Packet Tracker');
