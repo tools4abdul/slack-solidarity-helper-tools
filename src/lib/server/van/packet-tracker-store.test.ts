@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
-import { liveAssignment, parseSheetState, syncPacketTracker } from './packet-tracker-store.js';
+import {
+	_resetLiveReadsForTests,
+	liveAssignment,
+	parseSheetState,
+	syncPacketTracker,
+} from './packet-tracker-store.js';
 import { normaliseSheetKey, type SheetTarget } from '../../van/sheet-routing.js';
 import { PACKET_COLUMNS, ROW_TAG_KEY } from '../../van/packet-tracker.js';
 import type { SheetsClient } from '../google/sheets.js';
@@ -53,28 +58,20 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 	for (const [id, values] of Object.entries(initial)) {
 		sheets.set(id, { values: values.map((r) => [...r]), tags: new Map() });
 	}
-	const failing = new Map<string, string>();
+	const failing = new Map<string, { status: number; error: string }>();
 	const calls: string[] = [];
 
 	const api: SheetsClient = {
-		async readTab({ spreadsheetId }) {
+		async readTracker({ spreadsheetId }) {
 			calls.push(`read:${spreadsheetId}`);
 			const fail = failing.get(spreadsheetId);
-			if (fail) return { ok: false, status: 403, error: fail };
+			if (fail) return { ok: false, status: fail.status, error: fail.error };
 			const sheet = sheets.get(spreadsheetId);
 			if (!sheet) return { ok: false, status: 404, error: 'no tab' };
 			// Like the API: trailing blank rows are not returned.
 			const values = sheet.values.map((r) => [...r]);
 			while (values.length && values[values.length - 1]!.every((c) => c === '')) values.pop();
-			return { ok: true, value: { sheetId: 7, values } };
-		},
-		async findTaggedRows({ spreadsheetId }) {
-			const sheet = sheets.get(spreadsheetId);
-			if (!sheet) return { ok: true, value: [] };
-			return {
-				ok: true,
-				value: [...sheet.tags].map(([value, rowIndex]) => ({ value, sheetId: 7, rowIndex })),
-			};
+			return { ok: true, value: { sheetId: 7, values, tags: new Map(sheet.tags) } };
 		},
 		async insertTaggedRow({ spreadsheetId, rowIndex, value }) {
 			calls.push(`insert:${spreadsheetId}:${rowIndex}`);
@@ -204,6 +201,8 @@ beforeEach(async () => {
 	vi.mocked(postAlert).mockClear();
 	vi.mocked(postAlert).mockResolvedValue(true);
 	vi.spyOn(console, 'log').mockImplementation(() => {});
+	vi.spyOn(console, 'warn').mockImplementation(() => {});
+	_resetLiveReadsForTests();
 });
 
 afterEach(() => {
@@ -392,7 +391,10 @@ describe('the campaign’s own assignments', () => {
 		await turf();
 		const fake = fakeSheets({ 'sheet-downriver': [HEADER, manualRow('35536745-88712', 'Out')] });
 		await run(fake.api);
-		fake.failing.set('sheet-downriver', 'The caller does not have permission');
+		fake.failing.set('sheet-downriver', {
+			status: 403,
+			error: 'The caller does not have permission',
+		});
 
 		await run(fake.api);
 
@@ -423,7 +425,7 @@ describe('the campaign’s own assignments', () => {
 	it('says "could not tell" rather than "free" when the live read fails', async () => {
 		await turf();
 		const fake = fakeSheets({ 'sheet-downriver': [HEADER] });
-		fake.failing.set('sheet-downriver', 'backend error');
+		fake.failing.set('sheet-downriver', { status: 500, error: 'backend error' });
 
 		const who = await liveAssignment(db, {
 			client: fake.api,
@@ -437,6 +439,90 @@ describe('the campaign’s own assignments', () => {
 		});
 
 		expect(who).toBeUndefined();
+	});
+});
+
+describe('Google’s 60-a-minute quota', () => {
+	const WESTERN = target('R10D', 'R10D_Western CR', 'sheet-western');
+
+	it('reads each spreadsheet once per run', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': [HEADER] });
+
+		await run(fake.api);
+
+		expect(fake.calls.filter((c) => c.startsWith('read'))).toEqual(['read:sheet-downriver']);
+	});
+
+	it('waits out a 429 quietly: no alert, nothing marked failed, retried next run', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': [HEADER] });
+		fake.failing.set('sheet-downriver', { status: 429, error: 'Quota exceeded' });
+
+		const first = await run(fake.api);
+
+		expect(first).toMatchObject({ rateLimited: 1, failed: 0 });
+		expect(postAlert).not.toHaveBeenCalled();
+
+		fake.failing.delete('sheet-downriver');
+		const second = await run(fake.api);
+		expect(second.appended).toBe(1);
+	});
+
+	it('stops reading once the quota is spent', async () => {
+		await turf({ mapRouteId: 100 });
+		await turf({ mapRouteId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
+		await checkout({ id: 1, mapRouteId: 100 });
+		await checkout({ id: 2, mapRouteId: 101 });
+		const fake = fakeSheets({ 'sheet-downriver': [HEADER], 'sheet-western': [HEADER] });
+		fake.api.writeTaggedRow = async () => ({ ok: false, status: 429, error: 'Quota exceeded' });
+
+		const result = await run(fake.api, { targets: [DOWNRIVER, WESTERN] });
+
+		expect(result.rateLimited).toBe(2);
+		expect(fake.calls.filter((c) => c.startsWith('insert'))).toHaveLength(1);
+	});
+
+	// If the read-only sheet went first and hit the quota, the rate limit
+	// would stop the run before the row was written. The order is shuffled, so
+	// this is run several times.
+	it('writes the spreadsheets with work before the ones only read for assignments', async () => {
+		await turf({ mapRouteId: 100 });
+		await turf({ mapRouteId: 101, regionName: 'R10D_Wayne_X', name: 'Turf 02', list: '2-2' });
+		await checkout({ id: 2, mapRouteId: 101 });
+
+		for (let i = 0; i < 8; i++) {
+			await update(2, 'sheet_state = NULL');
+			const fake = fakeSheets({ 'sheet-downriver': [HEADER], 'sheet-western': [HEADER] });
+			fake.failing.set('sheet-downriver', { status: 429, error: 'Quota exceeded' });
+
+			const result = await run(fake.api, { targets: [DOWNRIVER, WESTERN] });
+
+			expect(result.appended).toBe(1);
+		}
+	});
+
+	it('lets a claim reuse a read from the last minute', async () => {
+		await turf();
+		const fake = fakeSheets({ 'sheet-downriver': [HEADER, manualRow('35536745-88712', 'Out')] });
+		const ask = () =>
+			liveAssignment(db, {
+				client: fake.api,
+				targets: [DOWNRIVER],
+				turf: {
+					mapRouteId: 100,
+					regionName: 'R10C_Wayne_TaylorCity004_9.11',
+					printedListNumber: '35536745-88712',
+				},
+				timeBudgetMs: 6_000,
+			});
+
+		expect(await ask()).toBe('Organizer Olu');
+		expect(await ask()).toBe('Organizer Olu');
+
+		expect(fake.calls.filter((c) => c.startsWith('read'))).toHaveLength(1);
 	});
 });
 
@@ -490,7 +576,10 @@ describe('backfill and bookkeeping', () => {
 		await turf();
 		await checkout();
 		const fake = fakeSheets({ 'sheet-downriver': [HEADER] });
-		fake.failing.set('sheet-downriver', 'The caller does not have permission');
+		fake.failing.set('sheet-downriver', {
+			status: 403,
+			error: 'The caller does not have permission',
+		});
 
 		const first = await run(fake.api);
 		await run(fake.api);

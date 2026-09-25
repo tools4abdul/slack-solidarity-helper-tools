@@ -28,9 +28,9 @@
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
-import { createSheetsClient } from '../src/lib/server/google/sheets.js';
+import { createSheetsClient, type SheetsResult } from '../src/lib/server/google/sheets.js';
 import { vanSheetTargets, appConfig } from '../src/lib/server/schema.js';
-import { DEFAULT_SHEET_TAB_NAME, findLayout } from '../src/lib/van/packet-tracker.js';
+import { DEFAULT_SHEET_TAB_NAME, ROW_TAG_KEY, findLayout } from '../src/lib/van/packet-tracker.js';
 
 const raw = process.env['GOOGLE_SHEETS_SERVICE_ACCOUNT'] ?? '';
 if (!raw) {
@@ -58,6 +58,38 @@ if (!clientEmail || !privateKey) {
 const db = drizzle(createClient(dbConfig));
 const sheets = createSheetsClient({ clientEmail, privateKey });
 
+// Google allows this service account 60 read requests a minute — a hard cap —
+// and the check makes one per spreadsheet (two when the tab is missing, to list
+// what is there). With a few dozen spreadsheets, sending them back to back
+// can run through the quota, and the client's own backoff (8s at most) cannot
+// outwait a one-minute window.
+// So reads are paced under the limit, and a 429 that still gets through — the
+// app's own sync shares this quota — waits out the whole window before retrying.
+const READ_INTERVAL_MS = 1_100;
+const QUOTA_WINDOW_MS = 61_000;
+const QUOTA_RETRIES = 2;
+
+let nextReadAt = 0;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Run `fn`, which makes `reads` read requests, no faster than the quota
+ *  allows. */
+async function paced<V>(
+	reads: number,
+	fn: () => Promise<SheetsResult<V>>,
+): Promise<SheetsResult<V>> {
+	for (let attempt = 0; ; attempt++) {
+		const wait = nextReadAt - Date.now();
+		if (wait > 0) await sleep(wait);
+		nextReadAt = Date.now() + reads * READ_INTERVAL_MS;
+		const res = await fn();
+		if (res.ok || res.status !== 429 || attempt >= QUOTA_RETRIES) return res;
+		console.log(`  … read quota used up — waiting ${QUOTA_WINDOW_MS / 1000}s for it to reset`);
+		nextReadAt = Date.now() + QUOTA_WINDOW_MS;
+	}
+}
+
 async function main(): Promise<void> {
 	console.log(`\nService account: ${clientEmail}`);
 
@@ -83,43 +115,47 @@ async function main(): Promise<void> {
 		else bySheet.set(row.spreadsheetId, { label: row.label, prefixes: [row.prefix] });
 	}
 
-	console.log(`\nChecking ${bySheet.size} spreadsheet(s):\n`);
+	console.log(
+		`\nChecking ${bySheet.size} spreadsheet(s) — about ${Math.ceil((bySheet.size * READ_INTERVAL_MS) / 60_000)} min, paced under Google's read quota:\n`,
+	);
 	let unreachable = 0;
 	let missingTab = 0;
 
 	for (const [spreadsheetId, { label, prefixes }] of bySheet) {
-		const res = await sheets.describe({ spreadsheetId, tabName });
-		if (!res.ok) {
-			unreachable += 1;
-			const hint =
-				res.status === 403
-					? ` — share it with ${clientEmail} as an Editor`
-					: res.status === 404
-						? ' — no spreadsheet with that id'
-						: '';
-			console.log(`  ✗ ${label}`);
-			console.log(`      ${spreadsheetId}`);
-			console.log(`      ${res.status || 'network'}: ${res.error}${hint}`);
-		} else if (!res.value.hasTab) {
-			missingTab += 1;
-			console.log(
-				`  ✗ ${label} — reachable, but has no "${tabName}" tab (the app never creates it)`,
-			);
-			console.log(`      tabs: ${res.value.tabs.join(', ') || '(none)'}`);
-		} else {
-			// Read-only, like describe: the columns are found by header name, so
-			// check they are all there before the sync tries to write.
-			const tab = await sheets.readTab({ spreadsheetId, tabName });
-			const layout = tab.ok ? findLayout(tab.value.values) : null;
-			if (!tab.ok) {
-				unreachable += 1;
-				console.log(`  ✗ ${label} — could not read "${tabName}": ${tab.error}`);
-			} else if (layout && !layout.ok) {
+		const tab = await paced(1, () =>
+			sheets.readTracker({ spreadsheetId, tabName, tagKey: ROW_TAG_KEY }),
+		);
+		if (tab.ok) {
+			// The columns are found by header name, so check they are all there
+			// before the sync tries to write.
+			const layout = findLayout(tab.value.values);
+			if (layout.ok) {
+				console.log(`  ✓ ${label} — reachable, "${tabName}" has every column`);
+			} else {
 				missingTab += 1;
 				console.log(`  ✗ ${label} — "${tabName}" is missing: ${layout.missing.join(', ')}`);
-			} else {
-				console.log(`  ✓ ${label} — reachable, "${tabName}" has every column`);
 			}
+		} else if (tab.status === 404) {
+			// Either no such spreadsheet or no such tab; describe says which.
+			const res = await paced(1, () => sheets.describe({ spreadsheetId, tabName }));
+			if (res.ok) {
+				missingTab += 1;
+				console.log(
+					`  ✗ ${label} — reachable, but has no "${tabName}" tab (the app never creates it)`,
+				);
+				console.log(`      tabs: ${res.value.tabs.join(', ') || '(none)'}`);
+			} else {
+				unreachable += 1;
+				console.log(`  ✗ ${label}`);
+				console.log(`      ${spreadsheetId}`);
+				console.log(`      ${res.status || 'network'}: ${res.error} — no spreadsheet with that id`);
+			}
+		} else {
+			unreachable += 1;
+			const hint = tab.status === 403 ? ` — share it with ${clientEmail} as an Editor` : '';
+			console.log(`  ✗ ${label}`);
+			console.log(`      ${spreadsheetId}`);
+			console.log(`      ${tab.status || 'network'}: ${tab.error}${hint}`);
 		}
 		console.log(`      rules: ${prefixes.join(', ')}`);
 	}

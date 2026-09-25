@@ -87,17 +87,18 @@ describe('authentication', () => {
 		expect(tokenCalls).toHaveLength(1);
 	});
 
-	// readTab sends its two reads in parallel; a cold client must not mint a
-	// token for each.
+	// The sync reads several spreadsheets at once; a cold client must not
+	// mint a token for each.
 	it('mints one token for parallel requests on a cold client', async () => {
-		const fetchFn = vi.fn(async (url: string) => {
-			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
-			if (url.includes('/values/')) return ok({ values: [] });
-			return ok({ sheets: [{ properties: { sheetId: 7, title: 'Packet Tracker' } }] });
-		});
+		const fetchFn = vi.fn(async (url: string) =>
+			url === 'https://oauth2.googleapis.com/token' ? tokenResponse() : WROTE(),
+		);
 		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
 
-		await client.readTab({ spreadsheetId: 'a', tabName: 'Packet Tracker' });
+		await Promise.all([
+			client.writeTaggedRow({ spreadsheetId: 'a', key: 'k', value: '1', row: ROW }),
+			client.writeTaggedRow({ spreadsheetId: 'b', key: 'k', value: '2', row: ROW }),
+		]);
 
 		const tokenCalls = fetchFn.mock.calls.filter(
 			([url]) => url === 'https://oauth2.googleapis.com/token',
@@ -119,106 +120,123 @@ describe('authentication', () => {
 	});
 });
 
-describe('readTab', () => {
-	it('returns the tab id and its rows as displayed', async () => {
-		const fetchFn = vi.fn(async (url: string) => {
-			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
-			if (url.includes('/values/'))
-				return ok({
-					values: [
-						['Packet Name', 'Voters'],
-						['Turf 01', 120],
-					],
-				});
-			return ok({
-				sheets: [
-					{ properties: { sheetId: 1, title: 'Walk Sheet' } },
-					{ properties: { sheetId: 7, title: 'Packet Tracker' } },
-				],
-			});
-		});
-		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
-
-		const res = await client.readTab({ spreadsheetId: 'sheet-1', tabName: 'Packet Tracker' });
-
-		expect(res).toEqual({
-			ok: true,
-			value: {
-				sheetId: 7,
-				values: [
-					['Packet Name', 'Voters'],
-					['Turf 01', '120'],
+describe('readTracker', () => {
+	const grid = (over: Record<string, unknown> = {}) => ({
+		sheets: [
+			{
+				properties: { sheetId: 7, title: 'Packet Tracker' },
+				data: [
+					{
+						startRow: 0,
+						rowData: [
+							{ values: [{ formattedValue: 'Packet Name' }, { formattedValue: 'Voters' }] },
+							{ values: [{ formattedValue: 'Turf 01' }, { formattedValue: '120' }, {}] },
+							{ values: [{}, {}] },
+							{},
+						],
+						rowMetadata: [
+							{},
+							{
+								developerMetadata: [
+									{ metadataKey: 'k', metadataValue: '41' },
+									{ metadataKey: 'someone-else', metadataValue: '9' },
+								],
+							},
+							{},
+							{ developerMetadata: [{ metadataKey: 'k', metadataValue: '42' }] },
+						],
+						...over,
+					},
 				],
 			},
+		],
+	});
+
+	// Google caps reads at 60 a minute; the tracker makes one per spreadsheet.
+	it('gets cells, tab id and row tags in ONE request', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok(grid()));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.readTracker({
+			spreadsheetId: 'sheet-1',
+			tabName: 'Packet Tracker',
+			tagKey: 'k',
 		});
-		const valuesUrl = fetchFn.mock.calls.map(([u]) => u).find((u) => u.includes('/values/'))!;
-		expect(valuesUrl).toContain(encodeURIComponent("'Packet Tracker'"));
-		expect(valuesUrl).toContain('valueRenderOption=FORMATTED_VALUE');
+
+		expect(fetchFn).toHaveBeenCalledTimes(2); // token + one read
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.value.sheetId).toBe(7);
+		// Trailing empty cells and rows are not content — a blanked row of ours
+		// at the bottom must not push the next insert further down.
+		expect(res.value.values).toEqual([
+			['Packet Name', 'Voters'],
+			['Turf 01', '120'],
+		]);
+		expect([...res.value.tags]).toEqual([
+			['41', 1],
+			['42', 3],
+		]);
+		const [url] = fetchFn.mock.calls[1] as [string];
+		expect(url).toContain('includeGridData=true');
+		expect(url).toContain(`ranges=${encodeURIComponent("'Packet Tracker'")}`);
+		expect(decodeURIComponent(url)).toContain('rowMetadata(developerMetadata(');
+	});
+
+	it('offsets rows by the grid’s start row', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok(grid({ startRow: 2 })));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		const res = await client.readTracker({
+			spreadsheetId: 's',
+			tabName: 'Packet Tracker',
+			tagKey: 'k',
+		});
+
+		expect(res.ok && res.value.values[2]).toEqual(['Packet Name', 'Voters']);
+		expect(res.ok && res.value.tags.get('41')).toBe(3);
 	});
 
 	// The tab is the campaign's. The old log created its own; this must not.
 	it('reports a missing tab as a 404 and creates nothing', async () => {
-		const fetchFn = vi.fn(async (url: string) => {
-			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
-			if (url.includes('/values/')) {
-				return new Response(JSON.stringify({ error: { message: 'Unable to parse range' } }), {
-					status: 400,
-				});
-			}
-			return ok({ sheets: [{ properties: { sheetId: 1, title: 'Walk Sheet' } }] });
-		});
-		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
-
-		const res = await client.readTab({ spreadsheetId: 'sheet-1', tabName: 'Packet Tracker' });
-
-		expect(res).toMatchObject({ ok: false, status: 404 });
-		expect(fetchFn.mock.calls.some(([url]) => url.includes(':batchUpdate'))).toBe(false);
-	});
-
-	it('quotes a tab name containing an apostrophe rather than breaking the range', async () => {
-		const fetchFn = vi.fn(async (url: string) => {
-			if (url === 'https://oauth2.googleapis.com/token') return tokenResponse();
-			if (url.includes('/values/')) return ok({ values: [] });
-			return ok({ sheets: [{ properties: { sheetId: 7, title: "Dana's Tracker" } }] });
-		});
-		const client = createSheetsClient(CONFIG, { fetchFn: fetchFn as typeof fetch });
-
-		await client.readTab({ spreadsheetId: 'sheet-1', tabName: "Dana's Tracker" });
-
-		const valuesUrl = fetchFn.mock.calls.map(([u]) => u).find((u) => u.includes('/values/'))!;
-		expect(valuesUrl).toContain(encodeURIComponent("'Dana''s Tracker'"));
-	});
-});
-
-describe('findTaggedRows', () => {
-	it('searches by key and returns each row with its current position', async () => {
 		const fetchFn = vi
 			.fn()
 			.mockResolvedValueOnce(tokenResponse())
 			.mockResolvedValueOnce(
-				ok({
-					matchedDeveloperMetadata: [
-						{
-							developerMetadata: {
-								metadataValue: '41',
-								location: { dimensionRange: { sheetId: 7, startIndex: 12 } },
-							},
-						},
-						// A tag somebody's copy-paste put on a column is not a row.
-						{ developerMetadata: { metadataValue: '42', location: {} } },
-					],
-				}),
+				new Response(
+					JSON.stringify({ error: { message: "Unable to parse range: 'Packet Tracker'" } }),
+					{ status: 400 },
+				),
 			);
 		const client = createSheetsClient(CONFIG, { fetchFn });
 
-		const res = await client.findTaggedRows({ spreadsheetId: 'sheet-1', key: 'k' });
-
-		expect(res).toEqual({ ok: true, value: [{ value: '41', sheetId: 7, rowIndex: 12 }] });
-		const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
-		expect(url).toContain('/developerMetadata:search');
-		expect(JSON.parse(init.body as string)).toEqual({
-			dataFilters: [{ developerMetadataLookup: { metadataKey: 'k' } }],
+		const res = await client.readTracker({
+			spreadsheetId: 's',
+			tabName: 'Packet Tracker',
+			tagKey: 'k',
 		});
+
+		expect(res).toMatchObject({ ok: false, status: 404 });
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
+
+	it('quotes a tab name containing an apostrophe rather than breaking the range', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok({ sheets: [] }));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		await client.readTracker({ spreadsheetId: 's', tabName: "Dana's Tracker", tagKey: 'k' });
+
+		const [url] = fetchFn.mock.calls[1] as [string];
+		expect(url).toContain(encodeURIComponent("'Dana''s Tracker'"));
 	});
 });
 

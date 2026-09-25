@@ -62,6 +62,9 @@ const SETTLE_MS = 48 * 60 * 60 * 1000;
  *  thousands; bounded so a first run cannot hold the whole ledger. */
 const MAX_CHECKOUTS_PER_RUN = 1_000;
 
+/** Spreadsheets read at once. Enough that a few dozen fit the run's budget. */
+const READ_CONCURRENCY = 4;
+
 /**
  * What `sheet_state` holds.
  *
@@ -103,6 +106,9 @@ export interface TrackerResult {
 	updated: number;
 	/** Checkouts whose spreadsheet failed. Retried next run. */
 	failed: number;
+	/** Checkouts left for the next run because Google's per-minute quota ran
+	 *  out. Not a failure: nothing is alerted. */
+	rateLimited: number;
 	/** Checkouts whose region matched no rule. */
 	unrouted: number;
 	unroutedRegions: string[];
@@ -118,6 +124,7 @@ const EMPTY_RESULT: TrackerResult = {
 	appended: 0,
 	updated: 0,
 	failed: 0,
+	rateLimited: 0,
 	unrouted: 0,
 	unroutedRegions: [],
 	assignmentsChanged: 0,
@@ -253,43 +260,65 @@ interface OpenTab {
 	nextRow: number;
 }
 
+/** A failed Google call, with its HTTP status so a rate limit can be told
+ *  apart from a sheet that is actually broken. */
+interface SheetFailure {
+	error: string;
+	status: number;
+}
+
+/** Google's answer when this service account has used its 60 reads (or
+ *  writes) for the minute. A hard cap that cannot be raised. */
+const RATE_LIMITED = 429;
+
 async function openTab(
 	client: SheetsClient,
 	spreadsheetId: string,
 	tabName: string,
 	deadline: number,
-): Promise<{ ok: true; tab: OpenTab } | { ok: false; error: string }> {
-	const [read, tags] = await Promise.all([
-		client.readTab({ spreadsheetId, tabName, deadline }),
-		client.findTaggedRows({ spreadsheetId, key: ROW_TAG_KEY, deadline }),
-	]);
-	if (!read.ok) return { ok: false, error: read.error };
-	if (!tags.ok) return { ok: false, error: tags.error };
+): Promise<{ ok: true; tab: OpenTab } | ({ ok: false } & SheetFailure)> {
+	const read = await client.readTracker({ spreadsheetId, tabName, tagKey: ROW_TAG_KEY, deadline });
+	if (!read.ok) return { ok: false, error: read.error, status: read.status };
 	const found = findLayout(read.value.values);
 	if (!found.ok) {
 		return {
 			ok: false,
+			status: 0,
 			error: `the "${tabName}" tab has no ${found.missing.map((c) => `"${c}"`).join(', ')} column`,
 		};
 	}
-	const tagged = new Map<string, number>();
-	for (const row of tags.value) {
-		if (row.sheetId === read.value.sheetId) tagged.set(row.value, row.rowIndex);
-	}
-	return {
-		ok: true,
-		tab: {
-			spreadsheetId,
-			sheetId: read.value.sheetId,
-			values: read.value.values,
-			layout: found.layout,
-			tagged,
-			nextRow: Math.max(read.value.values.length, found.layout.headerRowIndex + 1),
-		},
+	const tab: OpenTab = {
+		spreadsheetId,
+		sheetId: read.value.sheetId,
+		values: read.value.values,
+		layout: found.layout,
+		tagged: read.value.tags,
+		nextRow: Math.max(read.value.values.length, found.layout.headerRowIndex + 1),
 	};
+	rememberAssignments(spreadsheetId, tabName, tab);
+	return { ok: true, tab };
 }
 
-type Outcome = 'appended' | 'updated' | 'unchanged' | { error: string };
+/** How long the claim's live check may reuse a read of the same spreadsheet.
+ *  Every read spends one of the minute's 60, and a canvass launch is a room of
+ *  people claiming turf out of the same few spreadsheets within a minute. */
+const LIVE_REUSE_MS = 60_000;
+
+const recentAssignments = new Map<string, { at: number; assigned: Map<string, string> }>();
+
+function rememberAssignments(spreadsheetId: string, tabName: string, tab: OpenTab): void {
+	recentAssignments.set(`${spreadsheetId}\u0000${tabName}`, {
+		at: Date.now(),
+		assigned: campaignAssignments(tab.values, tab.layout, new Set(tab.tagged.values())),
+	});
+}
+
+/** Test-only: forget every remembered read. */
+export function _resetLiveReadsForTests(): void {
+	recentAssignments.clear();
+}
+
+type Outcome = 'appended' | 'updated' | 'unchanged' | SheetFailure;
 
 /**
  * Bring one checkout's row in line with the ledger.
@@ -346,7 +375,7 @@ async function syncCheckout(
 			return 'unchanged';
 		}
 		const res = await write(blankCells());
-		if (!res.ok) return { error: res.error };
+		if (!res.ok) return { error: res.error, status: res.status };
 		await save({ ...state, cells: null });
 		return 'updated';
 	}
@@ -369,7 +398,7 @@ async function syncCheckout(
 			value: tag,
 			deadline,
 		});
-		if (!inserted.ok) return { error: inserted.error };
+		if (!inserted.ok) return { error: inserted.error, status: inserted.status };
 		tab.tagged.set(tag, tab.nextRow);
 		tab.nextRow += 1;
 		// Saved before the cells are written: if that write fails, the next run
@@ -381,7 +410,7 @@ async function syncCheckout(
 			cells: null,
 		});
 		const res = await write(desired);
-		if (!res.ok) return { error: res.error };
+		if (!res.ok) return { error: res.error, status: res.status };
 		await save({ spreadsheetId: tab.spreadsheetId, tagged: true, cells: desired });
 		return 'appended';
 	}
@@ -395,7 +424,7 @@ async function syncCheckout(
 		return 'unchanged';
 	}
 	const res = await write(changes);
-	if (!res.ok) return { error: res.error };
+	if (!res.ok) return { error: res.error, status: res.status };
 	if (!res.value.found) {
 		// Deleted between the tag search and the write.
 		warnings.push(
@@ -522,13 +551,46 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		warnings: [],
 	};
 
-	for (const [spreadsheetId, work] of bySpreadsheet) {
+	// Spreadsheets with a row to write go first; the rest are only being read
+	// for the campaign's assignments, and go in a different order each run so
+	// that a run cut short by its budget does not skip the same ones every time.
+	const order = shuffled([...bySpreadsheet.keys()]).sort(
+		(a, b) =>
+			Number(bySpreadsheet.get(b)!.candidates.length > 0) -
+			Number(bySpreadsheet.get(a)!.candidates.length > 0),
+	);
+
+	// A few reads in flight at once: one at a time, a few dozen spreadsheets do
+	// not fit the budget. The per-minute quota caps the count, not the pace.
+	const opening = new Map<string, ReturnType<typeof openTab>>();
+	const open = (spreadsheetId: string) => {
+		let pending = opening.get(spreadsheetId);
+		if (!pending)
+			opening.set(spreadsheetId, (pending = openTab(client, spreadsheetId, tabName, deadline)));
+		return pending;
+	};
+
+	let rateLimited = false;
+	for (const [index, spreadsheetId] of order.entries()) {
+		const work = bySpreadsheet.get(spreadsheetId)!;
+		// Once Google has said the minute's quota is spent, everything else
+		// would be refused the same way. It waits for the next run.
+		if (rateLimited) {
+			result.rateLimited += work.candidates.length;
+			continue;
+		}
 		if (Date.now() >= deadline) {
 			result.budgetLapsed = true;
 			break;
 		}
-		const opened = await openTab(client, spreadsheetId, tabName, deadline);
+		for (const ahead of order.slice(index, index + READ_CONCURRENCY)) void open(ahead);
+		const opened = await open(spreadsheetId);
 		if (!opened.ok) {
+			if (opened.status === RATE_LIMITED) {
+				rateLimited = true;
+				result.rateLimited += work.candidates.length;
+				continue;
+			}
 			result.failed += work.candidates.length;
 			await safely(
 				() => recordFailure(db, spreadsheetId, opened.error, now.toISOString()),
@@ -571,8 +633,14 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			else if (outcome === 'updated') result.updated += 1;
 			else if (outcome !== 'unchanged') {
 				// The next checkout would fail the same way; all of them wait.
-				failedHere = outcome.error;
-				result.failed += work.candidates.length - i;
+				const waiting = work.candidates.length - i;
+				if (outcome.status === RATE_LIMITED) {
+					rateLimited = true;
+					result.rateLimited += waiting;
+				} else {
+					failedHere = outcome.error;
+					result.failed += waiting;
+				}
 				break;
 			}
 		}
@@ -582,10 +650,13 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 				() => recordFailure(db, spreadsheetId, failedHere!, now.toISOString()),
 				'health',
 			);
-		} else {
+		} else if (!rateLimited) {
 			await safely(() => recordSuccess(db, spreadsheetId), 'health');
 		}
 	}
+	// Reads started ahead that the loop never reached still resolve; nothing
+	// waits on them, and their only side effect is the live-check memory.
+	for (const pending of opening.values()) void pending.catch(() => undefined);
 
 	if (unrouted > 0) {
 		result.warnings.push(
@@ -600,6 +671,11 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 		'alert',
 	);
 
+	if (result.rateLimited > 0) {
+		console.warn(
+			`${LOG} Google's per-minute quota ran out; ${result.rateLimited} checkout(s) wait for the next run`,
+		);
+	}
 	if (result.appended + result.updated + result.failed + result.assignmentsChanged + unrouted > 0) {
 		console.log(
 			`${LOG} packet tracker: appended=${result.appended} updated=${result.updated} ` +
@@ -632,19 +708,21 @@ export async function liveAssignment(
 	if (!turf.printedListNumber) return null;
 	const target = matchSheetTarget(turf.regionName, orderSheetTargets(input.targets));
 	if (!target) return null;
-	const opened = await openTab(
-		input.client,
-		target.spreadsheetId,
-		input.tabName?.trim() || DEFAULT_SHEET_TAB_NAME,
-		Date.now() + input.timeBudgetMs,
-	);
-	if (!opened.ok) return undefined;
-	const assigned =
-		campaignAssignments(
-			opened.tab.values,
-			opened.tab.layout,
-			new Set(opened.tab.tagged.values()),
-		).get(normaliseListNumber(turf.printedListNumber)) ?? null;
+	const tabName = input.tabName?.trim() || DEFAULT_SHEET_TAB_NAME;
+	const key = `${target.spreadsheetId}\u0000${tabName}`;
+	let recent = recentAssignments.get(key);
+	if (!recent || Date.now() - recent.at > LIVE_REUSE_MS) {
+		const opened = await openTab(
+			input.client,
+			target.spreadsheetId,
+			tabName,
+			Date.now() + input.timeBudgetMs,
+		);
+		if (!opened.ok) return undefined;
+		recent = recentAssignments.get(key);
+		if (!recent) return undefined;
+	}
+	const assigned = recent.assigned.get(normaliseListNumber(turf.printedListNumber)) ?? null;
 	await safely(
 		() =>
 			db
@@ -655,6 +733,15 @@ export async function liveAssignment(
 		'assignment',
 	);
 	return assigned;
+}
+
+/** Fisher–Yates, in place. */
+function shuffled<T>(items: T[]): T[] {
+	for (let i = items.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[items[i], items[j]] = [items[j]!, items[i]!];
+	}
+	return items;
 }
 
 function errText(err: unknown): string {
