@@ -330,6 +330,13 @@
       "when": 1790304069630,
       "tag": "0046_drop_sheet_log_stamps",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1790314819783,
+      "tag": "0047_reopen_taken_packets",
+      "breakpoints": true
     }
   ]
 }

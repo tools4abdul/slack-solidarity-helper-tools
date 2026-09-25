@@ -296,6 +296,27 @@ describe('a checkout through its life', () => {
 		expect((await stateOf(1))?.cells).toBeNull();
 	});
 
+	// Seen live 2026-09-25: the campaign marks a free packet Unwalked, and
+	// the first version treated that as someone else's entry.
+	it('fills in a packet showing the campaign’s Unwalked default, and restores it on hand-back', async () => {
+		await turf();
+		await checkout();
+		const listed = packet(LIST, { Status: 'Unwalked' });
+		const fake = fakeSheets({ 'sheet-downriver': tracker(listed) });
+
+		expect((await run(fake.api)).filled).toBe(1);
+		expect(fake.entry('sheet-downriver')).toMatchObject({ Canvasser: 'Dana', Status: 'Unwalked' });
+		await update(1, "loaded_in_minivan_at = '2026-09-19T14:41:00.000Z'");
+		await run(fake.api);
+		expect(fake.entry('sheet-downriver').Status).toBe('Out');
+
+		// Loaded, so it would stay Incomplete; clear the load to test the hand-back.
+		await update(1, "loaded_in_minivan_at = NULL, released_at = '2026-09-19T15:00:00.000Z'");
+		await run(fake.api);
+
+		expect(fake.sheet('sheet-downriver')[2]).toEqual(listed);
+	});
+
 	it('fills it in again if the hand-back turns out to have been walked', async () => {
 		await turf();
 		await checkout();
@@ -338,6 +359,22 @@ describe('the campaign’s entries are never overwritten', () => {
 		expect(writes(fake.calls)).toEqual([]);
 		expect(first.warnings.join(' ')).toContain('already has someone else');
 		expect(second.warnings).toEqual([]);
+	});
+
+	it('fills in a packet once someone else’s entry is cleared, without telling twice', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({
+			'sheet-downriver': tracker(packet(LIST, { Canvasser: 'Sam', Status: 'Incomplete' })),
+		});
+		const first = await run(fake.api);
+		expect(first.warnings).toHaveLength(1);
+
+		fake.sheet('sheet-downriver')[2] = packet(LIST, { Status: 'Unwalked' });
+		const second = await run(fake.api);
+
+		expect(second).toMatchObject({ filled: 1, warnings: [] });
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
 	});
 
 	it('stops managing an entry once someone types another canvasser over it', async () => {
