@@ -8,25 +8,23 @@
 // ─────────────────────────────────────────────────────────────────────────
 // PRIVACY. Read this before changing the logging.
 //
-// The rows passed through here carry a volunteer's display name and the
-// MiniVAN printed list number they were issued. The list number is a
-// CREDENTIAL — it is what pulls a turf's doors down in MiniVAN — which is why
-// refresh-reconcile deliberately keeps it out of retained logs even while
-// changing it. Nothing in this file may log cell contents, at any level. Counts,
-// spreadsheet ids, tab names and HTTP status codes only.
+// The rows read through here carry canvassers' names and MiniVAN printed list
+// numbers, and the cells written carry a volunteer's display name. The list
+// number is a CREDENTIAL — it is what pulls a turf's doors down in MiniVAN —
+// which is why refresh-reconcile deliberately keeps it out of retained logs
+// even while changing it. Nothing in this file may log cell contents, at any
+// level. Counts, spreadsheet ids, tab names and HTTP status codes only.
 //
-// Sending them to the campaign's spreadsheet at all is a deliberate decision
+// Sending a volunteer's name to the campaign's spreadsheet is a deliberate decision
 // recorded in specs/011-turf-checkout-sheet/spec.md and PRIVACY.md: anyone with
 // access to that spreadsheet can read them. It is not an implementation detail
 // and PRIVACY.md must stay accurate about it.
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Rows this app writes carry a developer-metadata tag (see
-// $lib/van/packet-tracker.ts). Writes to an existing row go through that tag
-// rather than a row number, so Google resolves which row is meant at the moment
-// of the write and a sort or insert by someone else cannot redirect them. There
-// is deliberately no delete: the API only deletes by position, and a position
-// cannot be made safe (see the header of packet-tracker.ts).
+// The app only ever writes cells on rows the campaign already has: it never
+// adds, deletes or moves a row (see $lib/van/packet-tracker.ts). Writes are by
+// row number, so the caller re-reads the row first and checks it is still the
+// packet it means.
 //
 // Never throws. A Google outage must not fail a sync whose rows are already
 // written — every call returns a result the caller can act on, and the ledger
@@ -37,6 +35,11 @@ import { createSign } from 'node:crypto';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+
+/** The status a call reports when the run's deadline left no time to make
+ *  it. Not an answer from Google: nothing was sent, and the caller should
+ *  simply try again next run. */
+export const OUT_OF_TIME = 408;
 
 /** Generous, and still bounded so a hung request cannot eat the sync's budget.
  *  A CEILING, not the budget: a caller passing a deadline gets whichever is
@@ -73,51 +76,37 @@ export interface SheetsClientOptions {
  *  network-level failure, which reads differently from any HTTP answer. */
 export type SheetsResult<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
 
-/** A tab as the tracker needs it, from ONE read request. */
-export interface TrackerTab {
-	sheetId: number;
-	/** Every row, as displayed, with trailing empty rows dropped. */
-	values: string[][];
-	/** `metadataValue` → 0-based row index, for rows carrying the requested
-	 *  key. True only at the moment of the read — never write by it. */
-	tags: Map<string, number>;
-}
-
 export interface SheetsClient {
 	/**
-	 * The tab's id, its cells and its tagged rows, in a single read.
+	 * Every row of the tab, as displayed, in a single read.
 	 *
-	 * One request rather than three because Google caps this service account
-	 * at 60 reads a minute — a hard limit — and the sync reads every one of the
-	 * campaign's few dozen spreadsheets. A missing tab is a 404 rather than a
-	 * created one: the tab is the campaign's.
+	 * One request because Google caps this service account at 60 reads a
+	 * minute — a hard limit — and the sync reads every one of the campaign's
+	 * few dozen spreadsheets. A missing tab is a 404 rather than a created one:
+	 * the tab is the campaign's.
 	 */
-	readTracker(input: {
+	readTab(input: {
 		spreadsheetId: string;
 		tabName: string;
-		tagKey: string;
 		deadline?: number;
-	}): Promise<SheetsResult<TrackerTab>>;
-	/** Insert an empty row at `rowIndex` and tag it, in one atomic batch — so
-	 *  there is never an untagged row of ours, and never a tag on a row that is
-	 *  not. Inserting only shifts other rows down; it overwrites nothing. */
-	insertTaggedRow(input: {
+	}): Promise<SheetsResult<string[][]>>;
+	/** One row, as displayed — the check just before a write that the row is
+	 *  still the packet the caller means. `rowIndex` is 0-based. */
+	readRow(input: {
 		spreadsheetId: string;
-		sheetId: number;
+		tabName: string;
 		rowIndex: number;
-		key: string;
-		value: string;
+		deadline?: number;
+	}): Promise<SheetsResult<string[]>>;
+	/** Write single cells on one row, USER_ENTERED, in one request. Cells not
+	 *  named are left alone. `[columnIndex, value]`, both 0-based. */
+	writeCells(input: {
+		spreadsheetId: string;
+		tabName: string;
+		rowIndex: number;
+		cells: ReadonlyArray<readonly [number, string]>;
 		deadline?: number;
 	}): Promise<SheetsResult<true>>;
-	/** Write cells into the row tagged `key`=`value`, USER_ENTERED. `null`
-	 *  cells are left as they are. `found: false` when no row has that tag. */
-	writeTaggedRow(input: {
-		spreadsheetId: string;
-		key: string;
-		value: string;
-		row: readonly (string | null)[];
-		deadline?: number;
-	}): Promise<SheetsResult<{ found: boolean }>>;
 	/** Whether the spreadsheet is reachable and whether it already has the tab.
 	 *  Read-only — what `sheets:check` uses to tell "never shared with us" from
 	 *  "shared, no tab" without writing anything. */
@@ -160,6 +149,29 @@ function parseError(body: string): string {
  *  end the quoting early. */
 function tabRange(tabName: string): string {
 	return `'${tabName.replace(/'/g, "''")}'`;
+}
+
+/** A1 column letters for a 0-based index: 0 → A, 25 → Z, 26 → AA. */
+export function columnLetter(index: number): string {
+	let n = index + 1;
+	let letters = '';
+	while (n > 0) {
+		const rem = (n - 1) % 26;
+		letters = String.fromCharCode(65 + rem) + letters;
+		n = Math.floor((n - 1) / 26);
+	}
+	return letters;
+}
+
+/** Google answers a range naming a tab that is not there with a 400. */
+function missingTab<T>(
+	res: { ok: false; status: number; error: string },
+	tabName: string,
+): SheetsResult<T> {
+	if (res.status === 400 && /unable to parse range/i.test(res.error)) {
+		return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
+	}
+	return res;
 }
 
 function parseJson<T>(body: string): T | null {
@@ -237,7 +249,7 @@ export function createSheetsClient(
 
 		const timeoutMs = budget(deadline);
 		if (timeoutMs < MIN_REQUEST_MS) {
-			return { ok: false, status: 0, error: 'no time left in the run to mint a token' };
+			return { ok: false, status: OUT_OF_TIME, error: 'no time left in the run to mint a token' };
 		}
 
 		let res: Response;
@@ -300,7 +312,11 @@ export function createSheetsClient(
 			const isLast = attempt === MAX_ATTEMPTS - 1;
 			const timeoutMs = budget(deadline);
 			if (timeoutMs < MIN_REQUEST_MS) {
-				return { ok: false, status: lastStatus, error: 'no time left in the run for this write' };
+				return {
+					ok: false,
+					status: OUT_OF_TIME,
+					error: 'no time left in the run for this request',
+				};
 			}
 
 			let res: Response;
@@ -342,117 +358,52 @@ export function createSheetsClient(
 	const base = (spreadsheetId: string) => `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}`;
 
 	return {
-		async readTracker({ spreadsheetId, tabName, tagKey, deadline }) {
-			const fields =
-				'sheets(properties(sheetId,title),' +
-				'data(startRow,rowData(values(formattedValue)),' +
-				'rowMetadata(developerMetadata(metadataKey,metadataValue))))';
+		async readTab({ spreadsheetId, tabName, deadline }) {
 			const res = await request(
-				`${base(spreadsheetId)}?includeGridData=true` +
-					`&ranges=${encodeURIComponent(tabRange(tabName))}` +
-					`&fields=${encodeURIComponent(fields)}`,
+				`${base(spreadsheetId)}/values/${encodeURIComponent(tabRange(tabName))}` +
+					`?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
 				{ method: 'GET' },
 				deadline,
 			);
-			if (!res.ok) {
-				// A range naming a tab that is not there is a 400 from Google.
-				if (res.status === 400 && /unable to parse range/i.test(res.error)) {
-					return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
-				}
-				return res;
-			}
-			const body = parseJson<{
-				sheets?: Array<{
-					properties?: { sheetId?: number; title?: string };
-					data?: Array<{
-						startRow?: number;
-						rowData?: Array<{ values?: Array<{ formattedValue?: string }> }>;
-						rowMetadata?: Array<{
-							developerMetadata?: Array<{ metadataKey?: string; metadataValue?: string }>;
-						}>;
-					}>;
-				}>;
-			}>(res.value);
-			const sheet = body?.sheets?.find((s) => s.properties?.title === tabName);
-			if (!sheet || typeof sheet.properties?.sheetId !== 'number') {
-				return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
-			}
-			const grid = sheet.data?.[0];
-			const start = grid?.startRow ?? 0;
-			const values: string[][] = [];
-			(grid?.rowData ?? []).forEach((row, i) => {
-				values[start + i] = (row.values ?? []).map((cell) => cell.formattedValue ?? '');
-			});
-			for (let i = 0; i < values.length; i++) values[i] ??= [];
-			// Like the values API: trailing empty cells and rows are not content.
-			for (const row of values) while (row.length && row[row.length - 1] === '') row.pop();
-			while (values.length && values[values.length - 1]!.length === 0) values.pop();
-			const tags = new Map<string, number>();
-			(grid?.rowMetadata ?? []).forEach((row, i) => {
-				for (const meta of row.developerMetadata ?? []) {
-					if (meta.metadataKey === tagKey && meta.metadataValue)
-						tags.set(meta.metadataValue, start + i);
-				}
-			});
-			return { ok: true, value: { sheetId: sheet.properties.sheetId, values, tags } };
+			if (!res.ok) return missingTab(res, tabName);
+			const body = parseJson<{ values?: unknown[][] }>(res.value);
+			return {
+				ok: true,
+				value: (body?.values ?? []).map((row) => row.map((cell) => String(cell ?? ''))),
+			};
 		},
 
-		async insertTaggedRow({ spreadsheetId, sheetId, rowIndex, key, value, deadline }) {
-			const range = { sheetId, dimension: 'ROWS', startIndex: rowIndex, endIndex: rowIndex + 1 };
+		async readRow({ spreadsheetId, tabName, rowIndex, deadline }) {
+			const row = rowIndex + 1;
 			const res = await request(
-				`${base(spreadsheetId)}:batchUpdate`,
-				{
-					method: 'POST',
-					body: JSON.stringify({
-						requests: [
-							// Inherit from the row above: the campaign's dropdowns and
-							// formats come with it.
-							{ insertDimension: { range, inheritFromBefore: rowIndex > 0 } },
-							{
-								createDeveloperMetadata: {
-									developerMetadata: {
-										metadataKey: key,
-										metadataValue: value,
-										visibility: 'DOCUMENT',
-										location: { dimensionRange: range },
-									},
-								},
-							},
-						],
-					}),
-				},
+				`${base(spreadsheetId)}/values/${encodeURIComponent(`${tabRange(tabName)}!${row}:${row}`)}` +
+					`?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
+				{ method: 'GET' },
 				deadline,
 			);
-			if (!res.ok) return res;
-			return { ok: true, value: true };
+			if (!res.ok) return missingTab(res, tabName);
+			const body = parseJson<{ values?: unknown[][] }>(res.value);
+			return { ok: true, value: (body?.values?.[0] ?? []).map((cell) => String(cell ?? '')) };
 		},
 
-		async writeTaggedRow({ spreadsheetId, key, value, row, deadline }) {
+		async writeCells({ spreadsheetId, tabName, rowIndex, cells, deadline }) {
+			if (cells.length === 0) return { ok: true, value: true };
 			const res = await request(
-				`${base(spreadsheetId)}/values:batchUpdateByDataFilter`,
+				`${base(spreadsheetId)}/values:batchUpdate`,
 				{
 					method: 'POST',
 					body: JSON.stringify({
 						valueInputOption: 'USER_ENTERED',
-						data: [
-							{
-								dataFilter: {
-									developerMetadataLookup: { metadataKey: key, metadataValue: value },
-								},
-								majorDimension: 'ROWS',
-								values: [row],
-							},
-						],
+						data: cells.map(([column, value]) => ({
+							range: `${tabRange(tabName)}!${columnLetter(column)}${rowIndex + 1}`,
+							values: [[value]],
+						})),
 					}),
 				},
 				deadline,
 			);
-			if (!res.ok) return res;
-			const body = parseJson<{ totalUpdatedRows?: number; responses?: unknown[] }>(res.value);
-			// Google answers a filter that matched nothing with 200 and nothing
-			// updated — which is also what an all-null row looks like, so that
-			// case is decided by the caller never sending one.
-			return { ok: true, value: { found: (body?.totalUpdatedRows ?? 0) > 0 } };
+			if (!res.ok) return missingTab(res, tabName);
+			return { ok: true, value: true };
 		},
 
 		async describe({ spreadsheetId, tabName, deadline }) {

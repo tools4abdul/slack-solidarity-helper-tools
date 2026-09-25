@@ -828,39 +828,39 @@ Set `VAN_EXPORT_JOB_TYPE_ID` from the `/exportJobTypes` list that `van:check` pr
 
 #### The Packet Tracker in the campaign's spreadsheets
 
-Campaign staff record every turf they hand out in a **Packet Tracker** tab in Google Sheets they own — one row per turf taken, whether it went out through this app or on a clipboard. When this is configured, the app keeps its own turf in that same tab, one row per checkout, and reads the campaign's rows back so it never hands out turf the tracker says is already out.
+Campaign staff track every packet in a **Packet Tracker** tab in Google Sheets they own. Each packet is **listed in advance** — Packet Name, Voters, Doors and List Number, in columns the campaign protects — and handing one out means filling in the canvasser columns on that packet's row. When this is configured, the app does exactly that for turf claimed here, and reads the campaign's own entries back so it never hands out a packet the tracker says is already out.
+
+The app finds the packet by **List Number** and writes only the canvasser's half of the row:
 
 | Column        | What the app writes                                                         |
 | ------------- | --------------------------------------------------------------------------- |
-| Packet Name   | The turf's name                                                             |
-| Voters        | People on the list (VAN's route size)                                       |
-| Doors         | VAN's door count when claimed                                               |
-| List Number   | The MiniVAN list number the volunteer was **issued**                        |
 | Canvasser     | Their Slack display name                                                    |
 | Shift Time    | When they claimed the turf, in Slack or on the site                         |
 | Date Sent Out | Claim date, `MM/DD/YYYY`, campaign clock                                    |
 | Time Departed | When the sync first saw the list loaded in MiniVAN                          |
 | Walk Mode     | `MiniVAN` — the app only issues MiniVAN lists                               |
-| Phone Number  | Never written                                                               |
-| Doors Knocked | Reported % × Doors, once marked walked                                      |
+| Doors Knocked | Reported % × the packet's own Doors, once marked walked                     |
 | Status        | `Unwalked` on claim → `Out` once loaded → `Complete` (100%) or `Incomplete` |
-| Knocked %     | The % MiniVAN showed when the volunteer marked it walked                    |
 
-**One row per checkout, kept current — not a log.** Claiming appends the row; loading the list, marking it walked and handing it back update it in place. A turf handed back before its list was ever loaded had not really gone out, so its row is **blanked**; one handed back after loading becomes `Incomplete`. Voters, Doors, the list number, the name and the date are written once and never rewritten, so a campaign correction to one of them sticks.
+Packet Name, Voters, Doors, List Number and the campaign's formula columns (`shift_key`, `Today?`, `Knocked %`) are never written — `Knocked %` computes itself from Doors Knocked, which is why that is worked out from the sheet's Doors rather than VAN's. Phone Number is never written. **No row is ever added, deleted or moved.**
 
-**Columns are found by header name**, anywhere in the first ten rows, so the campaign can reorder the tab or add its own columns. A tab missing one of the thirteen headers is refused and alerted rather than guessed at. Cells the app is not changing are left alone, so notes the campaign writes into our rows survive.
+**One entry per checkout, kept current.** Claiming fills the packet in; loading the list, marking it walked and handing it back update it. A turf handed back before its list was ever loaded had not really gone out, so everything the app filled in is **cleared**; one handed back after loading becomes `Incomplete`. The name, shift time, date and walk mode are written once, so a campaign correction to them sticks.
 
-**The app only ever writes rows it created, and never deletes one.** Each row it appends carries a hidden developer-metadata tag holding the checkout id, and every later write is addressed by that tag — Google finds the row, so a sort or an insert by someone else cannot redirect it to the wrong row. There is no delete because the Sheets API deletes by row position only, and a position read a moment earlier can belong to someone else's row by the time the delete lands; that was tested against a live sheet, and no guard request makes such a batch fail. Before blanking a row the app also checks its List Number and Canvasser still hold what it wrote — a row somebody has typed over is theirs now, and is left alone with a note in the turf channel. So is a row somebody deleted: it is not recreated. Text cells are written with Sheets' leading apostrophe, so a display name cannot be a formula.
+**The campaign's entries are never overwritten.** A packet is only filled in if its canvasser columns are empty — one that already has someone's entry, even an old `Incomplete` one, is left as it is with a note in the turf channel. An entry is only updated or cleared while its Canvasser is still the name the app wrote; once someone types another name over it, it is theirs. Writes go by row number, because the campaign's protected rows cannot carry a tag Google would resolve for us, so the app **re-reads the row immediately before every write** and checks it is still the same packet and still empty (or still ours). If the tab was sorted in between, nothing is written and the next run finds the packet where it now is. The canvasser name is written with Sheets' leading apostrophe, so a display name cannot be a formula.
 
-**Reading the campaign's rows back.** Every sync, a row **without** the app's tag whose Status is `Unwalked`, `Out` or `Complete` marks the turf with that List Number as assigned — hidden from volunteers and refused on claim, exactly like turf an organizer handed out in VAN. `Incomplete` rows do not block: that turf is back in play. The claim itself also reads the tracker live, so a turf written down since the last sync is still caught; if Google is slow or unreachable the claim falls back to what the last sync saw rather than refusing everyone.
+**A claimed turf the tracker does not list** still goes ahead; the turf channel is told once, naming the turf (never the list number), and the packet is filled in on the first run after an organizer adds it. A List Number listed twice is not written to either row.
 
-**Google allows the service account 60 reads and 60 writes a minute, and that cannot be raised.** So every spreadsheet costs one read per sync — a single call returns the tab's cells and the app's row tags together — a few are read at a time, spreadsheets with a row to write go first and the rest in a different order each run, and a claim's live check reuses any read of that spreadsheet from the last minute. A `429` is not treated as a broken sheet: nothing is alerted, and the checkouts wait for the next run. `npm run sheets:check` paces itself under the same limit.
+**Columns are found by header name**, anywhere in the first ten rows — the campaign's header is on row 2 — so the tab can be rearranged. A tab missing one of the columns above (or Doors or List Number) is refused and alerted rather than guessed at.
 
-**The row state is derived from the ledger, not pushed by the code that writes it.** Six paths end a checkout — a volunteer releasing or completing, the expiry sweep, the lapsed-claim clear inside a claim, an admin block, VAN retiring the turf, the reconciliation — and a seventh is a matter of time. So nothing hooks them: `van_turf_checkouts.sheet_state` records what Google last confirmed, each run derives what the row should say, and the difference is what gets written. A path added later is tracked without being told this feature exists.
+**Reading the campaign's entries back.** Every sync, a packet whose Status is `Unwalked`, `Out` or `Complete` and whose Canvasser is not one the app wrote marks that turf as assigned — hidden from volunteers and refused on claim, exactly like turf an organizer handed out in VAN. `Incomplete` does not block: that turf is back in play. The claim itself also reads the tracker live, so a packet written down since the last sync is still caught; if Google is slow or unreachable the claim falls back to what the last sync saw rather than refusing everyone.
 
-**It cannot slow down or undo a claim.** Writes happen in the background straight after a claim, completion or hand-back, and again in the scheduled VAN sync for anything that missed; the two share a lock, so they cannot both append a row for one checkout. State is recorded **only after Google confirms**, so a failure retries on the next run. A row whose insert succeeded but whose cells did not is found by its tag and filled next run, never inserted twice.
+**Google allows the service account 60 reads and 60 writes a minute, and that cannot be raised.** So every spreadsheet costs one read per sync, plus one re-check per write; a few are read at a time; spreadsheets with an entry to write go first and the rest in a different order each run; and a claim's live check reuses any read of that spreadsheet from the last minute. Running into the quota, or out of the run's time, is not treated as a broken sheet: nothing is alerted, and the checkouts wait for the next run. Real failures alert once per distinct error, in one message naming every spreadsheet failing that way. `npm run sheets:check` paces itself under the same limit.
 
-**Switching it on** writes a row for every turf that is out right now and every turf already marked walked. Checkouts that were claimed and handed back before switch-on are skipped — the migration marks them as owing no row.
+**The entry is derived from the ledger, not pushed by the code that writes it.** Six paths end a checkout — a volunteer releasing or completing, the expiry sweep, the lapsed-claim clear inside a claim, an admin block, VAN retiring the turf, the reconciliation — and a seventh is a matter of time. So nothing hooks them: `van_turf_checkouts.sheet_state` records what Google last confirmed, each run derives what the entry should say, and the difference is what gets written. A path added later is tracked without being told this feature exists.
+
+**It cannot slow down or undo a claim.** Writes happen in the background straight after a claim, completion or hand-back, and again in the scheduled VAN sync for anything that missed; the two share a lock. State is recorded **only after Google confirms**, so a failure retries on the next run, and writing the same cells twice is harmless.
+
+**Switching it on** fills in every turf that is out right now and every turf already marked walked. Checkouts that were claimed and handed back before switch-on are skipped — the migration marks them as owing nothing.
 
 **Which spreadsheet a row goes to** is decided from the turf's VAN region name, because that name is the only geography the catalog has. Neither half of that name is enough alone, verified against the live key (273 regions across 19 folders): a code spans several counties — `R01A` covers Alger, Dickinson, Houghton, Marquette and Menominee — and a county spans several codes, with Wayne appearing under `R09A`, `R10A`, `R10B`, `R10C`, `R10E`, `R10F`, `R10G` and `R10H`. So **Settings → Checkout spreadsheets** takes a list of name prefixes and the longest match wins:
 
@@ -885,9 +885,11 @@ Separators and case are ignored, so a dotted `R08A.Macomb.WarrenCity` matches an
 
 The app works in **one tab** in each spreadsheet — `Packet Tracker` unless changed at Settings → App config. It is the campaign's tab and the app never creates it. It never reads or touches any other tab.
 
+The service account needs to be an Editor on each spreadsheet, but **not** on the campaign's protected ranges: the app never writes a protected column.
+
 With no credential, or with no rules, the feature does nothing and says nothing: an integration nobody set up should be silent rather than reassuring. When writes do start failing, the turf channel gets **one** alert per problem, naming the spreadsheet, the error and how many checkouts are waiting — and it announces again once the problem clears and comes back, which is what stops a channel that repeats itself from being muted.
 
-A re-cut turf is worth knowing about: when VAN replaces a route under a live claim, the reconciliation moves the volunteer onto the replacement, and that shows up as a second row for turf nobody clicked on, while the old checkout's row is blanked or kept as `Incomplete` depending on whether its list had been loaded. That is correct — it is a different cut with a different list number. The List Number in a row is the one issued **at that moment**; if VAN later reissues it, the volunteer is DMed the new one and the row keeps the original.
+A re-cut turf is worth knowing about: when VAN replaces a route under a live claim, the reconciliation moves the volunteer onto the replacement, which has a new list number — so it fills in whichever packet the campaign lists under that number, and the old packet's entry is cleared or kept as `Incomplete` depending on whether its list had been loaded.
 
 See [PRIVACY.md](PRIVACY.md) § "Turf checkout" — this is the one place a MiniVAN list number goes beyond the person it was issued to, and those spreadsheets are outside anything this app can delete.
 

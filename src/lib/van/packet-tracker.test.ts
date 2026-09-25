@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
-	PACKET_COLUMNS,
-	blankCells,
 	campaignAssignments,
+	cellWrites,
 	changedCells,
-	desiredRow,
+	clearedCells,
+	desiredCells,
 	findLayout,
-	rowValues,
+	isUnfilled,
+	packetRows,
 	sheetDate,
+	sheetDoors,
 	stillOurs,
 	type ColumnLayout,
 	type PacketCheckout,
@@ -26,13 +28,43 @@ const BASE: PacketCheckout = {
 	claimDoorCount: 64,
 	turfName: 'Turf 01',
 	regionName: 'R10C_Wayne_TaylorCity004_9.11',
-	routeSize: 120,
 	doorCount: 50,
 };
 
 const checkout = (over: Partial<PacketCheckout> = {}): PacketCheckout => ({ ...BASE, ...over });
 
-const HEADER = [...PACKET_COLUMNS];
+/** The campaign's real layout, verified 2026-09-24: an empty row 1, the
+ *  header on row 2, formula columns among the ones we write. */
+const HEADER = [
+	'Packet Name',
+	'Voters',
+	'Doors',
+	'List Number',
+	'shift_key',
+	'Canvasser',
+	'Shift Time',
+	'Date Sent Out',
+	'Time Departed',
+	'Walk Mode',
+	'Phone Number',
+	'Doors Knocked',
+	'Status',
+	'Today?',
+	'Knocked %',
+];
+const col = (name: string) => HEADER.indexOf(name);
+
+/** A packet the campaign listed, with whatever canvasser cells are given. */
+function packet(list: string, over: Record<string, string> = {}, doors = '64'): string[] {
+	const listed: Record<string, string> = {
+		'Packet Name': 'Taylor 004',
+		Voters: '120',
+		Doors: doors,
+		'List Number': list,
+		shift_key: 'k',
+	};
+	return HEADER.map((h) => listed[h] ?? over[h] ?? '');
+}
 
 function layoutOf(values: string[][]): ColumnLayout {
 	const found = findLayout(values);
@@ -40,74 +72,75 @@ function layoutOf(values: string[][]): ColumnLayout {
 	return found.layout;
 }
 
-describe('desiredRow', () => {
-	it('writes a fresh claim as Unwalked, with what the volunteer was issued', () => {
-		expect(desiredRow(checkout())).toEqual({
-			'Packet Name': 'Turf 01',
-			Voters: '120',
-			// Claim-time door count, not VAN's current one.
-			Doors: '64',
-			'List Number': '35536745-88712',
+const SHEET = [[], HEADER, packet('111-1'), packet('35536745-88712')];
+const LAYOUT = layoutOf(SHEET);
+
+describe('desiredCells', () => {
+	it('fills in a fresh claim as Unwalked', () => {
+		expect(desiredCells(checkout())).toEqual({
 			Canvasser: 'Dana',
 			'Shift Time': '10:07 AM',
 			'Date Sent Out': '09/19/2026',
 			'Time Departed': '',
 			'Walk Mode': 'MiniVAN',
-			'Phone Number': '',
 			'Doors Knocked': '',
 			Status: 'Unwalked',
-			'Knocked %': '',
 		});
 	});
 
+	// The protected columns, the formulas and the phone number are not ours.
+	it('never names a column the campaign fills in or computes', () => {
+		const cells = desiredCells(
+			checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 50 }),
+		)!;
+		for (const theirs of [
+			'Packet Name',
+			'Voters',
+			'Doors',
+			'List Number',
+			'Phone Number',
+			'Knocked %',
+		]) {
+			expect(cells).not.toHaveProperty(theirs);
+		}
+	});
+
 	it('goes Out, with a departure time, once the list is loaded in MiniVAN', () => {
-		const row = desiredRow(checkout({ loadedInMinivanAt: '2026-09-19T14:41:00.000Z' }));
-		expect(row?.Status).toBe('Out');
-		expect(row?.['Time Departed']).toBe('10:41 AM');
+		const cells = desiredCells(checkout({ loadedInMinivanAt: '2026-09-19T14:41:00.000Z' }));
+		expect(cells).toMatchObject({ Status: 'Out', 'Time Departed': '10:41 AM' });
 	});
 
-	// Claimed from Slack or the site, it is the same moment.
-	it('uses the claim time as the shift time', () => {
-		expect(desiredRow(checkout())?.['Shift Time']).toBe('10:07 AM');
-	});
-
-	it('marks a fully walked turf Complete with doors knocked', () => {
-		const row = desiredRow(
+	it('marks a fully walked turf Complete', () => {
+		const cells = desiredCells(
 			checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 100 }),
 		);
-		expect(row).toMatchObject({ Status: 'Complete', 'Knocked %': '100%', 'Doors Knocked': '64' });
+		expect(cells).toMatchObject({ Status: 'Complete', 'Doors Knocked': '64' });
 	});
 
-	it('marks a partly walked turf Incomplete, rounding doors knocked', () => {
-		const row = desiredRow(
-			checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 85 }),
-		);
-		// 0.85 × 64 = 54.4
-		expect(row).toMatchObject({ Status: 'Incomplete', 'Knocked %': '85%', 'Doors Knocked': '54' });
+	// The sheet's Knocked % divides by its own Doors cell, so Doors Knocked is
+	// computed from that — the % it shows is then the one reported.
+	it('computes doors knocked from the packet’s own door count', () => {
+		const done = checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 85 });
+		expect(desiredCells(done, 80)).toMatchObject({ Status: 'Incomplete', 'Doors Knocked': '68' });
+		// Falls back to the claim-time count, 0.85 × 64 = 54.4.
+		expect(desiredCells(done)).toMatchObject({ 'Doors Knocked': '54' });
+		expect(desiredCells({ ...done, claimDoorCount: null })).toMatchObject({
+			'Doors Knocked': '43',
+		});
 	});
 
-	it('wants no row for a turf handed back before it was ever loaded', () => {
-		expect(desiredRow(checkout({ releasedAt: '2026-09-19T15:00:00.000Z' }))).toBeNull();
+	it('wants nothing for a turf handed back before it was ever loaded', () => {
+		expect(desiredCells(checkout({ releasedAt: '2026-09-19T15:00:00.000Z' }))).toBeNull();
 	});
 
-	it('keeps an Incomplete row for a turf handed back after it was loaded', () => {
-		const row = desiredRow(
+	it('keeps an Incomplete entry for a turf handed back after it was loaded', () => {
+		const cells = desiredCells(
 			checkout({
 				releasedAt: '2026-09-19T15:00:00.000Z',
 				loadedInMinivanAt: '2026-09-19T14:41:00.000Z',
 			}),
 		);
-		expect(row?.Status).toBe('Incomplete');
-		// Nobody said how far they got.
-		expect(row?.['Knocked %']).toBe('');
-	});
-
-	it('falls back to the current door count on claims older than the column', () => {
-		expect(desiredRow(checkout({ claimDoorCount: null }))?.Doors).toBe('50');
-	});
-
-	it('never sends a phone number', () => {
-		expect(desiredRow(checkout())?.['Phone Number']).toBe('');
+		expect(cells).toMatchObject({ Status: 'Incomplete', 'Doors Knocked': '' });
 	});
 });
 
@@ -123,141 +156,147 @@ describe('sheetDate', () => {
 });
 
 describe('findLayout', () => {
-	it('finds columns by header name wherever they are', () => {
-		const shuffled = [...HEADER].reverse();
-		const layout = layoutOf([shuffled]);
-		expect(layout.columns['Packet Name']).toBe(shuffled.length - 1);
-		expect(layout.columns['Knocked %']).toBe(0);
-		expect(layout.width).toBe(shuffled.length);
+	it('finds the header on row 2, past the empty first row', () => {
+		expect(LAYOUT.headerRowIndex).toBe(1);
+		expect(LAYOUT.columns.Canvasser).toBe(col('Canvasser'));
+		expect(LAYOUT.columns.Status).toBe(col('Status'));
 	});
 
-	it('tolerates case, spacing and a title row above the header', () => {
-		const messy = HEADER.map((h) => ` ${h.toUpperCase()} `);
-		const layout = layoutOf([['Downriver packets — fall canvass'], messy]);
-		expect(layout.headerRowIndex).toBe(1);
+	it('does not mistake shift_key for Shift Time', () => {
+		expect(LAYOUT.columns['Shift Time']).toBe(col('Shift Time'));
 	});
 
 	it('names the columns it could not find', () => {
-		const found = findLayout([HEADER.filter((h) => h !== 'Status' && h !== 'Voters')]);
-		expect(found).toEqual({ ok: false, missing: ['Voters', 'Status'] });
+		const found = findLayout([HEADER.filter((h) => h !== 'Status' && h !== 'Canvasser')]);
+		expect(found).toEqual({ ok: false, missing: ['Canvasser', 'Status'] });
 	});
 });
 
-describe('rowValues', () => {
-	it('places cells by column and leaves the rest null', () => {
-		const layout = layoutOf([['Notes', ...HEADER]]);
-		const row = rowValues({ Status: 'Out' }, layout);
-		expect(row).toHaveLength(HEADER.length + 1);
-		expect(row[0]).toBeNull();
-		expect(row[layout.columns.Status]).toBe("'Out");
-		expect(row.filter((c) => c !== null)).toHaveLength(1);
+describe('packetRows', () => {
+	it('finds the packet by list number, forgiving stray spaces', () => {
+		expect(packetRows(SHEET, LAYOUT, '35536745-88712')).toEqual([3]);
+		expect(packetRows(SHEET, LAYOUT, ' 35536745 - 88712 ')).toEqual([3]);
 	});
 
-	// A Slack display name is user input and the write is USER_ENTERED.
-	it('forces text cells to text so a name cannot be a formula', () => {
-		const layout = layoutOf([HEADER]);
-		const row = rowValues({ Canvasser: '=IMPORTXML("http://x")', Voters: '120' }, layout);
-		expect(row[layout.columns.Canvasser]).toBe('\'=IMPORTXML("http://x")');
-		expect(row[layout.columns.Voters]).toBe('120');
+	it('returns every row listing it, and none for an unlisted one', () => {
+		const doubled = [...SHEET, packet('111-1')];
+		expect(packetRows(doubled, LAYOUT, '111-1')).toEqual([2, 4]);
+		expect(packetRows(SHEET, LAYOUT, '999-9')).toEqual([]);
 	});
 
-	it('clears a text cell with a bare empty string', () => {
-		const layout = layoutOf([HEADER]);
-		expect(rowValues({ Canvasser: '' }, layout)[layout.columns.Canvasser]).toBe('');
+	it('never matches the header or anything above it', () => {
+		expect(packetRows(SHEET, LAYOUT, 'List Number')).toEqual([]);
 	});
 });
 
-describe('changedCells', () => {
+describe('sheetDoors', () => {
+	it('reads the packet’s door count, and nothing that is not a number', () => {
+		expect(sheetDoors(packet('1', {}, '1,204'), LAYOUT)).toBe(1204);
+		expect(sheetDoors(packet('1', {}, ''), LAYOUT)).toBeNull();
+		expect(sheetDoors(packet('1', {}, 'TBD'), LAYOUT)).toBeNull();
+		expect(sheetDoors(undefined, LAYOUT)).toBeNull();
+	});
+});
+
+describe('isUnfilled and stillOurs', () => {
+	it('sees a listed packet with nothing filled in as free', () => {
+		expect(isUnfilled(packet('1'), LAYOUT)).toBe(true);
+	});
+
+	it('sees any canvasser cell filled in as taken', () => {
+		expect(isUnfilled(packet('1', { Status: 'Incomplete' }), LAYOUT)).toBe(false);
+		expect(isUnfilled(packet('1', { 'Walk Mode': 'Paper' }), LAYOUT)).toBe(false);
+	});
+
+	// Phone Number is not ours, so a phone typed in alone does not make it taken.
+	it('ignores the campaign’s own columns', () => {
+		expect(isUnfilled(packet('1', { 'Phone Number': '555-0100' }), LAYOUT)).toBe(true);
+	});
+
+	it('knows our entry by the canvasser name', () => {
+		const written = desiredCells(checkout())!;
+		expect(stillOurs(packet('1', { Canvasser: 'Dana', Status: 'Out' }), LAYOUT, written)).toBe(
+			true,
+		);
+		expect(stillOurs(packet('1', { Canvasser: 'Sam' }), LAYOUT, written)).toBe(false);
+		expect(stillOurs(packet('1'), LAYOUT, written)).toBe(false);
+	});
+});
+
+describe('changedCells and clearedCells', () => {
 	it('returns only what moved', () => {
-		const before = desiredRow(checkout())!;
-		const after = desiredRow(checkout({ loadedInMinivanAt: '2026-09-19T14:41:00.000Z' }))!;
+		const before = desiredCells(checkout())!;
+		const after = desiredCells(checkout({ loadedInMinivanAt: '2026-09-19T14:41:00.000Z' }))!;
 		expect(changedCells(before, after)).toEqual({ 'Time Departed': '10:41 AM', Status: 'Out' });
 	});
 
-	// A re-cut moves VAN's numbers; the campaign may have corrected a name.
-	it('never rewrites the columns written at claim time', () => {
-		const before = desiredRow(checkout())!;
-		const after = desiredRow(checkout({ turfName: 'Turf 01 (recut)', routeSize: 90 }))!;
-		expect(changedCells(before, after)).toEqual({});
+	it('never rewrites the columns filled in at claim time', () => {
+		const before = { ...desiredCells(checkout())!, Canvasser: 'Dana R.' };
+		expect(changedCells(before, desiredCells(checkout())!)).toEqual({});
 	});
 
-	it('includes cells that became blank', () => {
-		const before = { ...desiredRow(checkout())!, 'Knocked %': '50%' };
-		expect(changedCells(before, desiredRow(checkout())!)).toEqual({ 'Knocked %': '' });
-	});
-
-	it('clears every non-write-once cell to blank', () => {
-		expect(blankCells().Status).toBe('');
+	it('clears exactly what we filled in', () => {
+		const written = desiredCells(checkout({ loadedInMinivanAt: '2026-09-19T14:41:00.000Z' }))!;
+		expect(clearedCells(written)).toEqual({
+			Canvasser: '',
+			'Shift Time': '',
+			'Date Sent Out': '',
+			'Time Departed': '',
+			'Walk Mode': '',
+			Status: '',
+		});
 	});
 });
 
-describe('stillOurs', () => {
-	const layout = layoutOf([HEADER]);
-	const written = desiredRow(checkout())!;
-	const rowWith = (over: Record<string, string>) =>
-		HEADER.map((h) => over[h] ?? (written as Record<string, string>)[h] ?? '');
-
-	it('accepts our row as we left it', () => {
-		expect(stillOurs(rowWith({}), layout, written)).toBe(true);
+describe('cellWrites', () => {
+	it('places each cell by column', () => {
+		expect(cellWrites({ Status: 'Out', 'Time Departed': '10:41 AM' }, LAYOUT)).toEqual([
+			[col('Time Departed'), '10:41 AM'],
+			[col('Status'), 'Out'],
+		]);
 	});
 
-	it('accepts a row we already blanked', () => {
-		expect(
-			stillOurs(
-				HEADER.map(() => ''),
-				layout,
-				written,
-			),
-		).toBe(true);
-		expect(stillOurs(undefined, layout, written)).toBe(true);
-	});
-
-	it('refuses a row someone typed a different turf or canvasser into', () => {
-		expect(stillOurs(rowWith({ 'List Number': '999-1' }), layout, written)).toBe(false);
-		expect(stillOurs(rowWith({ Canvasser: 'Sam' }), layout, written)).toBe(false);
-	});
-
-	it('does not care about other cells the campaign edited', () => {
-		expect(stillOurs(rowWith({ 'Phone Number': '555-0100', Status: 'Out' }), layout, written)).toBe(
-			true,
-		);
+	// A Slack display name is user input and the write is USER_ENTERED.
+	it('forces the canvasser name to text so it cannot be a formula', () => {
+		expect(cellWrites({ Canvasser: '=IMPORTXML("x")' }, LAYOUT)).toEqual([
+			[col('Canvasser'), '\'=IMPORTXML("x")'],
+		]);
+		expect(cellWrites({ Canvasser: '' }, LAYOUT)).toEqual([[col('Canvasser'), '']]);
 	});
 });
 
 describe('campaignAssignments', () => {
-	const row = (list: string, status: string, canvasser = 'Sam') =>
-		HEADER.map((h) =>
-			h === 'List Number' ? list : h === 'Status' ? status : h === 'Canvasser' ? canvasser : '',
-		);
+	const sheet = (...rows: string[][]) => [[], HEADER, ...rows];
 
-	it('counts Unwalked, Out and Complete, not Incomplete', () => {
-		const values = [
-			HEADER,
-			row('1-1', 'Unwalked'),
-			row('2-2', 'out'),
-			row('3-3', ' Complete '),
-			row('4-4', 'Incomplete'),
-			row('5-5', ''),
-		];
-		const assigned = campaignAssignments(values, layoutOf(values), new Set());
+	it('counts Unwalked, Out and Complete, not Incomplete or blank', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam', Status: 'Unwalked' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'out' }),
+			packet('3-3', { Canvasser: 'Sam', Status: ' Complete ' }),
+			packet('4-4', { Canvasser: 'Sam', Status: 'Incomplete' }),
+			packet('5-5'),
+		);
+		const assigned = campaignAssignments(values, LAYOUT, new Map());
 		expect([...assigned.keys()].sort()).toEqual(['1-1', '2-2', '3-3']);
 	});
 
-	it('ignores our own tagged rows', () => {
-		const values = [HEADER, row('1-1', 'Out'), row('2-2', 'Out')];
-		const assigned = campaignAssignments(values, layoutOf(values), new Set([1]));
+	it('does not count our own entries', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Dana', Status: 'Out' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Out' }),
+		);
+		const assigned = campaignAssignments(values, LAYOUT, new Map([['1-1', 'Dana']]));
 		expect([...assigned.keys()]).toEqual(['2-2']);
 	});
 
-	it('forgives stray spaces in a typed list number, and names an unnamed holder', () => {
-		const values = [HEADER, row(' 35536745 - 88712 ', 'Out', '')];
-		const assigned = campaignAssignments(values, layoutOf(values), new Set());
-		expect(assigned.get('35536745-88712')).toBe('Packet Tracker');
+	// We filled it in, then an organizer handed it to someone else.
+	it('counts a packet of ours that now names someone else', () => {
+		const values = sheet(packet('1-1', { Canvasser: 'Sam', Status: 'Out' }));
+		expect(campaignAssignments(values, LAYOUT, new Map([['1-1', 'Dana']])).get('1-1')).toBe('Sam');
 	});
 
-	it('reads nothing above the header', () => {
-		const values = [row('1-1', 'Out'), HEADER, row('2-2', 'Out')];
-		const layout = layoutOf(values);
-		expect([...campaignAssignments(values, layout, new Set()).keys()]).toEqual(['2-2']);
+	it('names an unnamed holder as the tracker', () => {
+		const values = sheet(packet('1-1', { Status: 'Out' }));
+		expect(campaignAssignments(values, LAYOUT, new Map()).get('1-1')).toBe('Packet Tracker');
 	});
 });
