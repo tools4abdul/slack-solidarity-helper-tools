@@ -101,16 +101,20 @@ counted in a line under the list; it is still on the web map, which every reply 
 Your own turf stays in the list. Being at your claim limit does not hide anything: those
 turfs still show, with the reason they cannot be claimed yet.
 
-Three ways to say where you are, resolved in that order:
+Three ways to say where you are:
 
-| You type                             | County comes from                       | Sorted by         |
-| ------------------------------------ | --------------------------------------- | ----------------- |
-| `/turfs` in a county channel         | the chapter → channel map               | turf name         |
-| `/turfs 48104`                       | the ZIP → chapter map, else the channel | distance from ZIP |
-| `/turfs 100 N Main St, Ann Arbor MI` | the matched ZIP, else the channel       | distance          |
+| You type                             | County comes from                                        | Sorted by                 |
+| ------------------------------------ | -------------------------------------------------------- | ------------------------- |
+| `/turfs`                             | your Solidarity chapter, else your profile ZIP's chapter | distance from profile ZIP |
+| `/turfs 48104`                       | the ZIP → chapter map                                    | distance from ZIP         |
+| `/turfs 100 N Main St, Ann Arbor MI` | the matched ZIP → chapter map                            | distance                  |
 
-If none of them resolve, the reply is a list of counties to pick from — the same gate the
-web page applies, where no county means no turf rather than a default one.
+A bare `/turfs` finds your Solidarity account the same way `/members` does — an admin-made
+link first, then your Slack email — and never uses the channel it was typed in. If it can't
+place you (no account, no address or chapter on it, or nothing that maps to a county with
+turf checkout), the reply says which. Whenever no county resolves — including a typed
+location that maps to none — it asks for a ZIP or address, with links to each county's map:
+the same gate the web page applies, where no county means no turf rather than a default one.
 
 **Anyone in the workspace can run it**, minus the block list at **Settings → Blocked from
 turf checkout**. It and `/turfs-mine` are the only slash commands in the app that are not

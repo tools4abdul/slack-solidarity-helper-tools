@@ -12,6 +12,7 @@ import type { WebClient } from '@slack/web-api';
 import { getSlackUsers, type UserEntry } from './autocomplete-sources.js';
 import { fetchChannelMemberIds } from './coalition-reconcile.js';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { chapterIdsOf } from './solidarity-chapter-ids.js';
 
 /** The slice of a Solidarity /v1/users record the chapter diff needs. */
 export interface SolidarityChapterUser {
@@ -54,13 +55,6 @@ function normalizeEmail(email: string): string {
 	return email.trim().toLowerCase();
 }
 
-/** Same fallback rule as the team_join handler's resolveChapterIds. */
-function resolveChapterIds(user: SolidarityChapterUser): number[] {
-	if (user.chapter_ids?.length) return user.chapter_ids;
-	if (user.chapter_id != null) return [user.chapter_id];
-	return [];
-}
-
 /**
  * Pure matching pass. `membersByChannel` comes from conversations.members and
  * may include bots/apps; that only ever makes someone count as "already in
@@ -95,7 +89,7 @@ export function bucketChapterMoves(
 	const seenEmails = new Set<string>();
 
 	for (const person of solidarityUsers) {
-		const chapterIds = resolveChapterIds(person);
+		const chapterIds = chapterIdsOf(person);
 		if (chapterIds.length === 0) continue;
 
 		const mappings = chapterIds.flatMap((id) => channelsByChapter.get(id) ?? []);

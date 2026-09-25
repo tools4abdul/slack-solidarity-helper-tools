@@ -4,6 +4,7 @@ import { db } from '$lib/server/db.js';
 import { slackJoins } from '$lib/server/schema.js';
 import { slack } from '$lib/server/slack.js';
 import { getUserByEmail } from '$lib/server/solidarity.js';
+import { chapterIdsOf } from '$lib/server/solidarity-chapter-ids.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { verifySlackSignature } from '$lib/server/slack-signature.js';
 import { channelNameToId } from '$lib/server/slack-channel-names.js';
@@ -108,7 +109,7 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		return;
 	}
 
-	const chapterIds = resolveChapterIds(solidarityUser);
+	const chapterIds = chapterIdsOf(solidarityUser);
 	if (!(await recordSlackJoin(user.id, email, chapterIds))) {
 		console.log(
 			`[slack-events] team_join for ${user.id} (${email}) is already recorded — ` +
@@ -156,15 +157,6 @@ async function handleTeamJoin(user: SlackUser): Promise<void> {
 		const channelMentions = successfulChannelIds.map((id) => `<#${id}>`).join(', ');
 		console.log(`[slack-events] invited ${user.id} (${email}) to ${channelMentions} and sent DM`);
 	}
-}
-
-function resolveChapterIds(solidarityUser: {
-	chapter_id?: number | null;
-	chapter_ids?: number[];
-}): number[] {
-	if (solidarityUser.chapter_ids?.length) return solidarityUser.chapter_ids;
-	if (solidarityUser.chapter_id != null) return [solidarityUser.chapter_id];
-	return [];
 }
 
 /**

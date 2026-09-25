@@ -8,6 +8,7 @@
 // Reuses the retry/rate-limit handling from the app, which is deliberately free
 // of $env imports so non-SvelteKit entry points can share it.
 import { fetchWithRetry } from '../../src/lib/server/solidarity-paginate.js';
+import { chapterIdsOf } from '../../src/lib/server/solidarity-chapter-ids.js';
 
 const API = 'https://api.solidarity.tech/v1';
 
@@ -282,25 +283,6 @@ export function resolveChapterId(resolver: ChapterResolver, zipcode: string | nu
 export function normalizeZipKey(raw: string | null | undefined): string | null {
 	const match = /^(\d{5})(?:-\d{4})?$/.exec((raw ?? '').trim());
 	return match ? match[1] : null;
-}
-
-/**
- * Every chapter a Solidarity user belongs to.
- *
- * Same fallback as `resolveChapterIds` in chapter-reconcile.ts and the
- * team_join handler, and it has to be: those two decide which channels someone
- * is invited to, and this decides which chapter their zip resolves to. When
- * they disagreed, a member carrying `chapter_id` but an empty `chapter_ids`
- * counted everywhere in the app except here — invisible to exactly the tally
- * that places their neighbours.
- */
-function chapterIdsOf(user: {
-	chapter_id?: number | null;
-	chapter_ids?: number[] | null;
-}): number[] {
-	if (user.chapter_ids?.length) return user.chapter_ids;
-	if (user.chapter_id != null) return [user.chapter_id];
-	return [];
 }
 
 /**

@@ -8,6 +8,7 @@
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { solidarityDailySnapshots } from './schema.js';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { chapterIdsOf } from './solidarity-chapter-ids.js';
 
 interface SolidarityUserPage {
 	chapter_id: number | null;
@@ -107,12 +108,6 @@ async function fetchAllChapters(apiToken: string): Promise<Map<number, string>> 
 // Aggregation
 // ---------------------------------------------------------------------------
 
-function chapterIdsFor(u: SolidarityUserPage): number[] {
-	if (u.chapter_ids?.length) return u.chapter_ids;
-	if (u.chapter_id != null) return [u.chapter_id];
-	return [];
-}
-
 function bucketByChapter(
 	users: SolidarityUserPage[],
 	chapterNames: Map<number, string>,
@@ -120,7 +115,7 @@ function bucketByChapter(
 ): SnapshotRow[] {
 	const counts = new Map<number, number>();
 	for (const user of users) {
-		const ids = chapterIdsFor(user);
+		const ids = chapterIdsOf(user);
 		if (ids.length === 0) {
 			counts.set(NULL_CHAPTER_SENTINEL, (counts.get(NULL_CHAPTER_SENTINEL) ?? 0) + 1);
 		} else {

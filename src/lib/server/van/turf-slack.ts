@@ -20,8 +20,8 @@
 // wrong would ship holder names to volunteers; isSlackAdmin fails closed, which
 // is the right default here.
 //
-// A note on chapter resolution: it is always a single lookup against a mapping
-// table — channel to chapter, or ZIP to chapter — and NEVER "which chapter has
+// A note on chapter resolution: it is always a point lookup — the volunteer's
+// own Solidarity chapter, or ZIP to chapter — and NEVER "which chapter has
 // turf near this point". The latter would be the cross-chapter aggregate §3 of
 // the plan forbids: one request revealing the shape of the whole field
 // operation. Listing every chapter by name, as the picker does, is fine and is
@@ -39,6 +39,7 @@ import { loadChapterTurfs } from './turf-query.js';
 import { loadHoldingsFor } from './holdings-store.js';
 import { isActive } from '../../van/checkout.js';
 import { resolveLocation } from './zip-centroid.js';
+import { profileRegionFor } from './turf-profile.js';
 import {
 	buildChapterPickerBlocks,
 	buildClaimedBlocks,
@@ -48,6 +49,7 @@ import {
 	plainMessage,
 	SLACK_TURF_LIMIT,
 	type ChapterRef,
+	type LocationPrompt,
 	type SlackMessage,
 } from './turf-command.js';
 import { turfAccess } from '../../van/access.js';
@@ -63,11 +65,10 @@ const LOG = '[van]';
 
 export interface TurfRequestContext {
 	slackUserId: string;
-	/** Where the command was typed. Resolves the chapter when nothing else does. */
-	channelId?: string | null;
-	/** Raw text after the command — a ZIP or an address. */
+	/** Raw text after the command — a ZIP or an address. When empty, and no
+	 *  button supplied a chapter, the volunteer's Solidarity profile is asked. */
 	argument?: string | null;
-	/** From a button value; overrides the channel. */
+	/** From a button value; overrides everything else. */
 	chapterId?: number;
 	offset?: number;
 	/** From a button value, so a paged list sorts the same way page one did. */
@@ -104,7 +105,7 @@ async function buildList(
 	now: number,
 ): Promise<SlackMessage> {
 	const { viewer, chapter, location, zip } = gate;
-	if (!chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL);
+	if (!chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL, gate.prompt);
 
 	const offset = ctx.offset ?? 0;
 	const { turfs, total, omitted, start, nextOffset, unavailable } = await loadChapterTurfs(db, {
@@ -144,7 +145,7 @@ export async function claimFromSlack(
 	const now = ctx.now ?? Date.now();
 	const gate = await passGates(db, ctx, now);
 	if (!gate.ok) return gate.message;
-	if (!gate.chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL);
+	if (!gate.chapter) return buildChapterPickerBlocks(gate.chapters, APP_URL, gate.prompt);
 
 	const result = await claimTurf(db, {
 		mapRouteId: ctx.mapRouteId,
@@ -355,6 +356,9 @@ type GateResult =
 			chapter: ChapterRef | null;
 			location: LatLng | null;
 			zip: string | null;
+			/** Why a bare `/turfs` could not place the volunteer, when it could
+			 *  not. Only ever set alongside `chapter: null`. */
+			prompt?: LocationPrompt;
 			/** How long a claim lasts and how many one volunteer may hold, as
 			 *  configured on /settings. Carried on the gate because passGates is
 			 *  the one place that reads settings: without it this file falls back
@@ -401,31 +405,50 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 		.map((entry) => ({ chapterId: entry.chapterId, name: entry.name }))
 		.sort((a, b) => a.name.localeCompare(b.name));
 
-	// Location first: what the volunteer typed is a stronger statement about
-	// where they are than which channel they happen to be reading.
+	// What the volunteer typed wins. With nothing typed, and no chapter carried
+	// in from a button, their own Solidarity profile says where they are.
 	const argument = parseTurfArgument(ctx.argument);
-	const resolved =
-		argument.kind === 'none' ? null : await resolveLocation(db, locationQuery(argument));
-	if (argument.kind !== 'none' && !resolved) {
-		return {
-			ok: false,
-			message: plainMessage(
-				"I couldn't find that place. Try a ZIP code, or a fuller address like `100 N Main St, Ann Arbor MI`.",
-			),
-		};
+	let resolved: Awaited<ReturnType<typeof resolveLocation>> = null;
+	let profileZip: string | null = null;
+	let profileChapterIds: number[] = [];
+	let prompt: LocationPrompt | undefined;
+
+	if (argument.kind !== 'none') {
+		resolved = await resolveLocation(db, locationQuery(argument));
+		if (!resolved) {
+			return {
+				ok: false,
+				message: plainMessage(
+					"I couldn't find that place. Try a ZIP code, or a fuller address like `100 N Main St, Ann Arbor MI`.",
+				),
+			};
+		}
+	} else if (ctx.chapterId === undefined) {
+		const region = await profileRegionFor(db, ctx.slackUserId);
+		if (!region) {
+			prompt = 'no-profile';
+		} else if (!region.zip && region.chapterIds.length === 0) {
+			prompt = 'no-location';
+		} else {
+			prompt = 'unmatched';
+			profileZip = region.zip;
+			profileChapterIds = region.chapterIds;
+			// Only for sorting nearest-first. A geocoder miss costs the sort, not
+			// the list: the ZIP still resolves the chapter below.
+			if (region.zip) resolved = await resolveLocation(db, region.zip);
+		}
 	}
 	const location = resolved?.point ?? ctx.location ?? null;
-	const zip = resolved?.zip ?? null;
+	const zip = resolved?.zip ?? profileZip;
 
 	const chapter = await resolveChapter(db, {
 		explicitChapterId: ctx.chapterId,
+		profileChapterIds,
 		zip,
-		channelId: ctx.channelId ?? null,
 		chapters,
-		channelMap: settings.chapterChannelMap,
 	});
 	if (!chapter) {
-		return { ok: true, viewer, chapters, chapter: null, location, zip, claimOptions };
+		return { ok: true, viewer, chapters, chapter: null, location, zip, prompt, claimOptions };
 	}
 
 	// Same counter the page spends. Re-opening a chapter already seen this hour
@@ -502,6 +525,10 @@ function locationQuery(argument: ReturnType<typeof parseTurfArgument>): string {
 /**
  * Which county the volunteer means.
  *
+ * In order: a chapter from a button, the volunteer's own Solidarity chapters,
+ * then the ZIP — typed, or from their profile. Membership beats the ZIP map
+ * because the map is only a guess derived from where other members live.
+ *
  * Every branch is a point lookup, and every answer is re-validated against the
  * chapter/channel map — including one that arrived in a button value, which
  * round-tripped through a client and is therefore untrusted. An id that is not
@@ -511,10 +538,9 @@ async function resolveChapter(
 	db: Db,
 	input: {
 		explicitChapterId?: number;
+		profileChapterIds: number[];
 		zip: string | null;
-		channelId: string | null;
 		chapters: ChapterRef[];
-		channelMap: { chapterId: number; channelId: string; name: string }[];
 	},
 ): Promise<ChapterRef | null> {
 	const known = (id: number | undefined | null) =>
@@ -525,15 +551,14 @@ async function resolveChapter(
 	const explicit = known(input.explicitChapterId);
 	if (explicit) return explicit;
 
+	for (const id of input.profileChapterIds) {
+		const fromProfile = known(id);
+		if (fromProfile) return fromProfile;
+	}
+
 	if (input.zip) {
 		const fromZip = known(await chapterForZip(db, input.zip));
 		if (fromZip) return fromZip;
-	}
-
-	if (input.channelId) {
-		const entry = input.channelMap.find((c) => c.channelId === input.channelId);
-		const fromChannel = known(entry?.chapterId);
-		if (fromChannel) return fromChannel;
 	}
 
 	return null;
@@ -544,7 +569,7 @@ async function resolveChapter(
  *
  * Sparse by nature — it is derived from where members live, so a ZIP nobody
  * has signed up from has no row. That is a miss, not a failure: the caller
- * falls back to the channel, and then to the picker.
+ * asks the volunteer where they are instead.
  */
 async function chapterForZip(db: Db, zip: string): Promise<number | null> {
 	try {

@@ -9,6 +9,7 @@ const mockResolveLocation = vi.hoisted(() => vi.fn());
 const mockClaimTurf = vi.hoisted(() => vi.fn());
 const mockEndClaim = vi.hoisted(() => vi.fn());
 const mockLoadHoldingsFor = vi.hoisted(() => vi.fn());
+const mockProfileRegion = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/env.js', () => ({
 	APP_URL: 'https://app.example.org',
@@ -33,6 +34,7 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 	endClaim: mockEndClaim,
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({ loadHoldingsFor: mockLoadHoldingsFor }));
+vi.mock('$lib/server/van/turf-profile.js', () => ({ profileRegionFor: mockProfileRegion }));
 
 const {
 	claimFromSlack,
@@ -103,6 +105,7 @@ describe('turfListMessage', () => {
 		mockBlockedIds.mockResolvedValue(new Set<string>());
 		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
 		mockResolveLocation.mockResolvedValue(null);
+		mockProfileRegion.mockResolvedValue({ zip: null, chapterIds: [71] });
 		mockLoadChapterTurfs.mockResolvedValue({
 			turfs: [turfView()],
 			total: 1,
@@ -113,11 +116,10 @@ describe('turfListMessage', () => {
 		});
 	});
 
-	it('resolves the chapter from the channel it was run in', async () => {
-		const msg = await turfListMessage(makeDb(), {
-			slackUserId: freshUser(),
-			channelId: 'C_WASHTENAW',
-		});
+	it("resolves a bare /turfs from the volunteer's Solidarity chapter", async () => {
+		const user = freshUser();
+		const msg = await turfListMessage(makeDb(), { slackUserId: user });
+		expect(mockProfileRegion).toHaveBeenCalledWith(expect.anything(), user);
 		expect(body(msg)).toContain('Washtenaw County');
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
@@ -125,56 +127,110 @@ describe('turfListMessage', () => {
 		);
 	});
 
-	it('shows the picker when the channel maps to no chapter', async () => {
-		const msg = await turfListMessage(makeDb(), {
-			slackUserId: freshUser(),
-			channelId: 'C_GENERAL',
-		});
-		expect(msg.text).toContain('Which county');
-		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
-	});
-
-	it('resolves the chapter from a ZIP, overriding the channel', async () => {
-		mockResolveLocation.mockResolvedValue({ point: { lat: 42.3, lng: -83.1 }, zip: '48226' });
-		await turfListMessage(makeDb(72), {
-			slackUserId: freshUser(),
-			channelId: 'C_WASHTENAW',
-			argument: '48226',
-		});
-		// What the volunteer typed beats which channel they happen to be reading.
+	it('skips profile chapters that are not set up for turf checkout', async () => {
+		mockProfileRegion.mockResolvedValue({ zip: null, chapterIds: [999, 72] });
+		await turfListMessage(makeDb(), { slackUserId: freshUser() });
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ chapterId: 72 }),
 		);
 	});
 
-	it('falls back to the channel when the ZIP maps to no chapter', async () => {
-		mockResolveLocation.mockResolvedValue({ point: { lat: 42.3, lng: -83.1 }, zip: '99999' });
-		await turfListMessage(makeDb(null), {
-			slackUserId: freshUser(),
-			channelId: 'C_WASHTENAW',
-			argument: '99999',
-		});
+	it('sorts by the profile ZIP and falls back to it for the chapter', async () => {
+		mockProfileRegion.mockResolvedValue({ zip: '48226', chapterIds: [] });
+		mockResolveLocation.mockResolvedValue({ point: { lat: 42.3, lng: -83.1 }, zip: '48226' });
+		await turfListMessage(makeDb(72), { slackUserId: freshUser() });
+		expect(mockResolveLocation).toHaveBeenCalledWith(expect.anything(), '48226');
+		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ chapterId: 72, location: { lat: 42.3, lng: -83.1 } }),
+		);
+	});
+
+	it('prefers the profile chapter over the ZIP map', async () => {
+		mockProfileRegion.mockResolvedValue({ zip: '48226', chapterIds: [71] });
+		mockResolveLocation.mockResolvedValue({ point: { lat: 42.3, lng: -83.1 }, zip: '48226' });
+		await turfListMessage(makeDb(72), { slackUserId: freshUser() });
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ chapterId: 71 }),
 		);
 	});
 
-	it('ignores a zip→chapter mapping that is not a real chapter', async () => {
-		mockResolveLocation.mockResolvedValue({ point: { lat: 1, lng: 1 }, zip: '48226' });
-		await turfListMessage(makeDb(999), { slackUserId: freshUser(), channelId: 'C_WASHTENAW' });
+	it('still uses the profile ZIP for the chapter when it cannot be geocoded', async () => {
+		mockProfileRegion.mockResolvedValue({ zip: '48226', chapterIds: [] });
+		mockResolveLocation.mockResolvedValue(null);
+		await turfListMessage(makeDb(72), { slackUserId: freshUser() });
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ chapterId: 71 }),
+			expect.objectContaining({ chapterId: 72, location: null }),
 		);
+	});
+
+	it('asks for a location when no Solidarity profile is found', async () => {
+		mockProfileRegion.mockResolvedValue(null);
+		const msg = await turfListMessage(makeDb(), { slackUserId: freshUser() });
+		expect(msg.text).toContain('ZIP code or address');
+		expect(body(msg)).toContain("couldn't find your Solidarity profile");
+		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+	});
+
+	it('asks for a location when the profile has no address or chapter', async () => {
+		mockProfileRegion.mockResolvedValue({ zip: null, chapterIds: [] });
+		const msg = await turfListMessage(makeDb(), { slackUserId: freshUser() });
+		expect(body(msg)).toContain("doesn't have an address or chapter");
+		expect(mockResolveLocation).not.toHaveBeenCalled();
+		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+	});
+
+	it('asks for a location when the profile maps to no chapter', async () => {
+		mockProfileRegion.mockResolvedValue({ zip: '99999', chapterIds: [999] });
+		const msg = await turfListMessage(makeDb(null), { slackUserId: freshUser() });
+		expect(body(msg)).toContain("couldn't match your Solidarity profile");
+		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+	});
+
+	it('resolves the chapter from a typed ZIP without reading the profile', async () => {
+		mockResolveLocation.mockResolvedValue({ point: { lat: 42.3, lng: -83.1 }, zip: '48226' });
+		await turfListMessage(makeDb(72), { slackUserId: freshUser(), argument: '48226' });
+		// What the volunteer typed beats what their profile says.
+		expect(mockProfileRegion).not.toHaveBeenCalled();
+		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ chapterId: 72 }),
+		);
+	});
+
+	it('asks for a location when a typed ZIP maps to no chapter', async () => {
+		mockResolveLocation.mockResolvedValue({ point: { lat: 42.3, lng: -83.1 }, zip: '99999' });
+		const msg = await turfListMessage(makeDb(null), {
+			slackUserId: freshUser(),
+			argument: '99999',
+		});
+		expect(msg.text).toContain('ZIP code or address');
+		expect(body(msg)).not.toContain('Solidarity profile');
+		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+	});
+
+	it('ignores a zip→chapter mapping that is not a real chapter', async () => {
+		mockResolveLocation.mockResolvedValue({ point: { lat: 1, lng: 1 }, zip: '48226' });
+		const msg = await turfListMessage(makeDb(999), {
+			slackUserId: freshUser(),
+			argument: '48226',
+		});
+		expect(msg.text).toContain('ZIP code or address');
+		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
+	});
+
+	it('does not read the profile when a button carries the chapter', async () => {
+		await turfListMessage(makeDb(), { slackUserId: freshUser(), chapterId: 72, offset: 5 });
+		expect(mockProfileRegion).not.toHaveBeenCalled();
 	});
 
 	it('geocodes a street address and sorts by it', async () => {
 		mockResolveLocation.mockResolvedValue({ point: { lat: 42.28, lng: -83.74 }, zip: '48104' });
 		await turfListMessage(makeDb(71), {
 			slackUserId: freshUser(),
-			channelId: 'C_WASHTENAW',
 			argument: '100 N Main St, Ann Arbor MI',
 		});
 		expect(mockResolveLocation).toHaveBeenCalledWith(
@@ -191,7 +247,6 @@ describe('turfListMessage', () => {
 		mockResolveLocation.mockResolvedValue(null);
 		const msg = await turfListMessage(makeDb(), {
 			slackUserId: freshUser(),
-			channelId: 'C_WASHTENAW',
 			argument: 'nowhere at all',
 		});
 		expect(msg.text).toContain("couldn't find that place");
@@ -203,7 +258,7 @@ describe('turfListMessage', () => {
 	it('refuses a blocked user before any turf is read', async () => {
 		const user = freshUser();
 		mockBlockedIds.mockResolvedValue(new Set([user]));
-		const msg = await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+		const msg = await turfListMessage(makeDb(), { slackUserId: user });
 		expect(msg.text).toContain("isn't available for your account");
 		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
 	});
@@ -212,7 +267,7 @@ describe('turfListMessage', () => {
 		const user = freshUser();
 		mockIsSlackAdmin.mockResolvedValue(true);
 		mockBlockedIds.mockResolvedValue(new Set([user]));
-		const msg = await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+		const msg = await turfListMessage(makeDb(), { slackUserId: user });
 		expect(msg.text).not.toContain("isn't available");
 	});
 
@@ -220,7 +275,6 @@ describe('turfListMessage', () => {
 		mockBlockedIds.mockResolvedValue(new Set(['U_SUPER']));
 		const msg = await turfListMessage(makeDb(), {
 			slackUserId: 'U_SUPER',
-			channelId: 'C_WASHTENAW',
 		});
 		expect(msg.text).not.toContain("isn't available");
 	});
@@ -230,7 +284,7 @@ describe('turfListMessage', () => {
 	it('passes the re-derived admin flag through to the query', async () => {
 		mockIsSlackAdmin.mockResolvedValue(true);
 		const user = freshUser();
-		await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+		await turfListMessage(makeDb(), { slackUserId: user });
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ viewer: { slackUserId: user, isAdmin: true } }),
@@ -238,7 +292,7 @@ describe('turfListMessage', () => {
 	});
 
 	it('keeps turf the volunteer already holds', async () => {
-		await turfListMessage(makeDb(), { slackUserId: freshUser(), channelId: 'C_WASHTENAW' });
+		await turfListMessage(makeDb(), { slackUserId: freshUser() });
 		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ includeHeldByViewer: true }),
@@ -250,22 +304,22 @@ describe('turfListMessage', () => {
 		// budget follows the user rather than the surface they came in through.
 		it('spends the shared request budget', async () => {
 			const user = freshUser();
-			await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+			await turfListMessage(makeDb(), { slackUserId: user });
 			expect(turfRequests.get(user)).toHaveLength(1);
 		});
 
 		it('refuses once the request budget is exhausted', async () => {
 			const user = freshUser();
 			for (let i = 0; i < MAX_REQUESTS; i++) {
-				await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+				await turfListMessage(makeDb(), { slackUserId: user });
 			}
-			const msg = await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+			const msg = await turfListMessage(makeDb(), { slackUserId: user });
 			expect(msg.text).toContain('Give it a minute');
 		});
 
 		it('spends the shared chapter budget, and paging one chapter is free', async () => {
 			const user = freshUser();
-			await turfListMessage(makeDb(), { slackUserId: user, channelId: 'C_WASHTENAW' });
+			await turfListMessage(makeDb(), { slackUserId: user });
 			await turfListMessage(makeDb(), { slackUserId: user, chapterId: 71, offset: 5 });
 			await turfListMessage(makeDb(), { slackUserId: user, chapterId: 71, offset: 10 });
 			expect(chapterVisits.get(user)).toHaveLength(1);
@@ -293,7 +347,9 @@ describe('turfListMessage', () => {
 
 	it('ignores a chapter id from a button that is not a real chapter', async () => {
 		const msg = await turfListMessage(makeDb(), { slackUserId: freshUser(), chapterId: 4242 });
-		expect(msg.text).toContain('Which county');
+		expect(msg.text).toContain('ZIP code or address');
+		// A forged id is not a bare /turfs: no reason to look the caller up.
+		expect(mockProfileRegion).not.toHaveBeenCalled();
 		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
 	});
 
@@ -429,7 +485,7 @@ describe('claimFromSlack', () => {
 			chapterId: 4242,
 			mapRouteId: 100,
 		});
-		expect(msg.text).toContain('Which county');
+		expect(msg.text).toContain('ZIP code or address');
 		expect(mockClaimTurf).not.toHaveBeenCalled();
 	});
 

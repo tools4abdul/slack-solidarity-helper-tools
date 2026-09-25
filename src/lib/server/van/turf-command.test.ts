@@ -448,10 +448,23 @@ describe('buildChapterPickerBlocks', () => {
 		expect(body).toContain('Wayne County');
 	});
 
-	it('explains both other ways to ask', () => {
-		const body = serialise(buildChapterPickerBlocks([CHAPTER], APP_URL).blocks);
-		expect(body).toContain('/turfs 48104');
-		expect(body).toContain("county's channel");
+	it('asks for a ZIP or an address', () => {
+		const { text, blocks } = buildChapterPickerBlocks([CHAPTER], APP_URL);
+		expect(text).toContain('ZIP code or address');
+		expect(serialise(blocks)).toContain('/turfs 48104');
+		expect(serialise(blocks)).not.toContain('channel');
+	});
+
+	it('says why the profile could not place the volunteer', () => {
+		expect(serialise(buildChapterPickerBlocks([CHAPTER], APP_URL, 'no-profile').blocks)).toContain(
+			"couldn't find your Solidarity profile",
+		);
+		expect(serialise(buildChapterPickerBlocks([CHAPTER], APP_URL, 'no-location').blocks)).toContain(
+			"doesn't have an address or chapter",
+		);
+		expect(serialise(buildChapterPickerBlocks([CHAPTER], APP_URL, 'unmatched').blocks)).toContain(
+			"couldn't match your Solidarity profile",
+		);
 	});
 
 	it('handles a workspace with no chapters configured', () => {

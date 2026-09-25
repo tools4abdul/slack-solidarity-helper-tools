@@ -198,8 +198,8 @@ export interface ZipMapRefresh {
  * Nothing distinguished "we recomputed this and it still says Kent" from "we
  * have not been able to say anything about this since July". Deleting is the
  * honest answer: an absent zip falls back to the event's own chapter when a
- * profile is created and to the channel (then the picker) in /turfs, and both of
- * those beat a mapping nobody can date.
+ * profile is created and to asking the volunteer where they are in /turfs, and
+ * both of those beat a mapping nobody can date.
  */
 export async function refreshZipChapterMap(
 	db: Db,

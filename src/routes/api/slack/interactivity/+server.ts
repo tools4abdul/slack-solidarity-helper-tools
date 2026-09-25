@@ -271,7 +271,6 @@ function handleTurfAction(
 	void (async () => {
 		const ctx = {
 			slackUserId,
-			channelId: payload.channel?.id ?? null,
 			chapterId: decoded.chapterId,
 			offset: decoded.offset,
 			location: decoded.location ?? null,
