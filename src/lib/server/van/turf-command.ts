@@ -688,8 +688,20 @@ function hoursUntil(iso: string, now: Date): number {
 	return Number.isNaN(ms) || ms <= 0 ? 0 : Math.ceil(ms / 3_600_000);
 }
 
+/** Why a bare `/turfs` could not place the volunteer from their Solidarity
+ *  profile. Absent when the location came from anywhere else — a typed ZIP or
+ *  address that maps to no chapter, or a button naming an unknown one. */
+export type LocationPrompt = 'no-profile' | 'no-location' | 'unmatched';
+
+const PROMPT_REASON: Record<LocationPrompt, string> = {
+	'no-profile': "I couldn't find your Solidarity profile, so I don't know where you are.",
+	'no-location': "Your Solidarity profile doesn't have an address or chapter on it yet.",
+	unmatched: "I couldn't match your Solidarity profile to a county with turf checkout.",
+};
+
 /**
- * Shown when we cannot tell which county the volunteer means.
+ * Shown when we cannot tell which county the volunteer means: ask for a ZIP or
+ * an address, and link each county's map for anyone who would rather browse.
  *
  * Lists every chapter with a Slack channel, NOT the chapters that have turf —
  * the latter is a cross-chapter aggregate revealing where the field operation
@@ -699,6 +711,7 @@ function hoursUntil(iso: string, now: Date): number {
 export function buildChapterPickerBlocks(
 	chapters: readonly ChapterRef[],
 	appUrl: string,
+	prompt?: LocationPrompt,
 ): SlackMessage {
 	if (chapters.length === 0) {
 		return {
@@ -715,17 +728,19 @@ export function buildChapterPickerBlocks(
 	const links = chapters
 		.map((c) => `• <${escapeMrkdwn(turfPageUrl(appUrl, c.chapterId))}|${escapeMrkdwn(c.name)}>`)
 		.join('\n');
+	const reason = prompt ? `${PROMPT_REASON[prompt]}\n` : '';
 
 	return {
-		text: 'Which county are you canvassing in?',
+		text: 'Where are you canvassing? Add a ZIP code or address after /turfs.',
 		blocks: [
 			{
 				type: 'section',
 				text: mrkdwn(
-					"*Which county are you canvassing in?*\nRun `/turfs` in your county's channel, or " +
-						'add a ZIP or address — `/turfs 48104` or `/turfs 100 N Main St, Ann Arbor MI`.',
+					`${reason}*Where are you canvassing?* Add a ZIP code or address — ` +
+						'`/turfs 48104` or `/turfs 100 N Main St, Ann Arbor MI`.',
 				),
 			},
+			context("Or open your county's map:"),
 			{ type: 'section', text: mrkdwn(links) },
 		],
 	};

@@ -3,7 +3,9 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db.js';
 import { slack } from '$lib/server/slack.js';
 import { loadSettings, type ChapterEntry } from '$lib/server/settings.js';
-import { getUserByEmail } from '$lib/server/solidarity.js';
+import { findSolidarityUserForSlack } from '$lib/server/slack-solidarity-user.js';
+import { chapterIdsOf } from '$lib/server/solidarity-chapter-ids.js';
+import { errMessage } from '$lib/err-message.js';
 import { getSlackChannels } from '$lib/server/autocomplete-sources.js';
 import { DEFAULT_WELCOME_DM, renderWelcomeDm } from '$lib/welcome-dm.js';
 import { resolveChannelLinks } from '$lib/channel-tokens.js';
@@ -15,10 +17,10 @@ import { resolveChannelLinks } from '$lib/channel-tokens.js';
 // absent it falls back to the saved setting.
 //
 // `{{channels}}` is filled with the ADMIN's own chapter channels when their
-// Slack account maps to a Solidarity member (resolved the same way the real
-// join flow does: Slack id → email → Solidarity chapters → channel map). Many
-// admins aren't mapped members — their Slack email may not match their
-// Solidarity email, or they have no account — so when the personal lookup comes
+// Slack account maps to a Solidarity member (Slack id → admin-made link or
+// email → Solidarity chapters → channel map). Many admins aren't mapped
+// members — their Slack email may not match their Solidarity email and nobody
+// has linked them, or they have no account — so when the personal lookup comes
 // up empty we fall back to a small SAMPLE of real mapped channels so the
 // preview still shows genuine clickable links. The test DM's header states
 // which mode was used so the sample is never mistaken for the recipient's
@@ -48,23 +50,22 @@ async function resolveOwnChannelIds(
 	chapterChannelMap: ChapterEntry[],
 ): Promise<string[]> {
 	try {
-		const info = await slack.users.info({ user: slackUserId });
-		const email = (info.user as { profile?: { email?: string } } | undefined)?.profile?.email;
-		if (!email) return [];
-		const solidarityUser = await getUserByEmail(email);
+		const solidarityUser = await findSolidarityUserForSlack(db, slackUserId);
 		if (!solidarityUser) return [];
-		const chapterIds = solidarityUser.chapter_ids?.length
-			? solidarityUser.chapter_ids
-			: solidarityUser.chapter_id != null
-				? [solidarityUser.chapter_id]
-				: [];
+		const chapterIds = chapterIdsOf(solidarityUser);
 		if (chapterIds.length === 0) return [];
 		return [
 			...new Set(
 				chapterChannelMap.filter((e) => chapterIds.includes(e.chapterId)).map((e) => e.channelId),
 			),
 		];
-	} catch {
+	} catch (err) {
+		// The lenient getUserByEmail this replaced logged its failures; the shared
+		// lookup throws instead, so the log lives here now.
+		console.error(
+			`[settings] welcome-dm test: account lookup failed for ${slackUserId}:`,
+			errMessage(err),
+		);
 		return [];
 	}
 }

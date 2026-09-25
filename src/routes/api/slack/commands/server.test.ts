@@ -519,17 +519,13 @@ describe('POST /api/slack/commands — /turfs', () => {
 		);
 	});
 
-	it('passes the channel and the typed location through', async () => {
+	it('passes the typed location through', async () => {
 		await call(turfs({ text: '100 N Main St, Ann Arbor MI' }));
 		await flush();
-		expect(mockTurfListMessage).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.objectContaining({
-				slackUserId: 'U_VOL',
-				channelId: 'C_WASHTENAW',
-				argument: '100 N Main St, Ann Arbor MI',
-			}),
-		);
+		expect(mockTurfListMessage).toHaveBeenCalledWith(expect.anything(), {
+			slackUserId: 'U_VOL',
+			argument: '100 N Main St, Ann Arbor MI',
+		});
 	});
 
 	// This is the only slash command open to non-admins, and the gates that do

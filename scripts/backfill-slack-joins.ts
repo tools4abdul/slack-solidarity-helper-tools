@@ -22,6 +22,7 @@ import { createClient } from '@libsql/client';
 import { WebClient } from '@slack/web-api';
 import { dbConfig } from '../bin/db-config.js';
 import { fetchWithRetry } from '../src/lib/server/solidarity-paginate.js';
+import { chapterIdsOf } from '../src/lib/server/solidarity-chapter-ids.js';
 
 // ---------------------------------------------------------------------------
 // Config from env
@@ -72,12 +73,6 @@ async function getSolidarityUser(email: string): Promise<SolidarityUser | null> 
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function chapterIdsFor(u: SolidarityUser): number[] {
-	if (u.chapter_ids?.length) return u.chapter_ids;
-	if (u.chapter_id != null) return [u.chapter_id];
-	return [];
 }
 
 interface SlackUserDates {
@@ -163,7 +158,7 @@ async function main() {
 			if (joinedAt === null) stats.noJoinDate++;
 
 			const solidarityUser = await getSolidarityUser(email);
-			const chapterIds = solidarityUser ? chapterIdsFor(solidarityUser) : [];
+			const chapterIds = solidarityUser ? chapterIdsOf(solidarityUser) : [];
 			if (!solidarityUser) stats.noSolidarity++;
 
 			const chapterIdsJson = JSON.stringify(chapterIds);

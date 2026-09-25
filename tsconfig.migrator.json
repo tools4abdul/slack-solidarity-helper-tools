@@ -18,11 +18,12 @@
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true
 	},
-	// These app modules are shared with the CLI by relative import. All three are
-	// deliberately free of $env/$lib imports so both entry points can use them.
+	// These app modules are shared with the CLI by relative import. All of them
+	// are deliberately free of $env/$lib imports so both entry points can use them.
 	"include": [
 		"mobilize-migrator/**/*.ts",
 		"src/lib/server/solidarity-paginate.ts",
+		"src/lib/server/solidarity-chapter-ids.ts",
 		"src/lib/server/mobilize-ledger.ts",
 		"src/lib/server/schema.ts"
 	]

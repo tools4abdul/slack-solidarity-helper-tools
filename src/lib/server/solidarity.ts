@@ -19,6 +19,7 @@ export interface SolidarityUser {
 	address: {
 		city: string | null;
 		state: string | null;
+		zip_code?: string | null;
 	} | null;
 }
 

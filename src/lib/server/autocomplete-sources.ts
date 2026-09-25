@@ -10,6 +10,7 @@
 
 import type { WebClient } from '@slack/web-api';
 import { fetchPaginated } from './solidarity-paginate.js';
+import { chapterIdsOf } from './solidarity-chapter-ids.js';
 import { startWalk, finishWalk } from './walk-progress.js';
 import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
 
@@ -472,15 +473,6 @@ interface RawSolidarityUser {
 	chapter_ids?: number[] | null;
 }
 
-/** Same `chapter_ids ?? [chapter_id]` fallback the team_join handler,
- *  chapter-reconcile and the nightly snapshot each apply — `chapter_ids` is the
- *  modern field and `chapter_id` the legacy single-chapter one. */
-function rawChapterIds(raw: RawSolidarityUser): number[] {
-	if (raw.chapter_ids?.length) return raw.chapter_ids;
-	if (raw.chapter_id != null) return [raw.chapter_id];
-	return [];
-}
-
 function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 	const email = (raw.email ?? '').trim().toLowerCase();
 	const full = [raw.first_name, raw.last_name]
@@ -498,7 +490,7 @@ function toMemberEntry(raw: RawSolidarityUser): SolidarityMemberEntry {
 			.filter((e): e is string => typeof e === 'string')
 			.map((e) => e.trim().toLowerCase())
 			.filter(Boolean),
-		chapterIds: rawChapterIds(raw),
+		chapterIds: chapterIdsOf(raw),
 	};
 }
 

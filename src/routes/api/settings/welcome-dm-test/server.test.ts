@@ -2,19 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { POST } from './+server.js';
 
 const mockLoadSettings = vi.hoisted(() => vi.fn());
-const mockGetUserByEmail = vi.hoisted(() => vi.fn());
+const mockFindForSlack = vi.hoisted(() => vi.fn());
 const mockGetSlackChannels = vi.hoisted(() => vi.fn());
-const mockUsersInfo = vi.hoisted(() => vi.fn());
 const mockConversationsOpen = vi.hoisted(() => vi.fn());
 const mockPostMessage = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db', () => ({ db: {} }));
 vi.mock('$lib/server/settings', () => ({ loadSettings: mockLoadSettings }));
-vi.mock('$lib/server/solidarity', () => ({ getUserByEmail: mockGetUserByEmail }));
+vi.mock('$lib/server/slack-solidarity-user', () => ({
+	findSolidarityUserForSlack: mockFindForSlack,
+}));
 vi.mock('$lib/server/autocomplete-sources', () => ({ getSlackChannels: mockGetSlackChannels }));
 vi.mock('$lib/server/slack', () => ({
 	slack: {
-		users: { info: mockUsersInfo },
 		conversations: { open: mockConversationsOpen },
 		chat: { postMessage: mockPostMessage },
 	},
@@ -57,8 +57,7 @@ describe('POST /api/settings/welcome-dm-test', () => {
 				{ chapterId: 99, channelId: 'C_OTHER', name: 'Other' },
 			],
 		});
-		mockUsersInfo.mockResolvedValue({ user: { profile: { email: 'me@example.com' } } });
-		mockGetUserByEmail.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
+		mockFindForSlack.mockResolvedValue({ chapter_id: null, chapter_ids: [42] });
 		mockGetSlackChannels.mockResolvedValue({ items: [], fetchedAt: 0 });
 		mockConversationsOpen.mockResolvedValue({ channel: { id: 'DM_ME' } });
 		mockPostMessage.mockResolvedValue({ ok: true });
@@ -78,6 +77,7 @@ describe('POST /api/settings/welcome-dm-test', () => {
 	it("fills {{channels}} with the admin's OWN chapter channels, not others", async () => {
 		const res = await POST(makeEvent(authed, {}) as never);
 		expect(res.status).toBe(200);
+		expect(mockFindForSlack).toHaveBeenCalledWith(expect.anything(), 'U_ME');
 		expect(mockConversationsOpen).toHaveBeenCalledWith({ users: 'U_ME' });
 		const text = sectionText();
 		expect(text).toContain('<#C_MINE>');
@@ -98,7 +98,7 @@ describe('POST /api/settings/welcome-dm-test', () => {
 	});
 
 	it('falls back to a SAMPLE of real channels (labeled) when not a mapped member', async () => {
-		mockGetUserByEmail.mockResolvedValue(null);
+		mockFindForSlack.mockResolvedValue(null);
 		const res = await POST(makeEvent(authed, {}) as never);
 		expect(res.status).toBe(200);
 		const text = sectionText();
@@ -110,7 +110,7 @@ describe('POST /api/settings/welcome-dm-test', () => {
 	});
 
 	it('shows a placeholder only when no chapter channels are configured', async () => {
-		mockGetUserByEmail.mockResolvedValue(null);
+		mockFindForSlack.mockResolvedValue(null);
 		mockLoadSettings.mockResolvedValue({
 			welcomeDmMessage: 'Welcome to {{channels}}!',
 			chapterChannelMap: [],
@@ -121,8 +121,9 @@ describe('POST /api/settings/welcome-dm-test', () => {
 		expect(contextNote()).toContain('placeholder');
 	});
 
-	it('still sends when the Slack lookup throws (sample fallback, no crash)', async () => {
-		mockUsersInfo.mockRejectedValue(new Error('scope'));
+	it('still sends when the account lookup throws (sample fallback, no crash)', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockFindForSlack.mockRejectedValue(new Error('scope'));
 		const res = await POST(makeEvent(authed, {}) as never);
 		expect(res.status).toBe(200);
 		expect(sectionText()).toContain('<#C_MINE>');

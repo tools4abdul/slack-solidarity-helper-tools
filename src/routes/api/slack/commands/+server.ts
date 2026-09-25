@@ -66,11 +66,11 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	if (command === '/turfs') {
-		return handleTurfs({ slackUserId, channelId, commandText, responseUrl });
+		return handleTurfs({ slackUserId, commandText, responseUrl });
 	}
 
 	if (command === '/turfs-mine') {
-		return handleTurfsMine({ slackUserId, channelId, responseUrl });
+		return handleTurfsMine({ slackUserId, responseUrl });
 	}
 
 	if (command === '/list-commands') {
@@ -95,15 +95,11 @@ export const POST: RequestHandler = async ({ request }) => {
  * decide what is NEAR you; this command answers from rows that are already
  * yours, so there is nothing for a location to change.
  */
-function handleTurfsMine(args: {
-	slackUserId: string;
-	channelId: string | null;
-	responseUrl: string | null;
-}): Response {
-	const { slackUserId, channelId, responseUrl } = args;
+function handleTurfsMine(args: { slackUserId: string; responseUrl: string | null }): Response {
+	const { slackUserId, responseUrl } = args;
 
 	void (async () => {
-		const message = await myTurfMessage(db, { slackUserId, channelId });
+		const message = await myTurfMessage(db, { slackUserId });
 		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
 	})().catch((err) => {
 		console.error(`${TURF_LOG} /turfs-mine failed for ${slackUserId}:`, errMessage(err));
@@ -136,16 +132,14 @@ function handleTurfsMine(args: {
  */
 function handleTurfs(args: {
 	slackUserId: string;
-	channelId: string | null;
 	commandText: string;
 	responseUrl: string | null;
 }): Response {
-	const { slackUserId, channelId, commandText, responseUrl } = args;
+	const { slackUserId, commandText, responseUrl } = args;
 
 	void (async () => {
 		const message = await turfListMessage(db, {
 			slackUserId,
-			channelId,
 			argument: commandText,
 		});
 		respondToSlack(responseUrl, message, { replaceOriginal: true, logTag: TURF_LOG });
