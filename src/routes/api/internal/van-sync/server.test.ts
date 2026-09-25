@@ -131,6 +131,7 @@ const sheetLogResult = {
 	appended: 0,
 	updated: 0,
 	failed: 0,
+	rateLimited: 0,
 	unrouted: 0,
 	unroutedRegions: [] as string[],
 	assignmentsChanged: 0,

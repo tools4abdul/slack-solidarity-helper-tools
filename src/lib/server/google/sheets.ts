@@ -73,28 +73,31 @@ export interface SheetsClientOptions {
  *  network-level failure, which reads differently from any HTTP answer. */
 export type SheetsResult<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
 
-/** One row this app tagged. `rowIndex` is 0-based and true only at the moment
- *  of the search — never write by it. */
-export interface TaggedRow {
-	value: string;
+/** A tab as the tracker needs it, from ONE read request. */
+export interface TrackerTab {
 	sheetId: number;
-	rowIndex: number;
+	/** Every row, as displayed, with trailing empty rows dropped. */
+	values: string[][];
+	/** `metadataValue` → 0-based row index, for rows carrying the requested
+	 *  key. True only at the moment of the read — never write by it. */
+	tags: Map<string, number>;
 }
 
 export interface SheetsClient {
-	/** The tab's numeric id and every row of it, as displayed. A missing tab is
-	 *  a 404 rather than a created one: the tab is the campaign's. */
-	readTab(input: {
+	/**
+	 * The tab's id, its cells and its tagged rows, in a single read.
+	 *
+	 * One request rather than three because Google caps this service account
+	 * at 60 reads a minute — a hard limit — and the sync reads every one of the
+	 * campaign's few dozen spreadsheets. A missing tab is a 404 rather than a
+	 * created one: the tab is the campaign's.
+	 */
+	readTracker(input: {
 		spreadsheetId: string;
 		tabName: string;
+		tagKey: string;
 		deadline?: number;
-	}): Promise<SheetsResult<{ sheetId: number; values: string[][] }>>;
-	/** Every row in the spreadsheet carrying `key`. */
-	findTaggedRows(input: {
-		spreadsheetId: string;
-		key: string;
-		deadline?: number;
-	}): Promise<SheetsResult<TaggedRow[]>>;
+	}): Promise<SheetsResult<TrackerTab>>;
 	/** Insert an empty row at `rowIndex` and tag it, in one atomic batch — so
 	 *  there is never an untagged row of ours, and never a tag on a row that is
 	 *  not. Inserting only shifts other rows down; it overwrites nothing. */
@@ -339,71 +342,59 @@ export function createSheetsClient(
 	const base = (spreadsheetId: string) => `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}`;
 
 	return {
-		async readTab({ spreadsheetId, tabName, deadline }) {
-			const [meta, values] = await Promise.all([
-				request(
-					`${base(spreadsheetId)}?fields=sheets.properties(sheetId,title)`,
-					{ method: 'GET' },
-					deadline,
-				),
-				request(
-					`${base(spreadsheetId)}/values/${encodeURIComponent(tabRange(tabName))}` +
-						`?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`,
-					{ method: 'GET' },
-					deadline,
-				),
-			]);
-			if (!meta.ok) return meta;
-			const parsed = parseJson<{
-				sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>;
-			}>(meta.value);
-			const tab = parsed?.sheets?.find((s) => s.properties?.title === tabName);
-			if (!tab || typeof tab.properties?.sheetId !== 'number') {
-				return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
-			}
-			if (!values.ok) return values;
-			const body = parseJson<{ values?: unknown[][] }>(values.value);
-			return {
-				ok: true,
-				value: {
-					sheetId: tab.properties.sheetId,
-					values: (body?.values ?? []).map((row) => row.map((cell) => String(cell ?? ''))),
-				},
-			};
-		},
-
-		async findTaggedRows({ spreadsheetId, key, deadline }) {
+		async readTracker({ spreadsheetId, tabName, tagKey, deadline }) {
+			const fields =
+				'sheets(properties(sheetId,title),' +
+				'data(startRow,rowData(values(formattedValue)),' +
+				'rowMetadata(developerMetadata(metadataKey,metadataValue))))';
 			const res = await request(
-				`${base(spreadsheetId)}/developerMetadata:search`,
-				{
-					method: 'POST',
-					body: JSON.stringify({
-						dataFilters: [{ developerMetadataLookup: { metadataKey: key } }],
-					}),
-				},
+				`${base(spreadsheetId)}?includeGridData=true` +
+					`&ranges=${encodeURIComponent(tabRange(tabName))}` +
+					`&fields=${encodeURIComponent(fields)}`,
+				{ method: 'GET' },
 				deadline,
 			);
-			if (!res.ok) return res;
+			if (!res.ok) {
+				// A range naming a tab that is not there is a 400 from Google.
+				if (res.status === 400 && /unable to parse range/i.test(res.error)) {
+					return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
+				}
+				return res;
+			}
 			const body = parseJson<{
-				matchedDeveloperMetadata?: Array<{
-					developerMetadata?: {
-						metadataValue?: string;
-						location?: { dimensionRange?: { sheetId?: number; startIndex?: number } };
-					};
+				sheets?: Array<{
+					properties?: { sheetId?: number; title?: string };
+					data?: Array<{
+						startRow?: number;
+						rowData?: Array<{ values?: Array<{ formattedValue?: string }> }>;
+						rowMetadata?: Array<{
+							developerMetadata?: Array<{ metadataKey?: string; metadataValue?: string }>;
+						}>;
+					}>;
 				}>;
 			}>(res.value);
-			const rows: TaggedRow[] = [];
-			for (const match of body?.matchedDeveloperMetadata ?? []) {
-				const meta = match.developerMetadata;
-				const range = meta?.location?.dimensionRange;
-				if (!meta?.metadataValue || typeof range?.sheetId !== 'number') continue;
-				rows.push({
-					value: meta.metadataValue,
-					sheetId: range.sheetId,
-					rowIndex: range.startIndex ?? 0,
-				});
+			const sheet = body?.sheets?.find((s) => s.properties?.title === tabName);
+			if (!sheet || typeof sheet.properties?.sheetId !== 'number') {
+				return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
 			}
-			return { ok: true, value: rows };
+			const grid = sheet.data?.[0];
+			const start = grid?.startRow ?? 0;
+			const values: string[][] = [];
+			(grid?.rowData ?? []).forEach((row, i) => {
+				values[start + i] = (row.values ?? []).map((cell) => cell.formattedValue ?? '');
+			});
+			for (let i = 0; i < values.length; i++) values[i] ??= [];
+			// Like the values API: trailing empty cells and rows are not content.
+			for (const row of values) while (row.length && row[row.length - 1] === '') row.pop();
+			while (values.length && values[values.length - 1]!.length === 0) values.pop();
+			const tags = new Map<string, number>();
+			(grid?.rowMetadata ?? []).forEach((row, i) => {
+				for (const meta of row.developerMetadata ?? []) {
+					if (meta.metadataKey === tagKey && meta.metadataValue)
+						tags.set(meta.metadataValue, start + i);
+				}
+			});
+			return { ok: true, value: { sheetId: sheet.properties.sheetId, values, tags } };
 		},
 
 		async insertTaggedRow({ spreadsheetId, sheetId, rowIndex, key, value, deadline }) {
