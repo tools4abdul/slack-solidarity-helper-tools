@@ -326,6 +326,22 @@ describe('campaignAssignments', () => {
 		expect(campaignAssignments(values, LAYOUT, new Map()).get('1-1')).toBe('Packet Tracker');
 	});
 
+	// An organizer may write down only the name. The sync will not fill a
+	// packet with a canvasser in it, so the claim must not go ahead either.
+	it('counts a named packet with no Status, or one it does not know', () => {
+		const values = sheet(
+			packet('1-1', { Canvasser: 'Sam' }),
+			packet('2-2', { Canvasser: 'Sam', Status: 'Assigned' }),
+		);
+		const assigned = campaignAssignments(values, LAYOUT, new Map());
+		expect(Object.fromEntries(assigned)).toEqual({ '1-1': 'Sam', '2-2': 'Sam' });
+	});
+
+	it('does not count an unnamed Status it does not know', () => {
+		const values = sheet(packet('1-1', { Status: 'Assigned' }));
+		expect(campaignAssignments(values, LAYOUT, new Map()).size).toBe(0);
+	});
+
 	// Otherwise every packet nobody has taken would be refused.
 	it('does not count the campaign’s Unwalked default as an assignment', () => {
 		const values = sheet(
