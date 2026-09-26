@@ -4,6 +4,12 @@ name: Slack invite audit
 # hits it is not in the Slack to complain — so the check has to be routine
 # rather than triggered. The run is cheap: ~15 API calls, ~73 paced page
 # fetches, and one request per distinct invite link.
+#
+# BACKUP ONLY since 2026-09-25: the app runs this on its own schedule
+# (src/lib/server/scheduler.ts), because GitHub drops most scheduled runs — this
+# one ran 5-7 times a day out of 37. Kept because a run that is not needed is a
+# harmless no-op, and it still covers the app's scheduler being down or turned
+# off (IN_APP_SCHEDULER=off). Change the times there as well as here.
 on:
   schedule:
     - cron: '5 * * * *'

@@ -7,6 +7,12 @@ name: Mobilize sync
 #   2. SIGNUPS Mobilize -> Solidarity. Mirrors signups back as event RSVPs,
 #              creating a Solidarity profile for anyone who doesn't have one.
 #
+# BACKUP ONLY since 2026-09-25: the app runs this on its own schedule
+# (src/lib/server/scheduler.ts), because GitHub drops most scheduled runs — this
+# one ran 5-7 times a day out of 37. Kept because a run that is not needed is a
+# harmless no-op, and it still covers the app's scheduler being down or turned
+# off (IN_APP_SCHEDULER=off). Change the times there as well as here.
+#
 # They run in one job because the order matters: the event sync records the
 # timeslot pairings the attendee sync reads, so an event created at 09:00 has its
 # signups mirrored in the same run rather than waiting for a separate schedule.

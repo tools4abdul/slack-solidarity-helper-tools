@@ -23,8 +23,9 @@ import { APP_URL, INTERNAL_CRON_SECRET } from '$lib/server/env.js';
 import { secretMatches } from '$lib/server/secret-compare.js';
 
 // VAN turf catalog sync, plus the turf ledger's housekeeping. Called on a
-// schedule (see .github/workflows/van-catalog-sync.yml) and by hand during
-// setup. Auth via ?key=<INTERNAL_CRON_SECRET>, same as every other internal
+// schedule (src/lib/server/scheduler.ts, with
+// .github/workflows/van-catalog-sync.yml as a backup) and by hand during setup.
+// Auth via ?key=<INTERNAL_CRON_SECRET>, same as every other internal
 // endpoint.
 //
 // Two halves with different dependencies: expiring lapsed claims and sending

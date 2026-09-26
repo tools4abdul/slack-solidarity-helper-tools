@@ -6,7 +6,8 @@ import { db, sessionStore } from '$lib/server/db.js';
 import { getTheme } from '$lib/server/theme.js';
 import { parseThemeMode, themeAttribute, THEME_COOKIE } from '$lib/theme-mode.js';
 import { errMessage } from '$lib/err-message.js';
-import { validateEnv } from '$lib/server/env.js';
+import { INTERNAL_CRON_SECRET, validateEnv } from '$lib/server/env.js';
+import { localCaller, startScheduler } from '$lib/server/scheduler.js';
 import { isCrossSiteFormPost } from '$lib/server/csrf.js';
 import { applyDevViewAs, parseDevViewAs } from '$lib/server/dev-view-as.js';
 
@@ -30,6 +31,20 @@ export async function init() {
 			'DEV_VIEW_AS must not be set in production — it demotes every signed-in session.',
 		);
 		process.exit(1);
+	}
+	// The scheduled syncs, on Fly only: a local `npm run preview` must not
+	// start calling VAN and Mobilize on its own. IN_APP_SCHEDULER=off leaves
+	// them to the GitHub workflows. See src/lib/server/scheduler.ts.
+	const vars = env as Record<string, string | undefined>;
+	if (!dev && vars['FLY_APP_NAME'] && vars['IN_APP_SCHEDULER'] !== 'off') {
+		if (!INTERNAL_CRON_SECRET) {
+			console.error('[scheduler] INTERNAL_CRON_SECRET is not set — not scheduling the syncs');
+		} else {
+			startScheduler({
+				db,
+				call: localCaller(Number(vars['PORT']) || 3000, INTERNAL_CRON_SECRET),
+			});
+		}
 	}
 }
 

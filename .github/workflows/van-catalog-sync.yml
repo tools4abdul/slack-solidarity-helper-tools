@@ -5,6 +5,12 @@ name: VAN turf catalog sync
 # get generated during the day, and a volunteer who cannot see turf an
 # organizer just published has no way to know it exists.
 #
+# BACKUP ONLY since 2026-09-25: the app runs this on its own schedule
+# (src/lib/server/scheduler.ts), because GitHub drops most scheduled runs — this
+# one ran 5-7 times a day out of 37. Kept because a run that is not needed is a
+# harmless no-op, and it still covers the app's scheduler being down or turned
+# off (IN_APP_SCHEDULER=off). Change the times there as well as here.
+#
 # THE OVERNIGHT TICKS ARE NOT ABOUT THE CATALOG — do not trim them as waste.
 # The same endpoint sends the six-hour turf expiry warning (Story 7.3), and a
 # volunteer only gets that warning if a run happens inside the six hours before
