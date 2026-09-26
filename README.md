@@ -323,6 +323,8 @@ PORT=3000  # defaults to 3000 in production; ignored in dev (Vite uses 5173)
 
 `INTERNAL_CRON_SECRET` gates the scheduler-only endpoints under `/api/internal/`. Generate with `openssl rand -hex 32`.
 
+**The app schedules its own syncs on Fly.** The VAN catalog sync, the Mobilize event and signup syncs and the Slack invite audit are run by the app itself (`src/lib/server/scheduler.ts`), which calls those endpoints on its own machine. GitHub Actions ran them before, but GitHub treats a schedule as best effort: the VAN sync, asked for 37 times a day, ran 5–7 times, with gaps of over six hours. The workflows still run as a backup, and an extra run does nothing harmful because every endpoint takes a lock. The times are set in both places, so a change to one belongs in the other. The scheduler starts only when `FLY_APP_NAME` is set (Fly sets it), so it never runs locally. It needs `INTERNAL_CRON_SECRET`, and `IN_APP_SCHEDULER=off` turns it off and leaves the runs to the workflows. With more than one machine up, only one runs each slot. A run that fails is logged under `[scheduler]`; there is no red workflow run to notice it by.
+
 The one exception is `/api/internal/van-export-callback`, which VAN calls. VAN **requires** a `webhookUrl` on every export job, stores it, and echoes it back on every later read of that job — so the URL it holds carries a per-turf HMAC (`?turf=&token=`) keyed by `INTERNAL_CRON_SECRET` rather than the secret itself. A leak of one of those tokens buys a queue drain for one turf and nothing else; the secret would have opened all seven internal endpoints. Rotating `INTERNAL_CRON_SECRET` invalidates outstanding tokens, so in-flight export jobs fall back to being collected by the next scheduled `van-sync` run.
 
 **Openfield is retired, and so is the provider seam it sat behind.** `DOOR_KNOCK_PROVIDER`, `OPENFIELD_BASE_URL`/`_USERNAME`/`_PASSWORD` and `DOOR_KNOCK_CHANNEL_ID` are no longer read by anything, and the nightly snapshot, its workflow, its on-demand refresh endpoint and the Slack canvas watcher are gone with it. Deployments can delete those secrets, and the Slack app no longer needs the `files:read` scope or the `file_change` event subscription.
@@ -680,7 +682,7 @@ Scheduler-only. Writes today's per-chapter Solidarity signup counts into `solida
 
 ### `POST /api/internal/slack-invite-audit`
 
-Scheduler-only, hourly. Finds every Slack invite link published anywhere in Solidarity, checks each one still admits the public, and posts a report to the volunteer-help tracking channel (`slackTrackingChannelId` in `/settings`) **when there is something to say** — broken links, links it could not check, or a change since the last run. A clean run posts nothing; an hourly "all clear" would only teach the channel to ignore the audit. The response body still carries the full report either way, and `posted` says whether it went to Slack.
+Scheduler-only, hourly at :05 UTC (see [the app's scheduler](#5-configure-environment-variables)). Finds every Slack invite link published anywhere in Solidarity, checks each one still admits the public, and posts a report to the volunteer-help tracking channel (`slackTrackingChannelId` in `/settings`) **when there is something to say** — broken links, links it could not check, or a change since the last run. A clean run posts nothing; an hourly "all clear" would only teach the channel to ignore the audit. The response body still carries the full report either way, and `posted` says whether it went to Slack.
 
 | Parameter | Required | Description                                                     |
 | --------- | -------- | --------------------------------------------------------------- |
@@ -708,7 +710,7 @@ Stale and expired links are indistinguishable — both redirect to the domain-re
 
 ### `POST /api/internal/van-sync`
 
-Scheduler-only — every 30 minutes during waking hours, hourly overnight. Pulls the VAN turf catalog into `van_turfs` so the turf page has something to show, and does the ledger housekeeping described below. Auth via `?key=<INTERNAL_CRON_SECRET>`.
+Scheduler-only — run by [the app's scheduler](#5-configure-environment-variables) every 30 minutes from 11:07 to 23:37 UTC and hourly overnight, with `van-catalog-sync.yml` as a backup. Pulls the VAN turf catalog into `van_turfs` so the turf page has something to show, and does the ledger housekeeping described below. Auth via `?key=<INTERNAL_CRON_SECRET>`.
 
 **The overnight runs exist for the expiry warnings, not the catalog.** A warning only reaches a volunteer if a run happens inside the six hours before their claim lapses, so no two runs may sit more than six hours apart — the schedule previously stopped at 03:07 and resumed at 11:07 UTC, and every claim expiring in the two hours from 09:08 was swept without its holder ever being told. Hourly overnight leaves five hours of slack, so several missed runs still warn in time. Trimming those ticks as idle would silently reopen the hole.
 
