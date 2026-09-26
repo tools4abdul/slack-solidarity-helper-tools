@@ -37,6 +37,7 @@ import { displayName } from '../slack-display-name.js';
 import { claimTurf, endClaim } from './checkout-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from './packet-tracker-live.js';
 import { loadChapterTurfs } from './turf-query.js';
+import { foldersForChapter } from './chapter-visibility.js';
 import { loadHoldingsFor } from './holdings-store.js';
 import { isActive } from '../../van/checkout.js';
 import { resolveLocation } from './zip-centroid.js';
@@ -458,9 +459,11 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	}
 
 	// Same counter the page spends. Re-opening a chapter already seen this hour
-	// is free, so paging and claiming within one county cost nothing.
+	// is free, so paging and claiming within one county cost nothing — and so
+	// is a chapter whose VAN folders were already seen through another one.
 	const limit = recordChapterView(chapterVisits, ctx.slackUserId, chapter.chapterId, now, {
 		exempt: isAdmin,
+		folderIds: await foldersForChapter(db, chapter.chapterId),
 	});
 	if (!limit.allowed) {
 		console.warn(
@@ -475,7 +478,7 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	if (limit.shouldLog) {
 		console.warn(
 			`${LOG} wide chapter browsing (slack): user=${ctx.slackUserId} ` +
-				`chapters=${limit.distinctChapters} seen=${chaptersSeen(chapterVisits, ctx.slackUserId, now).join(',')}`,
+				`chapters=${limit.chargedChapters} seen=${chaptersSeen(chapterVisits, ctx.slackUserId, now).join(',')}`,
 		);
 	}
 

@@ -18,6 +18,13 @@ vi.mock('$lib/server/env.js', () => ({
 	MAP_TILE_API_KEY: '',
 }));
 vi.mock('$lib/server/van/zip-centroid.js', () => ({ lookupZipCentroid: mockZipLookup }));
+// Partial: the turf query still needs the real visibleToChapter. The folder
+// lookup is stubbed so it does not take a turn in stubQueries' ordered script;
+// a folder per chapter keeps every new chapter charged, as before.
+vi.mock('$lib/server/van/chapter-visibility.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/van/chapter-visibility.js')>()),
+	foldersForChapter: async (_db: unknown, chapterId: number) => [1000 + chapterId],
+}));
 vi.mock('$lib/server/settings.js', () => ({
 	loadVanBlockedIds: mockBlockedIds,
 	loadSettings: mockSettings,

@@ -915,14 +915,14 @@ A **total** is reported rather than a remainder. "Showing 600 of 2,000" keeps bo
 
 **Rate limits are shared between the page and the API**, in `$lib/server/van/rate-limit-store.ts`. Two of them, doing different jobs:
 
-| Limit             | Budget          | Covers                                                                 |
-| ----------------- | --------------- | ---------------------------------------------------------------------- |
-| Distinct chapters | 8 / hour / user | Sweeping chapters. Re-opening one you've already looked at is free.    |
-| Turf API requests | 60 / min / user | Walking the bbox grid, and probing route ids at `POST /api/turfs/{id}` |
+| Limit                  | Budget           | Covers                                                                                                                                           |
+| ---------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Chapters with new turf | 12 / hour / user | Sweeping chapters. Re-opening one you've already looked at is free, and so is one whose VAN folders you've already seen through another chapter. |
+| Turf API requests      | 60 / min / user  | Walking the bbox grid, and probing route ids at `POST /api/turfs/{id}`                                                                           |
 
 Both are shared deliberately: when the chapter limiter was module state inside the page load, a loop over `GET /api/turfs?chapter=` bypassed it entirely. The budget has to follow the user, not the URL. Refusals return `429` with `Retry-After`.
 
-**Chapter views are logged only above a threshold** — 4 distinct chapters in an hour — and the one line names every chapter seen. Logging every view produced a line each time a volunteer reopened their own county, which buried the entries that meant something. Someone pacing under the threshold browses without a log line; the rate limit still caps them at eight an hour.
+**Chapter views are logged only above a threshold** — 4 chapters with new turf in an hour, counted like the limit — and the one line names every chapter seen, including the free ones. Logging every view produced a line each time a volunteer reopened their own county, which buried the entries that meant something. Someone pacing under the threshold browses without a log line; the rate limit still caps them at twelve an hour.
 
 **Distance sorting** uses browser geolocation when granted. When it is declined or unavailable, a ZIP box resolves through the Census TIGERweb ZCTA layer — _not_ the Census geocoder, which resolves street addresses only and returns nothing for a bare ZIP — and is cached in `van_zip_centroids`. The server sorts before serialising. It is a plain GET form, so it works with JavaScript off. Every failure path returns an unsorted list rather than an error — losing distance sorting must never cost someone the turf list.
 

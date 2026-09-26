@@ -135,7 +135,8 @@ regression even though nothing would visibly break:
 
 ### Abuse limits
 
-- **Per-user rate limits** on turf browsing (8 distinct chapters/hour) and the turf API (60
+- **Per-user rate limits** on turf browsing (12 chapters/hour, counting only chapters whose VAN
+  folders the user has not already seen through another chapter) and the turf API (60
   requests/minute), shared between the page and the API in
   `src/lib/server/van/rate-limit-store.ts`. They follow the user, not the URL — an earlier
   module-scoped limiter was bypassed simply by using the API instead of the page.

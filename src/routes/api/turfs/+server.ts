@@ -13,6 +13,7 @@ import {
 } from '$lib/server/van/rate-limit-store.js';
 import { parseBounds } from '$lib/van/turf-paging.js';
 import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
+import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
 
 // Turf inside a map viewport, for paging a chapter too large to serialise in
 // one payload (plan.md 6.2b — a 1,000-turf chapter is ~800 KB).
@@ -79,6 +80,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// sweeping chapters through the API.
 	const limit = recordChapterView(chapterVisits, session.slackUserId, chapterId, now, {
 		exempt: session.isAdmin,
+		folderIds: await foldersForChapter(db, chapterId),
 	});
 	if (!limit.allowed) {
 		console.warn(
@@ -93,7 +95,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (limit.shouldLog) {
 		console.warn(
 			`[van] wide chapter browsing (api): user=${session.slackUserId} ` +
-				`chapters=${limit.distinctChapters} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
+				`chapters=${limit.chargedChapters} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
 		);
 	}
 

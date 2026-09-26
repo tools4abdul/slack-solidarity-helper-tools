@@ -17,8 +17,11 @@
 // `select()` shape and cannot accidentally multiply rows: a turf visible to
 // three chapters is still one row.
 
-import { sql, type SQL } from 'drizzle-orm';
+import { eq, sql, type SQL } from 'drizzle-orm';
+import type { drizzle } from 'drizzle-orm/libsql';
 import { vanTurfs, vanChapterFolders } from '../schema.js';
+
+type Db = ReturnType<typeof drizzle>;
 
 /**
  * A `where` fragment restricting turf to what `chapterId` may see.
@@ -35,4 +38,19 @@ export function visibleToChapter(chapterId: number | null): SQL | undefined {
 		select ${vanChapterFolders.folderId} from ${vanChapterFolders}
 		where ${vanChapterFolders.chapterId} = ${chapterId}
 	)`;
+}
+
+/**
+ * The folders `chapterId` sees turf from — what visibleToChapter matches on.
+ *
+ * For the chapter rate limiter, which charges only for folders a user has not
+ * already seen: two chapters sharing a folder show the same turf, and opening
+ * the second should not cost a slot.
+ */
+export async function foldersForChapter(db: Db, chapterId: number): Promise<number[]> {
+	const rows = await db
+		.select({ folderId: vanChapterFolders.folderId })
+		.from(vanChapterFolders)
+		.where(eq(vanChapterFolders.chapterId, chapterId));
+	return rows.map((r) => r.folderId);
 }

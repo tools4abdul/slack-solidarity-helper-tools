@@ -4,7 +4,7 @@
 // MUST share it. When the chapter limiter lived as a module-level Map inside
 // `+page.server.ts`, hitting `/api/turfs?chapter=N` in a loop bypassed it
 // completely — the page was gated and the endpoint serving the same data was
-// not, which made the gate decorative. A shared store is what makes "eight
+// not, which made the gate decorative. A shared store is what makes "twelve
 // chapters an hour" a property of the user rather than of the URL they picked.
 //
 // In memory, per machine, reset by a deploy. That would disqualify it as
