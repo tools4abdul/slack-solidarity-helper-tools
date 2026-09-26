@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GET } from './+server.js';
 import { TURFS_PER_PAYLOAD } from '$lib/van/turf-paging.js';
+import { MAX_CHAPTER_SWITCHES } from '$lib/van/chapter-rate-limit.js';
 
 const mockBlockedIds = vi.hoisted(() => vi.fn());
 const mockSettings = vi.hoisted(() => vi.fn());
@@ -11,6 +12,13 @@ const mockSelect = vi.hoisted(() => vi.fn());
 vi.mock('$lib/server/van/checkout-store.js', () => ({ latestWalkReports: async () => new Map() }));
 vi.mock('$lib/server/db.js', () => ({ db: { select: () => mockSelect() } }));
 vi.mock('$lib/server/env.js', () => ({ SLACK_SUPERUSER_ID: 'U_SUPER' }));
+// Partial: the turf query still needs the real visibleToChapter. The folder
+// lookup is stubbed so it does not take a turn in the scripted db; a folder
+// per chapter keeps every new chapter charged.
+vi.mock('$lib/server/van/chapter-visibility.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/van/chapter-visibility.js')>()),
+	foldersForChapter: async (_db: unknown, chapterId: number) => [1000 + chapterId],
+}));
 vi.mock('$lib/server/settings.js', () => ({
 	loadVanBlockedIds: mockBlockedIds,
 	loadSettings: mockSettings,
@@ -128,7 +136,7 @@ describe('GET /api/turfs', () => {
 			}
 
 			expect(statuses).toContain(429);
-			expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(8);
+			expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(MAX_CHAPTER_SWITCHES);
 		});
 
 		it('sends Retry-After so a client can back off', async () => {

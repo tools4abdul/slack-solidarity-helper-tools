@@ -20,7 +20,7 @@ describe('recordChapterView', () => {
 		expect(recordChapterView(freshLog(), 'U1', 71, T0)).toMatchObject({
 			allowed: true,
 			retryAfterSeconds: 0,
-			distinctChapters: 1,
+			chargedChapters: 1,
 			shouldLog: false,
 		});
 	});
@@ -85,6 +85,72 @@ describe('recordChapterView', () => {
 	});
 });
 
+// A VAN folder mapped to several chapters shows the same turf in each. The
+// complaint this answers: volunteers typing ZIPs across counties that share
+// one regional list hit the limit having seen one list.
+describe('shared VAN folders', () => {
+	it('does not charge for a chapter whose folders were all already seen', () => {
+		const log = freshLog();
+		recordChapterView(log, 'U1', 71, T0, { folderIds: [5, 6] });
+		const decision = recordChapterView(log, 'U1', 72, T0, { folderIds: [5] });
+		expect(decision).toMatchObject({ allowed: true, chargedChapters: 1, shouldLog: false });
+	});
+
+	it('lets any number of chapters sharing one list through', () => {
+		const log = freshLog();
+		for (let i = 0; i < MAX_CHAPTER_SWITCHES * 3; i++) {
+			expect(recordChapterView(log, 'U1', i, T0, { folderIds: [5] }).allowed).toBe(true);
+		}
+	});
+
+	it('still allows a shared chapter once the cap is spent on other turf', () => {
+		const log = freshLog();
+		for (let i = 0; i < MAX_CHAPTER_SWITCHES; i++) {
+			recordChapterView(log, 'U1', i, T0, { folderIds: [100 + i] });
+		}
+		expect(recordChapterView(log, 'U1', 999, T0, { folderIds: [100, 103] }).allowed).toBe(true);
+		expect(recordChapterView(log, 'U1', 998, T0, { folderIds: [100, 555] }).allowed).toBe(false);
+	});
+
+	it('charges for a chapter that adds even one folder', () => {
+		const log = freshLog();
+		recordChapterView(log, 'U1', 71, T0, { folderIds: [5] });
+		expect(recordChapterView(log, 'U1', 72, T0, { folderIds: [5, 6] }).chargedChapters).toBe(2);
+	});
+
+	it('treats a chapter without folder ids as its own turf', () => {
+		const log = freshLog();
+		recordChapterView(log, 'U1', 71, T0, { folderIds: [5] });
+		expect(recordChapterView(log, 'U1', 72, T0).chargedChapters).toBe(2);
+	});
+
+	it('treats a chapter with no folders as showing nothing new', () => {
+		const log = freshLog();
+		for (let i = 0; i < MAX_CHAPTER_SWITCHES; i++) {
+			recordChapterView(log, 'U1', i, T0, { folderIds: [100 + i] });
+		}
+		expect(recordChapterView(log, 'U1', 999, T0, { folderIds: [] }).allowed).toBe(true);
+	});
+
+	it('times a refusal from the oldest charged visit, not a free one', () => {
+		const MIN = 60 * 1000;
+		const log = freshLog();
+		recordChapterView(log, 'U1', 1, T0, { folderIds: [1] });
+		recordChapterView(log, 'U1', 2, T0 + MIN, { folderIds: [1] }); // free
+		// Re-opened, so the free visit outlives the charged one it rode on and
+		// becomes the oldest visit in the window.
+		recordChapterView(log, 'U1', 2, T0 + 50 * MIN, { folderIds: [1] });
+		for (let i = 0; i < MAX_CHAPTER_SWITCHES; i++) {
+			recordChapterView(log, 'U1', 100 + i, T0 + 70 * MIN, { folderIds: [100 + i] });
+		}
+		const decision = recordChapterView(log, 'U1', 999, T0 + 75 * MIN, { folderIds: [999] });
+		expect(decision.allowed).toBe(false);
+		// Fifty-five minutes until the first charged visit at +70 ages out —
+		// not thirty-five, which is when the free one at +50 does and frees nothing.
+		expect(decision.retryAfterSeconds).toBe(55 * 60);
+	});
+});
+
 describe('logging threshold', () => {
 	// The complaint this answers: a line every time a volunteer opened their
 	// own county buried the handful of lines that meant something.
@@ -115,7 +181,7 @@ describe('logging threshold', () => {
 	it('reports the running count for the log line', () => {
 		const log = freshLog();
 		recordChapterView(log, 'U1', 71, T0);
-		expect(recordChapterView(log, 'U1', 72, T0).distinctChapters).toBe(2);
+		expect(recordChapterView(log, 'U1', 72, T0).chargedChapters).toBe(2);
 	});
 
 	it('resets after the window, so a paced browser stays quiet', () => {
@@ -168,7 +234,7 @@ describe('pruneVisitLog', () => {
 });
 
 // Admins are exempt: /turfs/organizer and the drift report already show every
-// chapter at once, so capping the map at eight counties an hour withheld
+// chapter at once, so capping the map at a dozen counties an hour withheld
 // nothing while breaking launch-night work.
 describe('admin exemption', () => {
 	function fill(log: VisitLog, user: string, count: number, now: number) {
@@ -200,7 +266,7 @@ describe('admin exemption', () => {
 		fill(log, 'U1', MAX_CHAPTER_SWITCHES, now);
 
 		const decision = recordChapterView(log, 'U1', 999, now, { exempt: true });
-		expect(decision.distinctChapters).toBe(MAX_CHAPTER_SWITCHES + 1);
+		expect(decision.chargedChapters).toBe(MAX_CHAPTER_SWITCHES + 1);
 		expect(decision.shouldLog).toBe(true);
 	});
 
@@ -209,7 +275,7 @@ describe('admin exemption', () => {
 		const now = Date.now();
 		recordChapterView(log, 'U1', 71, now, { exempt: true });
 		const again = recordChapterView(log, 'U1', 71, now + 1000, { exempt: true });
-		expect(again.distinctChapters).toBe(1);
+		expect(again.chargedChapters).toBe(1);
 		expect(again.shouldLog).toBe(false);
 	});
 });

@@ -10,6 +10,7 @@ const mockClaimTurf = vi.hoisted(() => vi.fn());
 const mockEndClaim = vi.hoisted(() => vi.fn());
 const mockLoadHoldingsFor = vi.hoisted(() => vi.fn());
 const mockProfileRegion = vi.hoisted(() => vi.fn());
+const mockFoldersForChapter = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/env.js', () => ({
 	APP_URL: 'https://app.example.org',
@@ -35,6 +36,9 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({ loadHoldingsFor: mockLoadHoldingsFor }));
 vi.mock('$lib/server/van/turf-profile.js', () => ({ profileRegionFor: mockProfileRegion }));
+vi.mock('$lib/server/van/chapter-visibility.js', () => ({
+	foldersForChapter: mockFoldersForChapter,
+}));
 
 const {
 	claimFromSlack,
@@ -106,6 +110,9 @@ describe('turfListMessage', () => {
 		mockSettings.mockResolvedValue({ chapterChannelMap: CHANNEL_MAP });
 		mockResolveLocation.mockResolvedValue(null);
 		mockProfileRegion.mockResolvedValue({ zip: null, chapterIds: [71] });
+		// A folder of its own per chapter unless a test says otherwise, so each
+		// new chapter costs a slot.
+		mockFoldersForChapter.mockImplementation(async (_db: unknown, id: number) => [1000 + id]);
 		mockLoadChapterTurfs.mockResolvedValue({
 			turfs: [turfView()],
 			total: 1,
@@ -342,6 +349,22 @@ describe('turfListMessage', () => {
 				chapterId: MAX_CHAPTER_SWITCHES + 1,
 			});
 			expect(msg.text).toContain('a lot of counties');
+		});
+
+		it('does not charge for chapters that share one VAN list', async () => {
+			const user = freshUser();
+			mockSettings.mockResolvedValue({
+				chapterChannelMap: Array.from({ length: MAX_CHAPTER_SWITCHES + 2 }, (_, i) => ({
+					chapterId: i + 1,
+					channelId: `C${i}`,
+					name: `County ${i}`,
+				})),
+			});
+			mockFoldersForChapter.mockResolvedValue([555]);
+			for (let i = 0; i < MAX_CHAPTER_SWITCHES + 2; i++) {
+				const msg = await turfListMessage(makeDb(), { slackUserId: user, chapterId: i + 1 });
+				expect(msg.text).not.toContain('a lot of counties');
+			}
 		});
 	});
 

@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { and, isNull } from 'drizzle-orm';
 import { vanTurfs } from '../schema.js';
-import { visibleToChapter } from './chapter-visibility.js';
+import { foldersForChapter, visibleToChapter } from './chapter-visibility.js';
 
 // The behaviour this exists for: one folder mapped to several chapters is
 // visible to ALL of them. The old rule — match van_turfs.chapter_id — could not
@@ -99,5 +99,23 @@ describe('visibleToChapter', () => {
 		for (const chapterId of [71, 72, 73, 74]) await map(chapterId, 68295);
 
 		expect(await visible(71)).toEqual([100]);
+	});
+});
+
+// What the chapter rate limiter compares. It must name exactly the folders
+// visibleToChapter matches on, or two chapters showing the same turf would
+// still be charged separately — or worse, different turf would ride free.
+describe('foldersForChapter', () => {
+	it('lists every folder mapped to the chapter', async () => {
+		await map(71, 68295);
+		await map(71, 68299);
+		await map(72, 68295);
+
+		expect((await foldersForChapter(db, 71)).sort((a, b) => a - b)).toEqual([68295, 68299]);
+		expect(await foldersForChapter(db, 72)).toEqual([68295]);
+	});
+
+	it('is empty for a chapter with no folders', async () => {
+		expect(await foldersForChapter(db, 71)).toEqual([]);
 	});
 });

@@ -19,6 +19,7 @@ import {
 	turfRequests,
 } from '$lib/server/van/rate-limit-store.js';
 import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
+import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
 import type { TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
 import type { LatLng } from '$lib/van/geometry.js';
@@ -154,6 +155,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	const limit = recordChapterView(chapterVisits, session.slackUserId, chapter.chapterId, now, {
 		exempt: session.isAdmin,
+		folderIds: await foldersForChapter(db, chapter.chapterId),
 	});
 	if (!limit.allowed) {
 		console.warn(
@@ -174,7 +176,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (limit.shouldLog) {
 		console.warn(
 			`[van] wide chapter browsing: user=${session.slackUserId} ` +
-				`chapters=${limit.distinctChapters} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
+				`chapters=${limit.chargedChapters} seen=${chaptersSeen(chapterVisits, session.slackUserId, now).join(',')}`,
 		);
 	}
 
