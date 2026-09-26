@@ -72,10 +72,11 @@ const WRITE_ONCE: ReadonlySet<FillColumn> = new Set([
 	'Walk Mode',
 ]);
 
-/** A Status on a campaign entry that means the packet is out. Incomplete is
- *  not: that turf is back in play. Unwalked only with a canvasser named — see
- *  isUnfilled. */
-const BLOCKING_STATUSES: ReadonlySet<string> = new Set(['unwalked', 'out', 'complete']);
+/** A Status that says the packet is out even with no canvasser named. */
+const BLOCKING_STATUSES: ReadonlySet<string> = new Set(['out', 'complete']);
+
+/** A Status that says the packet is back in play, whoever is named on it. */
+const RETURNED_STATUS = 'incomplete';
 
 /** What the campaign's Status says about a packet nobody has taken. */
 const UNTAKEN_STATUS = 'unwalked';
@@ -345,9 +346,11 @@ export function cellWrites(cells: PacketCells, layout: ColumnLayout): Array<[num
  *
  * `ours` maps a list number to the canvasser name we filled in; a row whose
  * Canvasser matches is our own entry, which the ledger already knows about.
- * An unnamed Out or Complete still blocks, labelled as the tracker, because an
- * unnamed assignment is still an assignment; an unnamed Unwalked is the
- * campaign's default for a free packet and does not.
+ * A named canvasser blocks whatever the Status says, blank included —
+ * an organizer may write only the name (seen 2026-09-25) — except Incomplete,
+ * which is back in play. An unnamed Out or Complete still blocks, labelled as
+ * the tracker, because an unnamed assignment is still an assignment; an
+ * unnamed Unwalked is the campaign's default for a free packet and does not.
  */
 export function campaignAssignments(
 	values: readonly (readonly string[])[],
@@ -360,10 +363,9 @@ export function campaignAssignments(
 		const listNumber = normaliseListNumber(cell(row, layout, 'List Number'));
 		if (!listNumber) continue;
 		const status = cell(row, layout, 'Status').toLowerCase();
-		if (!BLOCKING_STATUSES.has(status)) continue;
+		if (status === RETURNED_STATUS) continue;
 		const canvasser = cell(row, layout, 'Canvasser');
-		// The campaign's default for a packet nobody has taken. See isUnfilled.
-		if (!canvasser && status === UNTAKEN_STATUS) continue;
+		if (!canvasser && !BLOCKING_STATUSES.has(status)) continue;
 		const mine = ours.get(listNumber);
 		if (mine !== undefined && mine.trim() === canvasser) continue;
 		assigned.set(listNumber, canvasser || 'Packet Tracker');
