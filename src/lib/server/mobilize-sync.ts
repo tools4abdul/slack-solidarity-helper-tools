@@ -21,6 +21,7 @@ import { countSeats, type SeatCount } from '../../../mobilize-migrator/lib/seats
 import { runSync, type SyncReport } from '../../../mobilize-migrator/lib/sync.js';
 import { planMigration } from '../../../mobilize-migrator/lib/transform.js';
 import { loadSettings } from './settings.js';
+import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
 import { MOBILIZE_SYNC_MAX_CREATES, SOLIDARITY_API_TOKEN } from './env.js';
 
 // The full drizzle type rather than LibSQLDatabase: loadSettings needs $client.
@@ -115,11 +116,17 @@ export async function runMobilizeSync(
 	const writeDeadline = Date.now() + budgetMs;
 	const api = loadMobilizeApi('the Mobilize sync');
 
-	// Both reads are independent; the pages call is what recovers the formatted
-	// descriptions the events endpoint flattens.
-	const [events, pageDescriptions, settings] = await Promise.all([
-		fetchAllEvents(SOLIDARITY_API_TOKEN),
-		fetchPageDescriptions(SOLIDARITY_API_TOKEN),
+	// The pages call is what recovers the formatted descriptions the events
+	// endpoint flattens. The two Solidarity walks run one after the other under
+	// the walk lock: each is paced to fill Solidarity's rate limit by itself, so
+	// running them together — or alongside another job's walk — earns 429s and
+	// fails the sync on an exhausted retry budget.
+	const [[events, pageDescriptions], settings] = await Promise.all([
+		withSolidarityWalkLock(async () => {
+			const events = await fetchAllEvents(SOLIDARITY_API_TOKEN);
+			const pageDescriptions = await fetchPageDescriptions(SOLIDARITY_API_TOKEN);
+			return [events, pageDescriptions] as const;
+		}),
 		loadSettings(db),
 	]);
 	const { planned, skipped, excludedByTag, duplicateSessions } = planMigration(

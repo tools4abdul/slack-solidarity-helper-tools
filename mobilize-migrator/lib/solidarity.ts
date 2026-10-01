@@ -8,6 +8,9 @@
 import { requireEnv } from './env.js';
 import { fetchPaginated } from '../../src/lib/server/solidarity-paginate.js';
 
+/** Under Solidarity's 60-per-30s limit, matching the other long walks. */
+const EVENTS_PACE_MS = 600;
+
 export interface SolidarityLocationData {
 	full_address?: string | null;
 	address_line_1?: string | null;
@@ -68,10 +71,20 @@ export function hasTag(event: Pick<SolidarityEvent, 'tags'>, tag: string): boole
  * this delegates to for the bounded 429 retry. This is the first read of both
  * Mobilize jobs, so a rate limit it could not give up on would strand the job
  * holding its lock.
+ *
+ * Paced under the 60-per-30s limit for the same reason: an unpaced walk that
+ * shares the token with anything else earns 429s and can exhaust the budget.
  */
 export async function fetchAllEvents(apiToken?: string): Promise<SolidarityEvent[]> {
 	const token = apiToken || requireEnv('SOLIDARITY_API_TOKEN', 'set it in .env.local');
-	return fetchPaginated<SolidarityEvent>(token, '/v1/events', 'events', '', 'mobilize-migrator');
+	return fetchPaginated<SolidarityEvent>(
+		token,
+		'/v1/events',
+		'events',
+		'',
+		'mobilize-migrator',
+		EVENTS_PACE_MS,
+	);
 }
 
 export function parseCoordinates(

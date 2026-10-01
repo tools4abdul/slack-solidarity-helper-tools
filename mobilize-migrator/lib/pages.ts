@@ -4,9 +4,17 @@
 // (event.event_page_id) holds the same content as HTML with the bold, links and
 // lists intact. Fetched in one paginated sweep and indexed by id rather than
 // one request per event, which keeps us well inside the 60-per-30s rate limit.
+//
+// Paced all the same: there are thousands of pages, so the sweep is dozens of
+// requests, and fired flat-out alongside the events walk it can go over the
+// limit and drain fetchPaginated's shared retry budget ("rate-limit retry
+// budget exhausted"), failing the whole sync.
 
 import { requireEnv } from './env.js';
 import { fetchPaginated } from '../../src/lib/server/solidarity-paginate.js';
+
+/** Under Solidarity's 60-per-30s limit, matching the other long walks. */
+const PACE_MS = 600;
 
 interface ActionPage {
 	id: number;
@@ -21,6 +29,7 @@ export async function fetchPageDescriptions(apiToken?: string): Promise<Map<numb
 		'pages',
 		'',
 		'mobilize-migrator',
+		PACE_MS,
 	);
 
 	const byId = new Map<number, string>();

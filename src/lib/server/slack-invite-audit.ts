@@ -19,6 +19,7 @@
 //    browser version, which makes the User-Agent load-bearing.
 
 import { fetchPaginated } from './solidarity-paginate.js';
+import { withSolidarityWalkLock } from './solidarity-walk-lock.js';
 
 /** Where in a page an invite link was found. Reported verbatim to Slack, so
  *  these read as prose rather than field paths. */
@@ -82,6 +83,9 @@ const BROWSER_UA =
 /** Pace for rendered-HTML fetches. The public site 429s readily — an unpaced
  *  sweep at concurrency 5 had two thirds of its requests rejected. */
 const HTML_PACE_MS = 1000;
+
+/** Pace for the `/v1/pages` API walk: under Solidarity's 60-per-30s limit. */
+const API_PACE_MS = 600;
 
 /** The page types whose body the API does not return at all. */
 export function needsRenderedHtml(page: SolidarityPage): boolean {
@@ -227,13 +231,8 @@ export async function runSlackInviteAudit(
 	fetchImpl: typeof fetch = fetch,
 	pace = HTML_PACE_MS,
 ): Promise<AuditResult> {
-	const pages = await fetchPaginated<SolidarityPage>(
-		apiToken,
-		'/v1/pages',
-		'pages',
-		'',
-		'invite-audit',
-		250,
+	const pages = await withSolidarityWalkLock(() =>
+		fetchPaginated<SolidarityPage>(apiToken, '/v1/pages', 'pages', '', 'invite-audit', API_PACE_MS),
 	);
 
 	const refs: InviteRef[] = [];
