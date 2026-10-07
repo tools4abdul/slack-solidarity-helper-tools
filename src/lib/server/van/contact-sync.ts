@@ -390,6 +390,14 @@ const KNOCK_TRAIL_MS = 60 * 60 * 1000;
  * in-person contact between the claim and the completion. What the dashboard's
  * doors figures count per volunteer.
  *
+ * Lapsed claims are counted too, between the claim and its expiry, with no
+ * trailing hour — the turf is someone else's by then. The dashboard reads
+ * completions only; the count is for the Packet Tracker, which clears a lapsed
+ * claim's entry when it comes to 0. So a lapsed claim is not counted until
+ * KNOCK_TRAIL_MS after it ended: a volunteer still walking when it lapsed,
+ * or whose MiniVAN had not synced, would otherwise read as 0 and lose their
+ * entries before their doors reached VAN.
+ *
  * Only ever raised, never lowered. Just each person's LATEST contact is stored,
  * so a door this volunteer knocked and someone else re-knocked later would
  * otherwise fall out of this claim's window and out of their count. Stops
@@ -397,7 +405,7 @@ const KNOCK_TRAIL_MS = 60 * 60 * 1000;
  * roster are left alone (null), and the dashboard falls back to VAN's delta.
  *
  * Only called by a scheduled run that read ContactHistory up to its own start
- * (`now`), and only for completions before it. Stamped any earlier — by the
+ * (`now`), and only for checkouts that ended before it. Stamped any earlier — by the
  * nudge seconds after the tap — it would read the volunteer's doors before
  * MiniVAN's sync reached VAN, and write a 0 that hides "not counted yet".
  */
@@ -419,6 +427,9 @@ export async function stampDoorsKnocked(
 	// toISOString's, milliseconds included.
 	const shifted = (column: ReturnType<typeof sql>, ms: number) =>
 		sql`strftime('%Y-%m-%dT%H:%M:%fZ', ${column}, ${`${ms / 1000} seconds`})`;
+	const until = sql`CASE WHEN van_turf_checkouts.completed_at IS NOT NULL
+		THEN ${shifted(sql`van_turf_checkouts.completed_at`, KNOCK_TRAIL_MS)}
+		ELSE van_turf_checkouts.released_at END`;
 	const knocked = sql`(
 		SELECT count(DISTINCT r.door_hash)
 		FROM van_turf_roster r
@@ -426,12 +437,17 @@ export async function stampDoorsKnocked(
 			ON c.campaign_id = ${options.campaignId} AND c.person_hash = r.person_hash
 		WHERE r.turf_id = van_turf_checkouts.turf_id
 			AND c.last_in_person_at >= ${shifted(sql`van_turf_checkouts.claimed_at`, -KNOCK_LEAD_MS)}
-			AND c.last_in_person_at <= ${shifted(sql`van_turf_checkouts.completed_at`, KNOCK_TRAIL_MS)}
+			AND c.last_in_person_at <= ${until}
 	)`;
+	const nowIso = options.now.toISOString();
+	const lapsedBefore = new Date(options.now.getTime() - KNOCK_TRAIL_MS).toISOString();
 	const result = await db.run(sql`
 		UPDATE van_turf_checkouts SET doors_knocked = ${knocked}
-		WHERE completed_at IS NOT NULL AND completed_at >= ${since}
-			AND completed_at < ${options.now.toISOString()}
+		WHERE (
+				(completed_at IS NOT NULL AND completed_at >= ${since} AND completed_at < ${nowIso})
+				OR (completed_at IS NULL AND release_reason = 'expired'
+					AND released_at >= ${since} AND released_at < ${lapsedBefore})
+			)
 			AND EXISTS (SELECT 1 FROM van_turf_roster r WHERE r.turf_id = van_turf_checkouts.turf_id)
 			AND (doors_knocked IS NULL OR doors_knocked < ${knocked})
 			AND ${campaignScope(options.campaignId)}

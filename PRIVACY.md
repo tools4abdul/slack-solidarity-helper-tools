@@ -142,9 +142,11 @@ configured that — in the "Packet Tracker" tab the campaign already uses to tra
 packet. The campaign lists each packet there in advance; when you take one, the app fills in
 **your display name, the date and time you claimed it, when you set off, that you walked it
 in MiniVAN, its status, and — once you mark it walked — how many doors you knocked** on that
-packet's row. If you hand a turf back without ever opening it in MiniVAN, what the app filled in
-is cleared. Your phone number, Slack ID, email, the reason behind a block and anything about a
-voter are never written there. The app does not write the MiniVAN list number anywhere: it only
+packet's row. If you give a turf back, what the app filled in is cleared; if your claim expires,
+it is cleared once the app sees you knocked no doors. Where the spreadsheet also has a "Walk
+Ins" tab, the app adds a row there on the day you claim — **your display name, the shift your claim falls
+in, and "Completed" once you mark the turf walked** — and empties it again on the same terms. Your phone number, Slack ID, email, zip code,
+the reason behind a block and anything about a voter are never written there. The app does not write the MiniVAN list number anywhere: it only
 matches against the numbers the campaign already listed.
 
 Two things follow from this that are worth being explicit about:

@@ -1164,7 +1164,8 @@ export const vanTurfCheckouts = sqliteTable(
 		/** Doors on the turf with an in-person contact in VAN's ContactHistory
 		 *  between this claim and its completion — the doors this volunteer
 		 *  knocked, not-homes included. Derived by van/contact-sync.ts for a day
-		 *  after completion (MiniVAN syncs late), then left alone. Null when the
+		 *  after completion (MiniVAN syncs late), then left alone. Also derived
+		 *  for an expired claim, up to its expiry, for the Packet Tracker. Null when the
 		 *  turf had no roster to count against; the dashboard then falls back
 		 *  to `confirmedDoorDelta`. */
 		doorsKnocked: integer('doors_knocked'),
@@ -1216,6 +1217,11 @@ export const vanTurfCheckouts = sqliteTable(
 		 *  the Packet Tracker existed were stamped by the migration as "no row",
 		 *  so switching it on backfills only live and walked turf. */
 		sheetState: text('sheet_state'),
+		/** JSON: the row this checkout filled in on the same spreadsheet's Walk
+		 *  Ins tab — see van/packet-tracker-store.ts `WalkInState`. Rows there
+		 *  are filled top-down into the first empty one, so the row number is
+		 *  recorded to clear the right one later. NULL means nothing written. */
+		walkInState: text('walk_in_state'),
 	},
 	(table) => [
 		uniqueIndex('van_turf_checkouts_one_active')

@@ -1,0 +1,1 @@
+ALTER TABLE `van_turf_checkouts` ADD `walk_in_state` text;

@@ -799,6 +799,49 @@ describe('stampDoorsKnocked', () => {
 		expect(await knocked(1)).toBe(0);
 	});
 
+	// For the Packet Tracker: a lapsed claim's entry is cleared at 0.
+	it('counts a lapsed claim up to its expiry, without the trailing hour', async () => {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			         released_at, release_reason)
+			      VALUES (1, 1, 'U1', 'Dana', ?, ?, ?, 'expired')`,
+			args: [CLAIMED, COMPLETED, COMPLETED],
+		});
+		await contact('a', '2026-09-28T13:00:00.000Z');
+		// After expiry: the turf is someone else's.
+		await contact('c', '2026-09-28T15:20:00.000Z');
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
+		expect(await knocked(1)).toBe(1);
+	});
+
+	// Its volunteer may still be walking, or not yet synced: a 0 now would
+	// clear their entries before their doors reach VAN.
+	it('waits an hour after a claim lapses before counting it', async () => {
+		const lapsed = new Date(NOW.getTime() - 30 * 60 * 1000).toISOString();
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			         released_at, release_reason)
+			      VALUES (1, 1, 'U1', 'Dana', ?, ?, ?, 'expired')`,
+			args: [CLAIMED, lapsed, lapsed],
+		});
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
+		expect(await knocked(1)).toBeNull();
+	});
+
+	it('leaves a claim given back alone', async () => {
+		await client.execute({
+			sql: `INSERT INTO van_turf_checkouts
+			        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
+			         released_at, release_reason)
+			      VALUES (1, 1, 'U1', 'Dana', ?, ?, ?, 'volunteer')`,
+			args: [CLAIMED, COMPLETED, COMPLETED],
+		});
+		await stampDoorsKnocked(db, { campaignId: 1, now: NOW });
+		expect(await knocked(1)).toBeNull();
+	});
+
 	it('leaves a turf with no roster, and old completions, alone', async () => {
 		await turf(2);
 		await client.execute({

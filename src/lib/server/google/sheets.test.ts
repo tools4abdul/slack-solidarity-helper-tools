@@ -207,6 +207,300 @@ describe('readRow', () => {
 	});
 });
 
+describe('highlightCells', () => {
+	const TABS = () =>
+		ok({
+			sheets: [
+				{ properties: { sheetId: 0, title: 'Summary' } },
+				{ properties: { sheetId: 1234, title: 'Packet Tracker' } },
+			],
+		});
+	const highlight = (on: boolean) => ({
+		spreadsheetId: 'sheet-1',
+		tabName: 'Packet Tracker',
+		rowIndex: 30,
+		columns: [5, 12],
+		on,
+	});
+
+	it('fills just the named cells yellow, by the tab’s id, in one request', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(TABS())
+			.mockResolvedValueOnce(ok({}));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.highlightCells(highlight(true))).toEqual({ ok: true, value: true });
+		const [url, init] = fetchFn.mock.calls[2] as [string, RequestInit];
+		expect(url).toContain('/spreadsheets/sheet-1:batchUpdate');
+		const { requests } = JSON.parse(init.body as string);
+		expect(requests).toHaveLength(2);
+		expect(requests[0].repeatCell).toEqual({
+			range: {
+				sheetId: 1234,
+				startRowIndex: 30,
+				endRowIndex: 31,
+				startColumnIndex: 5,
+				endColumnIndex: 6,
+			},
+			cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 0 } } },
+			fields: 'userEnteredFormat.backgroundColor',
+		});
+	});
+
+	it('removes the fill, and looks the tab up only once', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(TABS())
+			.mockResolvedValue(ok({}));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		await client.highlightCells(highlight(true));
+		await client.highlightCells(highlight(false));
+
+		expect(fetchFn).toHaveBeenCalledTimes(4);
+		const { requests } = JSON.parse(
+			(fetchFn.mock.calls[3] as [string, RequestInit])[1].body as string,
+		);
+		expect(requests[0].repeatCell.cell).toEqual({ userEnteredFormat: {} });
+		expect(requests[0].repeatCell.fields).toBe('userEnteredFormat.backgroundColor');
+	});
+
+	it('reports a missing tab as a 404', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok({ sheets: [{ properties: { sheetId: 0, title: 'Summary' } }] }));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.highlightCells(highlight(true))).toMatchObject({ ok: false, status: 404 });
+	});
+
+	it('keeps the tab id through a rate limit, and drops it when Google says it is gone', async () => {
+		const quota = () =>
+			new Response(JSON.stringify({ error: { message: 'quota' } }), { status: 429 });
+		const bad = () =>
+			new Response(
+				JSON.stringify({
+					error: { message: 'Invalid requests[0].repeatCell: No grid with id: 1234' },
+				}),
+				{ status: 400 },
+			);
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(TABS())
+			.mockResolvedValueOnce(quota())
+			.mockResolvedValueOnce(quota())
+			.mockResolvedValueOnce(quota())
+			.mockResolvedValueOnce(bad())
+			.mockResolvedValueOnce(TABS())
+			.mockResolvedValueOnce(ok({}));
+		vi.useFakeTimers();
+		try {
+			const client = createSheetsClient(CONFIG, { fetchFn });
+			const first = client.highlightCells(highlight(true));
+			await vi.runAllTimersAsync();
+			expect(await first).toMatchObject({ ok: false, status: 429 });
+			// Same id, no second lookup: straight to the batchUpdate.
+			expect(await client.highlightCells(highlight(true))).toMatchObject({ status: 400 });
+			expect(await client.highlightCells(highlight(true))).toEqual({ ok: true, value: true });
+			const lookups = fetchFn.mock.calls.filter(([url]) =>
+				String(url).includes('fields=sheets.properties'),
+			);
+			expect(lookups).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// Protected cells answer with a 400 too; the id is fine, and a lookup on
+	// every later call would spend the minute's reads for nothing.
+	it('keeps the tab id through any other refusal', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(TABS())
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ error: { message: 'You are trying to edit a protected cell' } }),
+					{ status: 400 },
+				),
+			)
+			.mockResolvedValueOnce(ok({}));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.highlightCells(highlight(true))).toMatchObject({ ok: false, status: 400 });
+		expect(await client.highlightCells(highlight(true))).toEqual({ ok: true, value: true });
+		expect(fetchFn).toHaveBeenCalledTimes(4);
+	});
+
+	it('sends nothing for no columns', async () => {
+		const fetchFn = vi.fn();
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.highlightCells({ ...highlight(true), columns: [] })).toEqual({
+			ok: true,
+			value: true,
+		});
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+});
+
+describe('dropdownOptions', () => {
+	const column = {
+		spreadsheetId: 'sheet-1',
+		tabName: 'Walk Ins',
+		rowIndex: 1,
+		rows: 20,
+		columnIndex: 1,
+	};
+	const rules = (...conditions: unknown[]) =>
+		ok({
+			sheets: [
+				{
+					data: [
+						{
+							rowData: conditions.map((condition) => ({
+								values: [condition ? { dataValidation: { condition } } : {}],
+							})),
+						},
+					],
+				},
+			],
+		});
+
+	it('reads a typed-in list as text, looking down the column', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				// The first row's drop-down was pasted over; the second still has it.
+				rules(null, {
+					type: 'ONE_OF_LIST',
+					values: [{ userEnteredValue: '10am' }, { userEnteredValue: '1pm' }],
+				}),
+			);
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.dropdownOptions(column)).toEqual({
+			ok: true,
+			value: [
+				{ label: '10am', text: true },
+				{ label: '1pm', text: true },
+			],
+		});
+		const [url] = fetchFn.mock.calls[1] as [string];
+		expect(decodeURIComponent(url)).toContain("ranges='Walk Ins'!B2:B21");
+	});
+
+	it('reads a list taken from a range, text or time per cell', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				rules({ type: 'ONE_OF_RANGE', values: [{ userEnteredValue: '=Lists!$A$2:$A$4' }] }),
+			)
+			.mockResolvedValueOnce(
+				ok({
+					sheets: [
+						{
+							data: [
+								{
+									rowData: [
+										{
+											values: [
+												{ formattedValue: '10:00 AM', effectiveValue: { numberValue: 0.41 } },
+											],
+										},
+										{ values: [{}] },
+										{
+											values: [{ formattedValue: 'Late', effectiveValue: { stringValue: 'Late' } }],
+										},
+									],
+								},
+							],
+						},
+					],
+				}),
+			);
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.dropdownOptions(column)).toEqual({
+			ok: true,
+			value: [
+				{ label: '10:00 AM', text: false },
+				{ label: 'Late', text: true },
+			],
+		});
+		const [url] = fetchFn.mock.calls[2] as [string];
+		expect(decodeURIComponent(url)).toContain('ranges=Lists!$A$2:$A$4');
+	});
+
+	it('reads a range on the same tab from that tab, not the first one', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				rules({ type: 'ONE_OF_RANGE', values: [{ userEnteredValue: '=$K$2:$K$5' }] }),
+			)
+			.mockResolvedValueOnce(ok({ sheets: [{ data: [{ rowData: [] }] }] }));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		await client.dropdownOptions(column);
+
+		const [url] = fetchFn.mock.calls[2] as [string];
+		expect(decodeURIComponent(url)).toContain("ranges='Walk Ins'!$K$2:$K$5");
+	});
+
+	it('says there is none when no row looked at has a drop-down', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(rules(null, null));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.dropdownOptions(column)).toEqual({ ok: true, value: null });
+	});
+});
+
+describe('ensureRows', () => {
+	const tab = (rowCount: number) =>
+		ok({
+			sheets: [{ properties: { sheetId: 1234, title: 'Walk Ins', gridProperties: { rowCount } } }],
+		});
+	const at = (rowIndex: number) => ({ spreadsheetId: 'sheet-1', tabName: 'Walk Ins', rowIndex });
+
+	it('does nothing while the tab has the row', async () => {
+		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(tab(100));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.ensureRows(at(99))).toEqual({ ok: true, value: true });
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+	});
+
+	it('adds just the rows missing, and remembers it has them', async () => {
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(tab(100))
+			.mockResolvedValueOnce(ok({}));
+		const client = createSheetsClient(CONFIG, { fetchFn });
+
+		expect(await client.ensureRows(at(101))).toEqual({ ok: true, value: true });
+		const { requests } = JSON.parse(
+			(fetchFn.mock.calls[2] as [string, RequestInit])[1].body as string,
+		);
+		expect(requests).toEqual([
+			{ appendDimension: { sheetId: 1234, dimension: 'ROWS', length: 2 } },
+		]);
+		expect(await client.ensureRows(at(101))).toEqual({ ok: true, value: true });
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+});
+
 describe('writeCells', () => {
 	it('writes each cell by A1 address, USER_ENTERED, in one request', async () => {
 		const fetchFn = vi.fn().mockResolvedValueOnce(tokenResponse()).mockResolvedValueOnce(WROTE());

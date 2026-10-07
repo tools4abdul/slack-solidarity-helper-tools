@@ -24,6 +24,8 @@ const BASE: PacketCheckout = {
 	completedAt: null,
 	reportedPercent: null,
 	loadedInMinivanAt: null,
+	releaseReason: null,
+	doorsKnocked: null,
 	slackUserName: 'Dana',
 	issuedListNumber: '35536745-88712',
 	claimDoorCount: 64,
@@ -130,18 +132,46 @@ describe('desiredCells', () => {
 		});
 	});
 
-	it('wants nothing for a turf handed back before it was ever loaded', () => {
-		expect(desiredCells(checkout({ releasedAt: '2026-09-19T15:00:00.000Z' }))).toBeNull();
+	const RELEASED = '2026-09-19T15:00:00.000Z';
+	const LOADED = '2026-09-19T14:41:00.000Z';
+
+	it('wants nothing for a turf given back, loaded in MiniVAN or not', () => {
+		const given = { releasedAt: RELEASED, releaseReason: 'volunteer' };
+		expect(desiredCells(checkout(given))).toBeNull();
+		expect(desiredCells(checkout({ ...given, loadedInMinivanAt: LOADED }))).toBeNull();
 	});
 
-	it('keeps an Incomplete entry for a turf handed back after it was loaded', () => {
-		const cells = desiredCells(
-			checkout({
-				releasedAt: '2026-09-19T15:00:00.000Z',
-				loadedInMinivanAt: '2026-09-19T14:41:00.000Z',
-			}),
-		);
-		expect(cells).toMatchObject({ Status: 'Incomplete', 'Knocked #': '' });
+	it('wants nothing for a lapsed claim that knocked no doors', () => {
+		const lapsed = checkout({
+			releasedAt: RELEASED,
+			releaseReason: 'expired',
+			loadedInMinivanAt: LOADED,
+			doorsKnocked: 0,
+		});
+		expect(desiredCells(lapsed)).toBeNull();
+	});
+
+	it('keeps a lapsed claim that knocked doors, with the doors it knocked', () => {
+		const lapsed = checkout({ releasedAt: RELEASED, releaseReason: 'expired', doorsKnocked: 9 });
+		expect(desiredCells(lapsed)).toMatchObject({ Status: 'Incomplete', 'Knocked #': '9' });
+	});
+
+	// Not counted yet, or no roster to count against.
+	it('falls back to the MiniVAN load for a lapsed claim not yet counted', () => {
+		const lapsed = { releasedAt: RELEASED, releaseReason: 'expired' };
+		expect(desiredCells(checkout(lapsed))).toBeNull();
+		expect(desiredCells(checkout({ ...lapsed, loadedInMinivanAt: LOADED }))).toMatchObject({
+			Status: 'Incomplete',
+			'Knocked #': '',
+		});
+	});
+
+	it('keeps an Incomplete entry for a loaded turf released any other way', () => {
+		const retired = { releasedAt: RELEASED, releaseReason: 'retired' };
+		expect(desiredCells(checkout(retired))).toBeNull();
+		expect(desiredCells(checkout({ ...retired, loadedInMinivanAt: LOADED }))).toMatchObject({
+			Status: 'Incomplete',
+		});
 	});
 });
 

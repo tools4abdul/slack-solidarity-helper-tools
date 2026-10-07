@@ -14,8 +14,11 @@
 //   list loaded in MiniVAN   → Time Departed filled, Status Out
 //   marked walked            → Knocked # filled, Status Complete (100%)
 //                              or Incomplete; the sheet computes Knocked %
-//   released, never loaded   → everything we filled in is cleared
-//   released after loading   → Status Incomplete
+//   given back               → everything we filled in is cleared, loaded
+//                              in MiniVAN or not: the packet is back in play
+//   expired, no doors knocked → cleared
+//   expired, doors knocked   → Knocked # filled, Status Incomplete
+//   released otherwise       → cleared if never loaded, else Incomplete
 //
 // Whatever the campaign typed is never overwritten or cleared: a packet is
 // only filled in when its canvasser columns are empty, and only cleared while
@@ -92,6 +95,12 @@ export interface PacketCheckout {
 	completedAt: string | null;
 	reportedPercent: number | null;
 	loadedInMinivanAt: string | null;
+	/** Why it was released: 'volunteer' for a give-back, 'expired' for a
+	 *  lapsed claim. Null while held or once completed. */
+	releaseReason: string | null;
+	/** Doors this volunteer knocked, from ContactHistory. Null until counted,
+	 *  or when the turf has no roster to count against. */
+	doorsKnocked: number | null;
 	slackUserName: string;
 	issuedListNumber: string | null;
 	/** VAN's door count when claimed. Null on claims older than the column. */
@@ -121,8 +130,15 @@ function statusFor(checkout: PacketCheckout): PacketStatus | null {
 		return (checkout.reportedPercent ?? 0) >= 100 ? 'Complete' : 'Incomplete';
 	}
 	if (checkout.releasedAt) {
-		// Handed back without the list ever opening: the packet never really
-		// went out, so it is left as though it had not been handed out.
+		// Given back, whether or not the list was opened: the packet is free
+		// again, so it is left as though it had not been handed out.
+		if (checkout.releaseReason === 'volunteer') return null;
+		// Lapsed: kept only if the volunteer knocked something. Until the doors
+		// are counted (or on turf with no roster to count them), whether the
+		// list was ever loaded stands in.
+		if (checkout.releaseReason === 'expired' && checkout.doorsKnocked !== null) {
+			return checkout.doorsKnocked > 0 ? 'Incomplete' : null;
+		}
 		return checkout.loadedInMinivanAt ? 'Incomplete' : null;
 	}
 	return checkout.loadedInMinivanAt ? 'Out' : 'Unwalked';
@@ -161,9 +177,14 @@ export function desiredCells(
 			: '',
 		// This app only ever issues MiniVAN list numbers.
 		'Walk Mode': 'MiniVAN',
-		// From the volunteer's reported percentage: VAN's API gives us no
-		// contact counts at the access level the campaign has.
-		'Knocked #': percent === null ? '' : String(Math.round((percent / 100) * doors)),
+		// From the walked percentage, so the sheet's Knocked % shows it. A
+		// lapsed claim has no percentage, only the doors its volunteer knocked.
+		'Knocked #':
+			percent !== null
+				? String(Math.round((percent / 100) * doors))
+				: checkout.completedAt === null && checkout.doorsKnocked
+					? String(checkout.doorsKnocked)
+					: '',
 		Status: status,
 	};
 }
@@ -175,12 +196,13 @@ export interface ColumnLayout {
 	columns: Record<PacketColumn, number>;
 }
 
-function normaliseHeader(value: string): string {
+/** Header text as compared: case, spacing and punctuation ignored. */
+export function normaliseHeader(value: string): string {
 	return value.toLowerCase().replace(/[^a-z0-9%#]/g, '');
 }
 
 /** How far down the header is looked for. The campaign's is on row 2. */
-const HEADER_SEARCH_ROWS = 10;
+export const HEADER_SEARCH_ROWS = 10;
 
 /**
  * Find the header row and every column in it.

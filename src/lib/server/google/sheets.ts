@@ -49,6 +49,15 @@ const TIMEOUT_MS = 30_000;
  *  not started and the events wait for the next run. */
 const MIN_REQUEST_MS = 3_000;
 
+/** Google's answers to a request by a tab id or row that is no longer there:
+ *  the values API's "exceeds grid limits", and batchUpdate's own wordings for
+ *  a tab id or row past the end. Not a refusal — the tab moved under us. */
+export const STALE_TAB =
+	/no grid with id|exceeds grid limits|after (the )?last row|outside the grid/i;
+
+/** What an entry the app filled in is highlighted with: Sheets' own yellow. */
+const HIGHLIGHT = { red: 1, green: 1, blue: 0 };
+
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 8_000;
@@ -75,6 +84,12 @@ export interface SheetsClientOptions {
 /** Every call returns one of these rather than throwing. `status` is 0 for a
  *  network-level failure, which reads differently from any HTTP answer. */
 export type SheetsResult<T> = { ok: true; value: T } | { ok: false; status: number; error: string };
+
+/** One option of a drop-down: what it shows, and whether it is text. */
+export interface DropdownOption {
+	label: string;
+	text: boolean;
+}
 
 export interface SheetsClient {
 	/**
@@ -105,6 +120,47 @@ export interface SheetsClient {
 		tabName: string;
 		rowIndex: number;
 		cells: ReadonlyArray<readonly [number, string]>;
+		deadline?: number;
+	}): Promise<SheetsResult<true>>;
+	/** Set or remove the highlight on single cells of one row, in one request.
+	 *  Only the fill colour is touched; the campaign's number and date formats
+	 *  stay. `columns` are 0-based. */
+	highlightCells(input: {
+		spreadsheetId: string;
+		tabName: string;
+		rowIndex: number;
+		columns: readonly number[];
+		on: boolean;
+		deadline?: number;
+	}): Promise<SheetsResult<true>>;
+	/**
+	 * The options of a column's drop-down, or null when none of the rows looked
+	 * at has one. Looks down `rows` rows from `rowIndex` and takes the first
+	 * cell with a drop-down: a paste of plain values strips it from the cells
+	 * it lands on, so one row alone may have lost it.
+	 *
+	 * Each option says whether it is `text`, which decides how it must be
+	 * written to still match: a list typed into the rule is always text; one
+	 * taken from a range of cells is text or a real time per cell, as that
+	 * cell holds it. `rowIndex` and `columnIndex` are 0-based.
+	 */
+	dropdownOptions(input: {
+		spreadsheetId: string;
+		tabName: string;
+		rowIndex: number;
+		rows: number;
+		columnIndex: number;
+		deadline?: number;
+	}): Promise<SheetsResult<DropdownOption[] | null>>;
+	/**
+	 * Make sure the tab has a row `rowIndex` (0-based), adding rows at the
+	 * bottom when it does not. A tab the campaign has filled to its last row
+	 * would otherwise refuse every read and write past it.
+	 */
+	ensureRows(input: {
+		spreadsheetId: string;
+		tabName: string;
+		rowIndex: number;
 		deadline?: number;
 	}): Promise<SheetsResult<true>>;
 	/** Whether the spreadsheet is reachable and whether it already has the tab.
@@ -357,6 +413,53 @@ export function createSheetsClient(
 
 	const base = (spreadsheetId: string) => `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}`;
 
+	/** Formatting goes by the tab's numeric id, not its name. Stable for the
+	 *  life of a tab, so looked up once per tab: every lookup spends one of the
+	 *  minute's 60 reads. The row count comes with it, for `ensureRows`; it
+	 *  only grows here, and a tab the campaign shrank answers a write past its
+	 *  end with a 400, which drops this and looks again. */
+	const tabs = new Map<string, { id: number; rowCount: number }>();
+	const tabKey = (spreadsheetId: string, tabName: string) => `${spreadsheetId}\u0000${tabName}`;
+
+	async function tabInfo(
+		spreadsheetId: string,
+		tabName: string,
+		deadline?: number,
+	): Promise<SheetsResult<{ id: number; rowCount: number }>> {
+		const known = tabs.get(tabKey(spreadsheetId, tabName));
+		if (known !== undefined) return { ok: true, value: known };
+		const res = await request(
+			`${base(spreadsheetId)}?fields=${encodeURIComponent('sheets.properties(sheetId,title,gridProperties.rowCount)')}`,
+			{ method: 'GET' },
+			deadline,
+		);
+		if (!res.ok) return res;
+		const parsed = parseJson<{
+			sheets?: Array<{
+				properties?: { sheetId?: number; title?: string; gridProperties?: { rowCount?: number } };
+			}>;
+		}>(res.value);
+		const props = parsed?.sheets?.find((s) => s.properties?.title === tabName)?.properties;
+		if (typeof props?.sheetId !== 'number') {
+			return { ok: false, status: 404, error: `the spreadsheet has no "${tabName}" tab` };
+		}
+		const info = { id: props.sheetId, rowCount: props.gridProperties?.rowCount ?? 0 };
+		tabs.set(tabKey(spreadsheetId, tabName), info);
+		return { ok: true, value: info };
+	}
+
+	/** Forget a tab's id after Google said it was wrong — but not after a 429 or
+	 *  a timeout, where it is fine and a lookup would only spend another read. */
+	function forgetTab<T>(res: SheetsResult<T>, spreadsheetId: string, tabName: string) {
+		// Only when it is the id Google objects to ("No grid with id: 1234"), or
+		// a write past a shrunk tab's end: any other 400 — a protected cell,
+		// say — would otherwise cost a fresh lookup on every later call.
+		if (!res.ok && (res.status === 404 || (res.status === 400 && STALE_TAB.test(res.error)))) {
+			tabs.delete(tabKey(spreadsheetId, tabName));
+		}
+		return res;
+	}
+
 	return {
 		async readTab({ spreadsheetId, tabName, deadline }) {
 			const res = await request(
@@ -404,6 +507,127 @@ export function createSheetsClient(
 			);
 			if (!res.ok) return missingTab(res, tabName);
 			return { ok: true, value: true };
+		},
+
+		async highlightCells({ spreadsheetId, tabName, rowIndex, columns, on, deadline }) {
+			if (columns.length === 0) return { ok: true, value: true };
+			const id = await tabInfo(spreadsheetId, tabName, deadline);
+			if (!id.ok) return id;
+			const res = await request(
+				`${base(spreadsheetId)}:batchUpdate`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						requests: columns.map((column) => ({
+							repeatCell: {
+								range: {
+									sheetId: id.value.id,
+									startRowIndex: rowIndex,
+									endRowIndex: rowIndex + 1,
+									startColumnIndex: column,
+									endColumnIndex: column + 1,
+								},
+								// Off is the field named with no colour given: no fill.
+								cell: { userEnteredFormat: on ? { backgroundColor: HIGHLIGHT } : {} },
+								fields: 'userEnteredFormat.backgroundColor',
+							},
+						})),
+					}),
+				},
+				deadline,
+			);
+			// A tab deleted and made again has a new id, which Google answers
+			// with a 400; look it up afresh next time.
+			if (!res.ok) return forgetTab(res, spreadsheetId, tabName);
+			return { ok: true, value: true };
+		},
+
+		async ensureRows({ spreadsheetId, tabName, rowIndex, deadline }) {
+			const info = await tabInfo(spreadsheetId, tabName, deadline);
+			if (!info.ok) return info;
+			if (rowIndex < info.value.rowCount) return { ok: true, value: true };
+			const add = rowIndex + 1 - info.value.rowCount;
+			const res = await request(
+				`${base(spreadsheetId)}:batchUpdate`,
+				{
+					method: 'POST',
+					body: JSON.stringify({
+						requests: [
+							{ appendDimension: { sheetId: info.value.id, dimension: 'ROWS', length: add } },
+						],
+					}),
+				},
+				deadline,
+			);
+			if (!res.ok) return forgetTab(res, spreadsheetId, tabName);
+			info.value.rowCount += add;
+			return { ok: true, value: true };
+		},
+
+		async dropdownOptions({ spreadsheetId, tabName, rowIndex, rows, columnIndex, deadline }) {
+			const column = columnLetter(columnIndex);
+			const cells = `${tabRange(tabName)}!${column}${rowIndex + 1}:${column}${rowIndex + rows}`;
+			const res = await request(
+				`${base(spreadsheetId)}?ranges=${encodeURIComponent(cells)}` +
+					`&fields=${encodeURIComponent('sheets.data.rowData.values.dataValidation')}`,
+				{ method: 'GET' },
+				deadline,
+			);
+			if (!res.ok) return missingTab(res, tabName);
+			type Condition = { type?: string; values?: Array<{ userEnteredValue?: string }> };
+			const parsed = parseJson<{
+				sheets?: Array<{
+					data?: Array<{
+						rowData?: Array<{ values?: Array<{ dataValidation?: { condition?: Condition } }> }>;
+					}>;
+				}>;
+			}>(res.value);
+			const condition = (parsed?.sheets?.[0]?.data?.[0]?.rowData ?? [])
+				.map((row) => row.values?.[0]?.dataValidation?.condition)
+				.find((c) => c?.type === 'ONE_OF_LIST' || c?.type === 'ONE_OF_RANGE');
+			if (!condition) return { ok: true, value: null };
+			const values = (condition.values ?? []).map((v) => String(v.userEnteredValue ?? ''));
+			if (condition.type === 'ONE_OF_LIST') {
+				return {
+					ok: true,
+					value: values.filter((v) => v.trim()).map((label) => ({ label, text: true })),
+				};
+			}
+			if (!values[0]) return { ok: true, value: null };
+			// `=Lists!$A$2:$A$9`: each cell as displayed, and whether it holds
+			// text or a real value such as a time.
+			// A range on the same tab names no tab, and Google would read it
+			// from the spreadsheet's first one.
+			const typed = values[0].replace(/^=/, '');
+			const range = typed.includes('!') ? typed : `${tabRange(tabName)}!${typed}`;
+			const read = await request(
+				`${base(spreadsheetId)}?ranges=${encodeURIComponent(range)}` +
+					`&fields=${encodeURIComponent('sheets.data.rowData.values(formattedValue,effectiveValue)')}`,
+				{ method: 'GET' },
+				deadline,
+			);
+			if (!read.ok) return read;
+			const body = parseJson<{
+				sheets?: Array<{
+					data?: Array<{
+						rowData?: Array<{
+							values?: Array<{
+								formattedValue?: string;
+								effectiveValue?: { stringValue?: string };
+							}>;
+						}>;
+					}>;
+				}>;
+			}>(read.value);
+			const options = (body?.sheets?.[0]?.data ?? [])
+				.flatMap((d) => d.rowData ?? [])
+				.flatMap((row) => row.values ?? [])
+				.filter((v) => (v.formattedValue ?? '').trim() !== '')
+				.map((v) => ({
+					label: v.formattedValue!,
+					text: v.effectiveValue?.stringValue !== undefined,
+				}));
+			return { ok: true, value: options };
 		},
 
 		async describe({ spreadsheetId, tabName, deadline }) {

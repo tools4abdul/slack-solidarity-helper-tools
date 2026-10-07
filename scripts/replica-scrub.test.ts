@@ -60,6 +60,30 @@ describe('OutsideIdScrubber', () => {
 		expect(scrubbed).not.toContain('Ana');
 	});
 
+	it('replaces the name inside a checkout’s walk_in_state too', () => {
+		const columns = ['slack_user_id', 'slack_user_name', 'walk_in_state'];
+		const state = JSON.stringify({
+			spreadsheetId: 'S1',
+			rowIndex: 4,
+			name: 'Ana Ruiz',
+			day: '2026-09-19',
+		});
+		const [, , scrubbed] = new OutsideIdScrubber().scrub(columns, [
+			'apple:001.abc',
+			'Ana Ruiz',
+			state,
+		]);
+		expect(JSON.parse(scrubbed as string)).toEqual({
+			spreadsheetId: 'S1',
+			rowIndex: 4,
+			name: 'Apple volunteer 1',
+			day: '2026-09-19',
+		});
+		expect(
+			new OutsideIdScrubber().scrub(columns, ['google:1', 'Ana', '{not json Ana'])[2],
+		).toBeNull();
+	});
+
 	it('drops a sheet_state it cannot read rather than copy it blind', () => {
 		const columns = ['slack_user_id', 'slack_user_name', 'sheet_state'];
 		expect(

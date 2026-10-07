@@ -32,9 +32,10 @@ import type { drizzle } from 'drizzle-orm/libsql';
 import { vanSheetHealth, vanTurfCheckouts, vanTurfs } from '../schema.js';
 import { postAlert } from '../slack.js';
 import { escapeMrkdwn } from '../../slack-mrkdwn.js';
-import { OUT_OF_TIME, type SheetsClient } from '../google/sheets.js';
+import { OUT_OF_TIME, STALE_TAB, type SheetsClient } from '../google/sheets.js';
 import {
 	DEFAULT_SHEET_TAB_NAME,
+	FILL_COLUMNS,
 	campaignAssignments,
 	cellWrites,
 	changedCells,
@@ -52,6 +53,26 @@ import {
 	type PacketCheckout,
 } from '../../van/packet-tracker.js';
 import { matchSheetTarget, orderSheetTargets, type SheetTarget } from '../../van/sheet-routing.js';
+import {
+	COMPLETED_STATUS,
+	DEFAULT_SHIFT_STARTS,
+	WALK_IN_TAB_NAME,
+	findOurWalkIn,
+	findWalkInLayout,
+	firstEmptyWalkInRow,
+	isEmptyWalkIn,
+	isOurWalkIn,
+	shiftFor,
+	walkInCells,
+	walkInColumnIndexes,
+	walkInDay,
+	walkInStatus,
+	walkInWrites,
+	type ShiftOption,
+	type WalkInColumn,
+	type WalkInLayout,
+	type WalkInMark,
+} from '../../van/walk-ins.js';
 import { sheetBlocksClaim } from '../../van/turf-view.js';
 
 type Db = ReturnType<typeof drizzle>;
@@ -59,9 +80,9 @@ type Db = ReturnType<typeof drizzle>;
 const LOG = '[sheets]';
 
 /** How long after a checkout ends it is still re-derived. Long enough for the
- *  sync to notice a MiniVAN load that happened just before a hand-back — which
- *  turns "nothing" into an Incomplete entry — and short enough that the
- *  candidate read stays the handful of turf that is actually moving. */
+ *  doors a lapsed claim knocked to be counted (WALK_PERCENT_WINDOW_MS) — which
+ *  decides whether its entry is cleared — and short enough that the candidate read stays the
+ *  handful of turf that is actually moving. */
 const SETTLE_MS = 48 * 60 * 60 * 1000;
 
 /** Checkouts read per run. A busy weekend is dozens of live claims, not
@@ -84,7 +105,9 @@ const RATE_LIMITED = 429;
  * restores it. `told`: the one-time notice already sent about this checkout, so
  * it is not repeated every run; the packet is still re-checked each run.
  * `gone`: our entry was taken over or removed by someone else, so we leave this
- * checkout alone for good rather than fight them for it.
+ * checkout alone for good rather than fight them for it. `yellow`: we cleared
+ * our entry but Google would not take the highlight off, so it is tried again
+ * while the packet is still free — only when it ever went on (`painted`).
  */
 export interface SheetState {
 	spreadsheetId: string | null;
@@ -92,6 +115,8 @@ export interface SheetState {
 	prior?: PacketCells;
 	told?: Notice;
 	gone?: true;
+	painted?: true;
+	yellow?: true;
 }
 
 type Notice = 'not-listed' | 'duplicate' | 'taken';
@@ -120,12 +145,72 @@ export function parseSheetState(raw: string | null): SheetState | null {
 			...(prior ? { prior } : {}),
 			...(parsed.told && NOTICES.has(parsed.told) ? { told: parsed.told } : {}),
 			...(parsed.gone ? { gone: true as const } : {}),
+			...(parsed.painted ? { painted: true as const } : {}),
+			...(parsed.yellow ? { yellow: true as const } : {}),
 		};
 	} catch {
 		// A corrupt state reads as "never written". The first fill only ever
 		// goes into an empty packet, so this cannot overwrite anything.
 		return null;
 	}
+}
+
+/**
+ * What `walk_in_state` holds: the Walk Ins row this checkout filled in and
+ * what it wrote there — the name, which tells our row from the campaign's,
+ * and the shift and status, so a row that has moved can be found again and
+ * only our own cells are cleared. `rowIndex` null once cleared. `day` is the
+ * canvass day it was written: the campaign empties the tab every day, so a
+ * row from an earlier day is not ours any more, whatever is in it now.
+ * `gone`: someone wrote over our row, so it is theirs and left alone.
+ */
+export interface WalkInState {
+	spreadsheetId: string;
+	rowIndex: number | null;
+	name: string | null;
+	shift?: string | null;
+	/** The Final Status we wrote. Absent when we have not, or (`statusDone`)
+	 *  when the campaign had already picked one, which is theirs. */
+	status?: string;
+	statusDone?: true;
+	day?: string;
+	/** Our row has its yellow. Absent when the tab refused it, so it is put on
+	 *  later, once the tab takes it. */
+	painted?: true;
+	/** A row whose highlight we could not take off when we cleared it, to try
+	 *  again while it is still that day and still empty. */
+	yellowRow?: number;
+	gone?: true;
+}
+
+export function parseWalkInState(raw: string | null): WalkInState | null {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as Partial<WalkInState>;
+		if (typeof parsed.spreadsheetId !== 'string') return null;
+		return {
+			spreadsheetId: parsed.spreadsheetId,
+			rowIndex: typeof parsed.rowIndex === 'number' ? parsed.rowIndex : null,
+			name: typeof parsed.name === 'string' ? parsed.name : null,
+			...(typeof parsed.shift === 'string' ? { shift: parsed.shift } : {}),
+			...(typeof parsed.status === 'string' ? { status: parsed.status } : {}),
+			...(parsed.statusDone ? { statusDone: true as const } : {}),
+			...(parsed.painted ? { painted: true as const } : {}),
+			...(typeof parsed.yellowRow === 'number' ? { yellowRow: parsed.yellowRow } : {}),
+			...(typeof parsed.day === 'string' ? { day: parsed.day } : {}),
+			...(parsed.gone ? { gone: true as const } : {}),
+		};
+	} catch {
+		// Read as "never written": the next fill only takes an empty row.
+		return null;
+	}
+}
+
+async function saveWalkInState(db: Db, checkoutId: number, state: WalkInState): Promise<void> {
+	await db
+		.update(vanTurfCheckouts)
+		.set({ walkInState: JSON.stringify(state) })
+		.where(eq(vanTurfCheckouts.id, checkoutId));
 }
 
 export interface TrackerResult {
@@ -135,6 +220,9 @@ export interface TrackerResult {
 	updated: number;
 	/** Checkouts whose spreadsheet failed. Retried next run. */
 	failed: number;
+	/** Rows added to, and cleared from, the Walk Ins tab. */
+	walkInsFilled: number;
+	walkInsCleared: number;
 	/** Checkouts left for the next run because Google's per-minute quota or
 	 *  the run's own time ran out. Not a failure: nothing is alerted. */
 	deferred: number;
@@ -153,6 +241,8 @@ const EMPTY_RESULT: TrackerResult = {
 	filled: 0,
 	updated: 0,
 	failed: 0,
+	walkInsFilled: 0,
+	walkInsCleared: 0,
 	deferred: 0,
 	unrouted: 0,
 	unroutedRegions: [],
@@ -181,6 +271,7 @@ export interface TrackerOptions {
  *  entry in the sheet is still an organizer's problem. */
 type Candidate = PacketCheckout & {
 	sheetState: string | null;
+	walkInState: string | null;
 	uncontactedDoors: number | null;
 	savedListId: number | null;
 	rosterSavedListId: number | null;
@@ -212,9 +303,12 @@ async function loadCandidates(
 				completedAt: vanTurfCheckouts.completedAt,
 				reportedPercent: vanTurfCheckouts.reportedPercent,
 				loadedInMinivanAt: vanTurfCheckouts.loadedInMinivanAt,
+				releaseReason: vanTurfCheckouts.releaseReason,
+				doorsKnocked: vanTurfCheckouts.doorsKnocked,
 				issuedListNumber: vanTurfCheckouts.issuedListNumber,
 				claimDoorCount: vanTurfCheckouts.claimDoorCount,
 				sheetState: vanTurfCheckouts.sheetState,
+				walkInState: vanTurfCheckouts.walkInState,
 				turfName: vanTurfs.name,
 				regionName: vanTurfs.regionName,
 				doorCount: vanTurfs.doorCount,
@@ -391,9 +485,33 @@ const LIVE_REUSE_MS = 60_000;
 
 const recentAssignments = new Map<string, { at: number; assigned: Map<string, string> }>();
 
+/** How long a spreadsheet found without a Walk Ins tab is not asked again.
+ *  Not every campaign sheet has one, and asking every run would spend a read
+ *  of the minute's 60 for nothing; a tab added later is used within the hour. */
+const NO_WALK_INS_MS = 60 * 60 * 1000;
+
+const noWalkInsTab = new Map<string, number>();
+
+/** How long a tab that refused a highlight is not asked again. A refusal that
+ *  is not the quota or the clock — protected cells, most likely — will refuse
+ *  the next one too, and each attempt spends a write of the minute's 60. */
+const NO_HIGHLIGHT_MS = 60 * 60 * 1000;
+
+const highlightRefused = new Map<string, number>();
+/** What a refusal is: Google saying no, not Google failing to answer. */
+const REFUSALS: ReadonlySet<number> = new Set([400, 403, 404]);
+const highlightKey = (spreadsheetId: string, tabName: string) => `${spreadsheetId}\u0000${tabName}`;
+
+function refusesHighlight(spreadsheetId: string, tabName: string): boolean {
+	const since = highlightRefused.get(highlightKey(spreadsheetId, tabName));
+	return since !== undefined && Date.now() - since < NO_HIGHLIGHT_MS;
+}
+
 /** Test-only: forget every remembered read. */
 export function _resetLiveReadsForTests(): void {
 	recentAssignments.clear();
+	noWalkInsTab.clear();
+	highlightRefused.clear();
 }
 
 type Outcome = 'filled' | 'updated' | 'unchanged' | 'moved' | SheetFailure;
@@ -466,6 +584,17 @@ async function syncCheckout(
 
 	if (state.cells === null) {
 		if (wanted === null) {
+			if (state.yellow && candidate.issuedListNumber) {
+				return unhighlightFreed(
+					client,
+					tab,
+					rowIndex,
+					candidate.issuedListNumber,
+					base,
+					save,
+					deadline,
+				);
+			}
 			await save(base);
 			return 'unchanged';
 		}
@@ -526,6 +655,22 @@ async function syncCheckout(
 			: stillOurs(fresh.value, tab.layout, state.cells);
 	if (!samePacket || !stillFree) return 'moved';
 
+	// Our entry is highlighted while it is ours, so the campaign can tell it
+	// from theirs at a glance; taking it back takes the yellow with it. Before
+	// the values: out of quota or time, nothing is written and the whole step
+	// is retried next run. Every write re-applies it, which also catches
+	// entries filled in before there was a highlight.
+	const styled = await highlight(
+		client,
+		tab.spreadsheetId,
+		rowIndex,
+		FILL_COLUMNS.map((column) => tab.layout.columns[column]),
+		next !== null,
+		deadline,
+		tab.tabName,
+	);
+	if (typeof styled === 'object') return styled;
+
 	const res = await client.writeCells({
 		spreadsheetId: tab.spreadsheetId,
 		tabName: tab.tabName,
@@ -540,8 +685,485 @@ async function syncCheckout(
 		spreadsheetId: tab.spreadsheetId,
 		cells: next,
 		...(next && prior && Object.keys(prior).length > 0 ? { prior } : {}),
+		...(next !== null && (styled === 'done' || state.painted) ? { painted: true as const } : {}),
+		// Cleared, but the yellow we put on could not come off: try again.
+		...(next === null && styled !== 'done' && state.painted ? { yellow: true as const } : {}),
 	});
 	return state.cells === null ? 'filled' : 'updated';
+}
+
+/**
+ * Try again to take the highlight off a packet we cleared, while nobody has
+ * it: once someone's entry is there, the row is theirs, colour and all. The
+ * row is re-read first, as before any write: it goes by number, and the tab
+ * may have been sorted since the run read it.
+ */
+async function unhighlightFreed(
+	client: SheetsClient,
+	tab: OpenTab,
+	rowIndex: number,
+	listNumber: string,
+	base: SheetState,
+	save: (next: SheetState) => Promise<void>,
+	deadline: number,
+): Promise<Outcome> {
+	if (refusesHighlight(tab.spreadsheetId, tab.tabName)) return 'unchanged';
+	const rest: SheetState = { ...base };
+	delete rest.yellow;
+	const fresh = await client.readRow({
+		spreadsheetId: tab.spreadsheetId,
+		tabName: tab.tabName,
+		rowIndex,
+		deadline,
+	});
+	if (!fresh.ok) return { error: fresh.error, status: fresh.status };
+	const samePacket =
+		normaliseListNumber(fresh.value[tab.layout.columns['List Number']] ?? '') ===
+		normaliseListNumber(listNumber);
+	if (!samePacket) return 'moved';
+	if (isUnfilled(fresh.value, tab.layout)) {
+		const off = await highlight(
+			client,
+			tab.spreadsheetId,
+			rowIndex,
+			FILL_COLUMNS.map((column) => tab.layout.columns[column]),
+			false,
+			deadline,
+			tab.tabName,
+		);
+		if (typeof off === 'object') return off;
+		if (off === 'skipped') return 'unchanged';
+	}
+	await save(rest);
+	return 'unchanged';
+}
+
+type WalkInWork = 'fill' | 'complete' | 'paint' | 'clear' | 'unhighlight';
+
+/** What a checkout needs on the Walk Ins tab this run, if anything. */
+function walkInWork(candidate: Candidate, spreadsheetId: string, today: string): WalkInWork | null {
+	const state = parseWalkInState(candidate.walkInState);
+	if (state?.gone) return null;
+	// Rows stay with the spreadsheet they were written to, and a row from an
+	// earlier day was emptied by the campaign — whoever is in it now is
+	// somebody else.
+	const ours = state !== null && state.spreadsheetId === spreadsheetId && state.day === today;
+	// Same rule as the packet's entry: there while it would be.
+	const wanted = desiredCells(candidate) !== null;
+	if (state?.rowIndex != null) {
+		if (!ours) return null;
+		if (!wanted) return 'clear';
+		const owed = state.status === undefined && !state.statusDone;
+		if (candidate.completedAt !== null && owed) return 'complete';
+		// Added while the tab refused highlights: its yellow is still owed.
+		return state.painted ? null : 'paint';
+	}
+	// Today's claims only, while held: the tab is the day's walk-ins, and
+	// nothing earlier is backfilled.
+	const live = candidate.releasedAt === null && candidate.completedAt === null;
+	if (wanted && live && walkInDay(candidate.claimedAt) === today) return 'fill';
+	return ours && state.yellowRow !== undefined ? 'unhighlight' : null;
+}
+
+interface WalkInsOutcome {
+	filled: number;
+	cleared: number;
+	/** Rows that changed under us since the read; the next run tries again. */
+	deferred: number;
+	/** A Google error, and how many rows it left waiting for the next run. */
+	failure?: SheetFailure;
+	waiting?: number;
+}
+
+/** Said in the alert, so a Walk Ins problem is not taken for the Packet
+ *  Tracker's. */
+const walkInFailure = (error: string, status: number): SheetFailure => ({
+	error: `${WALK_IN_TAB_NAME} tab: ${error}`,
+	status,
+});
+
+/** How far down the tab the Shift Start Time drop-down is looked for. */
+const DROPDOWN_SEARCH_ROWS = 20;
+
+/**
+ * The options of the tab's Shift Start Time drop-down, or the ones it had when
+ * this was written if it has none or cannot be read. Only a lapsed budget or
+ * the minute's quota stops the run.
+ */
+async function shiftOptions(
+	client: SheetsClient,
+	spreadsheetId: string,
+	layout: WalkInLayout,
+	deadline: number,
+): Promise<readonly ShiftOption[] | SheetFailure> {
+	const res = await client.dropdownOptions({
+		spreadsheetId,
+		tabName: WALK_IN_TAB_NAME,
+		rowIndex: layout.headerRowIndex + 1,
+		rows: DROPDOWN_SEARCH_ROWS,
+		columnIndex: layout.columns['Shift Start Time'],
+		deadline,
+	});
+	if (!res.ok) {
+		if (isDeferral(res)) return res;
+		console.warn(
+			`${LOG} could not read the Shift Start Time options in ${spreadsheetId}: ${res.status}`,
+		);
+	} else if (res.value && res.value.length > 0) {
+		return res.value;
+	}
+	return DEFAULT_SHIFT_STARTS;
+}
+
+/** Another checkout's row today, as recorded: where, and what marks it. */
+interface HeldRow {
+	checkoutId: number;
+	rowIndex: number;
+	mark: WalkInMark;
+}
+
+/**
+ * Every row a checkout holds on this spreadsheet's Walk Ins tab today — from
+ * the ledger, not this run's candidates: the nudge after one volunteer's
+ * action loads only their turf, and the rows of their other turfs still have
+ * to be told apart from theirs.
+ */
+async function loadHeldRows(
+	db: Db,
+	spreadsheetId: string,
+	today: string,
+	now: Date,
+): Promise<HeldRow[]> {
+	// Today's rows were written for claims made today, and a canvass day runs
+	// past midnight: two days back covers it without reading the season.
+	const since = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
+	const rows = await db
+		.select({ id: vanTurfCheckouts.id, walkInState: vanTurfCheckouts.walkInState })
+		.from(vanTurfCheckouts)
+		.where(and(isNotNull(vanTurfCheckouts.walkInState), gte(vanTurfCheckouts.claimedAt, since)));
+	return rows.flatMap((row) => {
+		const state = parseWalkInState(row.walkInState);
+		if (
+			!state ||
+			state.gone ||
+			state.rowIndex === null ||
+			state.name === null ||
+			state.spreadsheetId !== spreadsheetId ||
+			state.day !== today
+		) {
+			return [];
+		}
+		return [
+			{
+				checkoutId: row.id,
+				rowIndex: state.rowIndex,
+				mark: { name: state.name, shift: state.shift ?? null },
+			},
+		];
+	});
+}
+
+/**
+ * Bring the spreadsheet's Walk Ins tab in line with its checkouts: add a row
+ * for each new claim, mark it Completed when walked, clear it when given back
+ * or lapsed.
+ *
+ * Reads the tab only when there is something to do. A spreadsheet without a
+ * Walk Ins tab is skipped quietly — not every campaign sheet has one.
+ */
+async function syncWalkIns(
+	db: Db,
+	client: SheetsClient,
+	spreadsheetId: string,
+	candidates: readonly Candidate[],
+	now: Date,
+	deadline: number,
+	warnings: string[],
+): Promise<WalkInsOutcome> {
+	const outcome: WalkInsOutcome = { filled: 0, cleared: 0, deferred: 0 };
+	const today = walkInDay(now.toISOString());
+	// Yellow alone is not worth a read of the tab while it refuses highlights.
+	const refusing = refusesHighlight(spreadsheetId, WALK_IN_TAB_NAME);
+	const jobs = candidates.flatMap((candidate) => {
+		const work = walkInWork(candidate, spreadsheetId, today);
+		if (!work || (refusing && (work === 'paint' || work === 'unhighlight'))) return [];
+		return [{ candidate, work }];
+	});
+	if (jobs.length === 0) return outcome;
+	const missingSince = noWalkInsTab.get(spreadsheetId);
+	if (missingSince !== undefined && Date.now() - missingSince < NO_WALK_INS_MS) return outcome;
+	const fail = (failure: SheetFailure, waiting: number): WalkInsOutcome => ({
+		...outcome,
+		waiting,
+		failure: walkInFailure(failure.error, failure.status),
+	});
+
+	const read = await client.readTab({ spreadsheetId, tabName: WALK_IN_TAB_NAME, deadline });
+	if (!read.ok) {
+		if (read.status === 404) {
+			noWalkInsTab.set(spreadsheetId, Date.now());
+			return outcome;
+		}
+		return fail(read, jobs.length);
+	}
+	const layout = findWalkInLayout(read.value);
+	if (!layout) {
+		return fail({ status: 0, error: 'it has no "Name" or "Shift Start Time" column' }, jobs.length);
+	}
+	let shifts: readonly ShiftOption[] = DEFAULT_SHIFT_STARTS;
+	if (jobs.some((j) => j.work === 'fill')) {
+		const found = await shiftOptions(client, spreadsheetId, layout, deadline);
+		if ('error' in found) return fail(found, jobs.length);
+		shifts = found;
+	}
+	const highlighted = walkInColumnIndexes(layout);
+	const held = await loadHeldRows(db, spreadsheetId, today, now);
+	// Rows filled in or found in use this run, which the tab as read does not
+	// show.
+	const taken = new Set<number>();
+	const readRow = (rowIndex: number) =>
+		client.readRow({ spreadsheetId, tabName: WALK_IN_TAB_NAME, rowIndex, deadline });
+	const save = (checkoutId: number, state: WalkInState) => saveWalkInState(db, checkoutId, state);
+
+	for (const [i, { candidate, work }] of jobs.entries()) {
+		const state = parseWalkInState(candidate.walkInState);
+		const waiting = jobs.length - i;
+
+		if (work === 'fill') {
+			// Not a row another checkout holds today, even one staff emptied:
+			// that checkout would later find a stranger in it.
+			const rowIndex = firstEmptyWalkInRow(
+				read.value,
+				layout,
+				new Set([...taken, ...held.map((h) => h.rowIndex)]),
+			);
+			taken.add(rowIndex);
+			// A tab filled to its last row gets more, rather than refusing the
+			// read and write past its end every run.
+			if (rowIndex >= read.value.length) {
+				const grown = await client.ensureRows({
+					spreadsheetId,
+					tabName: WALK_IN_TAB_NAME,
+					rowIndex,
+					deadline,
+				});
+				if (!grown.ok) return fail(grown, waiting);
+			}
+			// The check just before the write, as on the Packet Tracker: rows go
+			// by number, and someone may have written in this one since the read.
+			const fresh = await readRow(rowIndex);
+			if (!fresh.ok) return fail(fresh, waiting);
+			if (!isEmptyWalkIn(fresh.value, layout)) {
+				outcome.deferred += 1;
+				continue;
+			}
+			const shift = shiftFor(candidate.claimedAt, shifts);
+			const styled = await highlight(client, spreadsheetId, rowIndex, highlighted, true, deadline);
+			if (typeof styled === 'object') return fail(styled, waiting);
+			const written = await client.writeCells({
+				spreadsheetId,
+				tabName: WALK_IN_TAB_NAME,
+				rowIndex,
+				cells: walkInWrites(walkInCells(candidate, shift?.label ?? null), layout, {
+					shiftAsTyped: shift !== null && !shift.text,
+				}),
+				deadline,
+			});
+			if (!written.ok) {
+				// Not left as an empty yellow row: the claim may end before the
+				// next run fills it in.
+				const off =
+					styled === 'done'
+						? await highlight(client, spreadsheetId, rowIndex, highlighted, false, deadline)
+						: 'done';
+				if (off !== 'done') {
+					await save(candidate.checkoutId, {
+						spreadsheetId,
+						rowIndex: null,
+						name: null,
+						day: today,
+						yellowRow: rowIndex,
+					});
+				}
+				return fail(written, waiting);
+			}
+			await save(candidate.checkoutId, {
+				spreadsheetId,
+				rowIndex,
+				name: candidate.slackUserName,
+				shift: shift?.label ?? null,
+				day: today,
+				...(styled === 'done' ? { painted: true as const } : {}),
+			});
+			outcome.filled += 1;
+			continue;
+		}
+
+		if (work === 'unhighlight') {
+			// A cleared row still yellow. Ours to fix only while it is empty: if
+			// someone has written in it since, it is theirs, colour and all.
+			const rowIndex = state!.yellowRow!;
+			const fresh = await readRow(rowIndex);
+			if (!fresh.ok) return fail(fresh, waiting);
+			const rest: WalkInState = { ...state! };
+			delete rest.yellowRow;
+			if (isEmptyWalkIn(fresh.value, layout)) {
+				const off = await highlight(client, spreadsheetId, rowIndex, highlighted, false, deadline);
+				if (typeof off === 'object') return fail(off, waiting);
+				if (off === 'skipped') continue;
+			}
+			await save(candidate.checkoutId, rest);
+			continue;
+		}
+
+		// Clearing, completing or painting: find our row.
+		const ours: WalkInMark = { name: state!.name ?? '', shift: state!.shift ?? null };
+		const recorded = state!.rowIndex!;
+		let rowIndex = recorded;
+		let fresh = await readRow(recorded);
+		if (!fresh.ok) return fail(fresh, waiting);
+		if (!isOurWalkIn(fresh.value, layout, ours)) {
+			// Not where we left it: the campaign may have deleted, inserted or
+			// sorted rows. Only ever the one row marked as ours that no other
+			// checkout can be shown to hold — a second could be a walk-in staff
+			// wrote for the same person, and clearing theirs instead of ours is
+			// worse than clearing neither. Another checkout's row counts as
+			// held only while its recorded row still reads as its own: after a
+			// move, recorded numbers point at the wrong rows.
+			const others = new Set(taken);
+			for (const h of held) {
+				if (h.checkoutId === candidate.checkoutId) continue;
+				if (isOurWalkIn(read.value[h.rowIndex], layout, h.mark)) others.add(h.rowIndex);
+			}
+			const found = findOurWalkIn(read.value, layout, ours, others);
+			if (found !== null) {
+				const moved = await readRow(found);
+				if (!moved.ok) return fail(moved, waiting);
+				if (isOurWalkIn(moved.value, layout, ours)) {
+					rowIndex = found;
+					fresh = moved;
+				}
+			}
+			if (rowIndex === recorded) {
+				if (isEmptyWalkIn(fresh.value, layout)) {
+					// Emptied already — the campaign clearing the tab early.
+					// Nothing of ours left to take back.
+					await save(candidate.checkoutId, { spreadsheetId, rowIndex: null, name: null });
+				} else {
+					// Escaped: a Google or Apple volunteer picks their own name.
+					warnings.push(
+						`${LOG} the Walk Ins row for ${escapeMrkdwn(`${candidate.turfName} (${candidate.slackUserName})`)} ` +
+							`has been changed by hand, so it was left as it is`,
+					);
+					await save(candidate.checkoutId, { ...state!, gone: true });
+				}
+				continue;
+			}
+		}
+
+		if (work === 'paint') {
+			const on = await highlight(client, spreadsheetId, rowIndex, highlighted, true, deadline);
+			if (typeof on === 'object') return fail(on, waiting);
+			if (on === 'done') {
+				await save(candidate.checkoutId, { ...state!, rowIndex, painted: true });
+			}
+			continue;
+		}
+
+		if (work === 'complete') {
+			// A Final Status the campaign already picked is theirs, as on the
+			// Packet Tracker: never overwritten.
+			if (
+				layout.columns['Final Status'] === undefined ||
+				walkInStatus(fresh.value, layout) !== ''
+			) {
+				await save(candidate.checkoutId, { ...state!, rowIndex, statusDone: true });
+				continue;
+			}
+			const written = await client.writeCells({
+				spreadsheetId,
+				tabName: WALK_IN_TAB_NAME,
+				rowIndex,
+				cells: walkInWrites([['Final Status', COMPLETED_STATUS]], layout),
+				deadline,
+			});
+			if (!written.ok) return fail(written, waiting);
+			await save(candidate.checkoutId, { ...state!, rowIndex, status: COMPLETED_STATUS });
+			continue;
+		}
+
+		const styled = await highlight(client, spreadsheetId, rowIndex, highlighted, false, deadline);
+		if (typeof styled === 'object') return fail(styled, waiting);
+		// Only what we wrote and is still as we wrote it: a Final Status the
+		// campaign has picked since stays. Name and shift were just checked.
+		const blanks: Array<[WalkInColumn, string]> = [['Name', '']];
+		if (ours.shift !== null) blanks.push(['Shift Start Time', '']);
+		if (state!.status !== undefined && walkInStatus(fresh.value, layout) === state!.status) {
+			blanks.push(['Final Status', '']);
+		}
+		const written = await client.writeCells({
+			spreadsheetId,
+			tabName: WALK_IN_TAB_NAME,
+			rowIndex,
+			cells: walkInWrites(blanks, layout),
+			deadline,
+		});
+		if (!written.ok) return fail(written, waiting);
+		await save(candidate.checkoutId, {
+			spreadsheetId,
+			rowIndex: null,
+			name: null,
+			day: today,
+			// Cleared, but the yellow we put on could not come off: try again.
+			...(styled !== 'done' && state!.painted ? { yellowRow: rowIndex } : {}),
+		});
+		outcome.cleared += 1;
+	}
+	return outcome;
+}
+
+/**
+ * Highlight a row's cells, or take the highlight off. A failure is returned
+ * for the minute's quota, the run's time or Google failing to answer, which
+ * stop the step; a refusal is logged and comes back as `skipped`, and the
+ * write goes ahead
+ * without it — the highlight helps the campaign read the sheet, it is no
+ * reason to leave the sheet stale. A tab that refused is not asked again for
+ * an hour. A highlight left on a row we cleared is the caller's to try again.
+ */
+async function highlight(
+	client: SheetsClient,
+	spreadsheetId: string,
+	rowIndex: number,
+	columns: readonly number[],
+	on: boolean,
+	deadline: number,
+	tabName: string = WALK_IN_TAB_NAME,
+): Promise<'done' | 'skipped' | SheetFailure> {
+	if (refusesHighlight(spreadsheetId, tabName)) return 'skipped';
+	const res = await client.highlightCells({
+		spreadsheetId,
+		tabName,
+		rowIndex,
+		columns,
+		on,
+		deadline,
+	});
+	if (res.ok) return 'done';
+	// Only an answer that will not change is a refusal. A 5xx or a network
+	// failure is Google having a bad moment: stop and try the step again next
+	// run, like the quota — remembered as a refusal, it would leave an hour of
+	// walk-ins without their yellow.
+	// Nor is a row or tab the cached layout says is there and is not: the
+	// write fails the same way, the client looks the tab up again, and the
+	// next run has it right.
+	const refused = REFUSALS.has(res.status) && !STALE_TAB.test(res.error);
+	if (isDeferral(res) || !refused) return { error: res.error, status: res.status };
+	highlightRefused.set(highlightKey(spreadsheetId, tabName), Date.now());
+	console.warn(
+		`${LOG} could not ${on ? 'highlight' : 'un-highlight'} a row in ${spreadsheetId}: ${res.status}`,
+	);
+	return 'skipped';
 }
 
 /**
@@ -752,6 +1374,38 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			}
 		}
 
+		if (!failedHere && !stopped) {
+			let walkIns: WalkInsOutcome;
+			try {
+				walkIns = await syncWalkIns(
+					db,
+					client,
+					spreadsheetId,
+					work.candidates,
+					now,
+					deadline,
+					result.warnings,
+				);
+			} catch (err) {
+				// As above: Google accepted, the ledger did not. Repeated next run.
+				console.error(`${LOG} walk-in bookkeeping for ${spreadsheetId} failed:`, errText(err));
+				walkIns = { filled: 0, cleared: 0, deferred: 0 };
+			}
+			result.walkInsFilled += walkIns.filled;
+			result.walkInsCleared += walkIns.cleared;
+			result.deferred += walkIns.deferred;
+			if (walkIns.failure) {
+				const waiting = walkIns.waiting ?? 0;
+				if (isDeferral(walkIns.failure)) {
+					stopped = true;
+					result.deferred += waiting;
+				} else {
+					failedHere = walkIns.failure.error;
+					result.failed += waiting;
+				}
+			}
+		}
+
 		if (failedHere) {
 			await safely(
 				() => recordFailure(db, spreadsheetId, failedHere!, now.toISOString()),
@@ -790,10 +1444,20 @@ export async function syncPacketTracker(db: Db, options: TrackerOptions): Promis
 			`${LOG} ${result.deferred} checkout(s) wait for the next run (quota, time, or a tab that changed mid-run)`,
 		);
 	}
-	if (result.filled + result.updated + result.failed + result.assignmentsChanged + unrouted > 0) {
+	const walkIns = result.walkInsFilled + result.walkInsCleared;
+	if (
+		result.filled +
+			result.updated +
+			result.failed +
+			result.assignmentsChanged +
+			unrouted +
+			walkIns >
+		0
+	) {
 		console.log(
 			`${LOG} packet tracker: filled=${result.filled} updated=${result.updated} ` +
-				`failed=${result.failed} unrouted=${unrouted} assignments=${result.assignmentsChanged}`,
+				`failed=${result.failed} unrouted=${unrouted} assignments=${result.assignmentsChanged} ` +
+				`walk-ins=+${result.walkInsFilled}/-${result.walkInsCleared}`,
 		);
 	}
 	return result;

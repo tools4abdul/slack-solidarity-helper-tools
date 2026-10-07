@@ -69,6 +69,8 @@ const ABOUT_COLUMNS = new Set(['reason']);
  *   - `sheet_state` — JSON: a checkout's record of the sheet cells it wrote
  *     (`cells`) and found there before (`prior`). Only their `Canvasser`
  *     cells are looked at; the prior one can be another volunteer's name.
+ *   - `walk_in_state` — JSON: the Walk Ins row a checkout filled in, with
+ *     the `name` it wrote there.
  *   - `canvassers_json` — JSON from MiniVAN: `{canvassserId, firstName,
  *     lastName}` per canvasser, matched as one whole name (or `name`, when an
  *     instance sends one). NOT NULL, so an unreadable value becomes `[]`.
@@ -84,6 +86,7 @@ const JSON_NAME_COLUMNS: ReadonlyMap<
 	{ scrub: (parsed: unknown, replace: Replace) => boolean; unreadable: string | null }
 > = new Map([
 	['sheet_state', { scrub: scrubSheetState, unreadable: null }],
+	['walk_in_state', { scrub: scrubWalkInState, unreadable: null }],
 	['canvassers_json', { scrub: scrubCanvassers, unreadable: '[]' }],
 ]);
 /** How VAN joins canvassers in `van_distributed_to` (catalog.ts). */
@@ -235,6 +238,18 @@ function scrubSheetState(parsed: unknown, replace: Replace): boolean {
 		changed = true;
 	}
 	return changed;
+}
+
+/** The `name` a checkout wrote on the Walk Ins tab, replaced in place. True
+ *  when it was. */
+function scrubWalkInState(parsed: unknown, replace: Replace): boolean {
+	if (!parsed || typeof parsed !== 'object') return false;
+	const record = parsed as Record<string, unknown>;
+	if (typeof record.name !== 'string') return false;
+	const standIn = replace(record.name);
+	if (standIn === undefined) return false;
+	record.name = standIn;
+	return true;
 }
 
 /** Each MiniVAN canvasser's name, matched whole and replaced in place — split

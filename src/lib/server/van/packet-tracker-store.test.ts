@@ -8,6 +8,8 @@ import {
 	parseSheetState,
 	syncPacketTracker,
 } from './packet-tracker-store.js';
+import { DEFAULT_SHEET_TAB_NAME, FILL_COLUMNS } from '../../van/packet-tracker.js';
+import { WALK_IN_TAB_NAME } from '../../van/walk-ins.js';
 import { normaliseSheetKey, type SheetTarget } from '../../van/sheet-routing.js';
 import type { SheetsClient } from '../google/sheets.js';
 
@@ -74,33 +76,71 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		);
 	const failing = new Map<string, { status: number; error: string }>();
 	const calls: string[] = [];
+	/** The Walk Ins tab's Shift Start Time drop-down. */
+	let dropdown: Array<{ label: string; text: boolean }> | null = ['10am', '1pm', '4pm', '6pm'].map(
+		(label) => ({ label, text: true }),
+	);
+	/** Highlighted cells, as `spreadsheetId:row:column`. */
+	const yellow = new Set<string>();
 	/** Runs once, after the run's read of a tab and before the re-check —
 	 *  the window in which an organizer might sort the sheet. */
 	let between: (() => void) | null = null;
 
+	// The Packet Tracker is keyed by spreadsheet id, the Walk Ins tab by
+	// `id/Walk Ins` (absent unless a test adds it), and its calls carry a
+	// `walkins-` prefix so the Packet Tracker's call lists read as before.
+	const key = (id: string, tabName: string) =>
+		tabName === WALK_IN_TAB_NAME ? `${id}/${tabName}` : id;
+	const prefix = (tabName: string) => (tabName === WALK_IN_TAB_NAME ? 'walkins-' : '');
+
 	const api: SheetsClient = {
-		async readTab({ spreadsheetId }) {
-			calls.push(`read:${spreadsheetId}`);
-			const fail = failing.get(spreadsheetId);
+		async readTab({ spreadsheetId, tabName }) {
+			calls.push(`${prefix(tabName)}read:${spreadsheetId}`);
+			const fail = failing.get(`${prefix(tabName)}${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
-			const sheet = sheets.get(spreadsheetId);
+			const sheet = sheets.get(key(spreadsheetId, tabName));
 			if (!sheet) return { ok: false, status: 404, error: 'no tab' };
 			return { ok: true, value: sheet.map((r) => [...r]) };
 		},
-		async readRow({ spreadsheetId, rowIndex }) {
+		async readRow({ spreadsheetId, tabName, rowIndex }) {
 			const fn = between;
 			between = null;
 			fn?.();
-			calls.push(`readRow:${spreadsheetId}:${rowIndex}`);
-			return { ok: true, value: [...(sheets.get(spreadsheetId)![rowIndex] ?? [])] };
+			calls.push(`${prefix(tabName)}readRow:${spreadsheetId}:${rowIndex}`);
+			return { ok: true, value: [...(sheets.get(key(spreadsheetId, tabName))![rowIndex] ?? [])] };
 		},
-		async writeCells({ spreadsheetId, rowIndex, cells }) {
-			calls.push(`write:${spreadsheetId}:${rowIndex}`);
-			const fail = failing.get(`write:${spreadsheetId}`);
+		async writeCells({ spreadsheetId, tabName, rowIndex, cells }) {
+			calls.push(`${prefix(tabName)}write:${spreadsheetId}:${rowIndex}`);
+			const fail = failing.get(`${prefix(tabName)}write:${spreadsheetId}`);
 			if (fail) return { ok: false, ...fail };
-			const row = sheets.get(spreadsheetId)![rowIndex]!;
+			const sheet = sheets.get(key(spreadsheetId, tabName))!;
+			while (sheet.length <= rowIndex) sheet.push([]);
+			const row = sheet[rowIndex]!;
 			// Displayed without Sheets' text-forcing apostrophe.
 			for (const [c, value] of cells) row[c] = value.replace(/^'/, '');
+			return { ok: true, value: true };
+		},
+		async highlightCells({ spreadsheetId, tabName, rowIndex, columns, on }) {
+			calls.push(`${prefix(tabName)}highlight:${spreadsheetId}:${rowIndex}:${on ? 'on' : 'off'}`);
+			const fail = failing.get(`${prefix(tabName)}highlight:${spreadsheetId}`);
+			if (fail) return { ok: false, ...fail };
+			for (const c of columns) {
+				const key = `${spreadsheetId}/${tabName}:${rowIndex}:${c}`;
+				if (on) yellow.add(key);
+				else yellow.delete(key);
+			}
+			return { ok: true, value: true };
+		},
+		async dropdownOptions({ spreadsheetId }) {
+			calls.push(`walkins-options:${spreadsheetId}`);
+			const fail = failing.get(`walkins-options:${spreadsheetId}`);
+			if (fail) return { ok: false, ...fail };
+			return { ok: true, value: dropdown };
+		},
+		async ensureRows({ spreadsheetId, tabName, rowIndex }) {
+			calls.push(`${prefix(tabName)}grow:${spreadsheetId}:${rowIndex}`);
+			const fail = failing.get(`${prefix(tabName)}grow:${spreadsheetId}`);
+			if (fail) return { ok: false, ...fail };
 			return { ok: true, value: true };
 		},
 		async describe() {
@@ -113,6 +153,19 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		calls,
 		failing,
 		sheet: (id: string) => sheets.get(id)!,
+		setDropdown(next: typeof dropdown) {
+			dropdown = next;
+		},
+		/** Give the spreadsheet a Walk Ins tab. */
+		walkIns(id: string, values: string[][]) {
+			sheets.set(
+				`${id}/${WALK_IN_TAB_NAME}`,
+				values.map((r) => [...r]),
+			);
+		},
+		walkInSheet: (id: string) => sheets.get(`${id}/${WALK_IN_TAB_NAME}`)!,
+		/** Whether a Walk Ins row is highlighted, judged by its Name cell. */
+		walkInYellow: (id: string, row: number) => yellow.has(`${id}/${WALK_IN_TAB_NAME}:${row}:0`),
 		/** The packet's row, by column name, as the campaign sees it. */
 		entry(id: string, list = LIST): Record<string, string> {
 			const row = sheets.get(id)!.find((r) => r[col('List Number')] === list)!;
@@ -120,6 +173,11 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		},
 		between(fn: () => void) {
 			between = fn;
+		},
+		/** The columns highlighted on the packet's row, by name. */
+		highlighted(id: string, list = LIST): string[] {
+			const row = sheets.get(id)!.findIndex((r) => r[col('List Number')] === list);
+			return HEADER.filter((_, i) => yellow.has(`${id}/${DEFAULT_SHEET_TAB_NAME}:${row}:${i}`));
 		},
 	};
 }
@@ -168,6 +226,8 @@ async function checkout(
 		completedAt?: string | null;
 		reportedPercent?: number | null;
 		sheetState?: string | null;
+		claimedAt?: string;
+		slackUserName?: string;
 	} = {},
 ) {
 	await client.execute({
@@ -175,11 +235,13 @@ async function checkout(
 		        (id, turf_id, slack_user_id, slack_user_name, claimed_at, expires_at,
 		         released_at, completed_at, reported_percent, issued_list_number,
 		         claim_door_count, sheet_state)
-		      VALUES (?, ?, 'U1', 'Dana', '2026-09-19T14:07:00.000Z', '2026-09-21T14:00:00.000Z',
+		      VALUES (?, ?, 'U1', ?, ?, '2026-09-21T14:00:00.000Z',
 		              ?, ?, ?, ?, 64, ?)`,
 		args: [
 			over.id ?? 1,
 			over.turfId ?? 100,
+			over.slackUserName ?? 'Dana',
+			over.claimedAt ?? '2026-09-19T14:07:00.000Z',
 			over.releasedAt ?? null,
 			over.completedAt ?? null,
 			over.reportedPercent ?? null,
@@ -327,27 +389,95 @@ describe('a checkout through its life', () => {
 		await run(fake.api);
 		expect(fake.entry('sheet-downriver').Status).toBe('Out');
 
-		// Loaded, so it would stay Incomplete; clear the load to test the hand-back.
-		await update(1, "loaded_in_minivan_at = NULL, released_at = '2026-09-19T15:00:00.000Z'");
+		// Handed back after loading: the row goes back to the campaign's default.
+		await update(1, "released_at = '2026-09-19T15:00:00.000Z', release_reason = 'volunteer'");
 		await run(fake.api);
 
 		expect(fake.sheet('sheet-downriver')[2]).toEqual(listed);
 	});
 
-	it('fills it in again if the hand-back turns out to have been walked', async () => {
+	it('leaves a hand-back cleared when a MiniVAN load turns up after it', async () => {
 		await turf();
 		await checkout();
-		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		const listed = packet(LIST);
+		const fake = fakeSheets({ 'sheet-downriver': tracker(listed) });
 		await run(fake.api);
-		await update(1, "released_at = '2026-09-19T15:00:00.000Z'");
+		await update(1, "released_at = '2026-09-19T15:00:00.000Z', release_reason = 'volunteer'");
 		await run(fake.api);
 
 		await update(1, "loaded_in_minivan_at = '2026-09-19T14:41:00.000Z'");
 		await run(fake.api);
 
+		expect(fake.sheet('sheet-downriver')[2]).toEqual(listed);
+	});
+
+	it('highlights the cells it fills in, and only those', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		await run(fake.api);
+		expect(fake.highlighted('sheet-downriver')).toEqual(expect.arrayContaining([...FILL_COLUMNS]));
+		expect(fake.highlighted('sheet-downriver')).toHaveLength(FILL_COLUMNS.length);
+	});
+
+	it('takes the highlight off with the entry on a give-back', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		await run(fake.api);
+		await update(1, "released_at = '2026-09-19T15:00:00.000Z', release_reason = 'volunteer'");
+		await run(fake.api);
+		expect(fake.highlighted('sheet-downriver')).toEqual([]);
+	});
+
+	it('writes nothing when the highlight fails, and fills it in next run', async () => {
+		await turf();
+		await checkout();
+		const listed = packet(LIST);
+		const fake = fakeSheets({ 'sheet-downriver': tracker(listed) });
+		fake.failing.set('highlight:sheet-downriver', { status: 429, error: 'quota' });
+		await run(fake.api);
+		expect(fake.sheet('sheet-downriver')[2]).toEqual(listed);
+
+		fake.failing.delete('highlight:sheet-downriver');
+		expect((await run(fake.api)).filled).toBe(1);
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
+	});
+
+	it('clears a lapsed claim once its doors are counted at zero', async () => {
+		await turf();
+		await checkout();
+		const listed = packet(LIST);
+		const fake = fakeSheets({ 'sheet-downriver': tracker(listed) });
+		await run(fake.api);
+		await update(
+			1,
+			"loaded_in_minivan_at = '2026-09-19T14:41:00.000Z', " +
+				"released_at = '2026-09-19T20:00:00.000Z', release_reason = 'expired'",
+		);
+		// Not counted yet: loaded, so it stays.
+		await run(fake.api);
+		expect(fake.entry('sheet-downriver').Status).toBe('Incomplete');
+
+		await update(1, 'doors_knocked = 0');
+		await run(fake.api);
+		expect(fake.sheet('sheet-downriver')[2]).toEqual(listed);
+	});
+
+	it('keeps a lapsed claim that knocked doors, with what it knocked', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		await run(fake.api);
+		await update(
+			1,
+			"released_at = '2026-09-19T20:00:00.000Z', release_reason = 'expired', doors_knocked = 12",
+		);
+		await run(fake.api);
 		expect(fake.entry('sheet-downriver')).toMatchObject({
-			Status: 'Incomplete',
 			Canvasser: 'Dana',
+			Status: 'Incomplete',
+			'Knocked #': '12',
 		});
 	});
 
@@ -605,7 +735,12 @@ describe('Google’s 60-a-minute quota and the run’s time', () => {
 		expect(fake.calls).toEqual([
 			'read:sheet-downriver',
 			'readRow:sheet-downriver:2',
+			// A write too, against the per-minute write quota, not the reads.
+			'highlight:sheet-downriver:2:on',
 			'write:sheet-downriver:2',
+			// Looking for a Walk Ins tab: this sheet has none, which is
+			// remembered for an hour rather than asked every run.
+			'walkins-read:sheet-downriver',
 		]);
 	});
 
@@ -824,5 +959,654 @@ describe('parseSheetState', () => {
 		);
 		expect(state?.cells).toEqual({ Canvasser: 'Dana', Status: 'Complete', 'Knocked #': '64' });
 		expect(state?.prior).toEqual({ Status: 'Unwalked' });
+	});
+});
+
+describe('the Walk Ins tab', () => {
+	const WALK_IN_HEADER = [
+		'Name',
+		'Shift Start Time',
+		'Phone',
+		'Email',
+		'Zip Code',
+		'Notes',
+		'Final Status',
+		'In VAN?',
+		'Reshifted?',
+	];
+	/** A walk-in the campaign wrote itself. */
+	const theirs = (name: string) => [name, '9:00 AM', '313-555-0100'];
+	const GIVEN_BACK = "released_at = '2026-09-19T15:00:00.000Z', release_reason = 'volunteer'";
+
+	async function walkInState(id = 1) {
+		const res = await client.execute({
+			sql: 'SELECT walk_in_state FROM van_turf_checkouts WHERE id = ?',
+			args: [id],
+		});
+		const raw = res.rows[0]?.['walk_in_state'] as string | null;
+		return raw ? JSON.parse(raw) : null;
+	}
+
+	async function withWalkIns(...rows: string[][]) {
+		await turf();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		fake.walkIns('sheet-downriver', [WALK_IN_HEADER, ...rows]);
+		return fake;
+	}
+
+	it('fills in the first empty row with Name and shift, highlighted', async () => {
+		const fake = await withWalkIns(theirs('Ari'), [], theirs('Bo'));
+		await checkout();
+
+		const result = await run(fake.api);
+
+		expect(result.walkInsFilled).toBe(1);
+		// The gap between the campaign's rows, not the bottom.
+		// 10:07 falls in the 10am shift, picked from the drop-down.
+		expect(fake.walkInSheet('sheet-downriver')[2]).toEqual(['Dana', '10am']);
+		expect(fake.walkInYellow('sheet-downriver', 2)).toBe(true);
+		expect(await walkInState()).toMatchObject({
+			rowIndex: 2,
+			name: 'Dana',
+			shift: '10am',
+			day: '2026-09-19',
+		});
+	});
+
+	it('gives two claims in one run two rows', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
+		await checkout({ id: 2, turfId: 101, list: '35536745-88713', slackUserName: 'Eli' });
+
+		await run(fake.api);
+
+		const names = fake.walkInSheet('sheet-downriver').map((r) => r[0]);
+		expect(names).toEqual(['Name', 'Ari', 'Dana', 'Eli']);
+	});
+
+	it('clears its own row on a give-back, and only that row', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await run(fake.api);
+		fake.walkInSheet('sheet-downriver').push(theirs('Bo'));
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(result.walkInsCleared).toBe(1);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		expect(sheet[2]!.slice(0, 2)).toEqual(['', '']);
+		expect(sheet[3]).toEqual(theirs('Bo'));
+		expect(fake.walkInYellow('sheet-downriver', 2)).toBe(false);
+	});
+
+	it('clears on expiry only once no doors were knocked', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+
+		await update(
+			1,
+			"released_at = '2026-09-19T17:00:00.000Z', release_reason = 'expired', doors_knocked = 4",
+		);
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+
+		await update(1, 'doors_knocked = 0');
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('');
+	});
+
+	it('does not add a walk-in for a claim from an earlier day', async () => {
+		const fake = await withWalkIns();
+		await checkout({ claimedAt: '2026-09-18T20:00:00.000Z' });
+
+		await run(fake.api);
+
+		expect(fake.walkInSheet('sheet-downriver')).toHaveLength(1);
+	});
+
+	it('does not add a walk-in once the claim has ended', async () => {
+		const fake = await withWalkIns();
+		await checkout({ completedAt: '2026-09-19T17:00:00.000Z', reportedPercent: 100 });
+
+		await run(fake.api);
+
+		expect(fake.walkInSheet('sheet-downriver')).toHaveLength(1);
+	});
+
+	// The campaign empties the tab daily, so yesterday's row number is today
+	// somebody else's walk-in — even one with the same name.
+	it('leaves a row from an earlier day alone', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+
+		await update(1, GIVEN_BACK);
+		await run(fake.api, { now: new Date('2026-09-20T15:00:00.000Z') });
+
+		expect(sheet[1]![0]).toBe('Dana');
+	});
+
+	it('leaves a row someone has written over, and says so once', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		fake.walkInSheet('sheet-downriver')[1]![0] = 'Frankie';
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+		await run(fake.api);
+
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Frankie');
+		expect(result.warnings.some((w) => w.includes('Walk Ins'))).toBe(true);
+		expect(await walkInState()).toMatchObject({ gone: true });
+	});
+
+	it('waits for the next run when its row is taken between the read and the write', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		// Someone writes in the row just before the Walk Ins re-check.
+		const realReadRow = fake.api.readRow;
+		fake.api.readRow = async (input) => {
+			if (input.tabName === WALK_IN_TAB_NAME) {
+				fake.walkInSheet('sheet-downriver').push(theirs('Gus'));
+				fake.api.readRow = realReadRow;
+			}
+			return realReadRow(input);
+		};
+
+		const result = await run(fake.api);
+
+		expect(result.walkInsFilled).toBe(0);
+		expect(fake.walkInSheet('sheet-downriver')[1]).toEqual(theirs('Gus'));
+		expect(await walkInState()).toBeNull();
+	});
+
+	it('writes nothing when the highlight fails, and fills it in next run', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		fake.failing.set('walkins-highlight:sheet-downriver', { status: 429, error: 'quota' });
+
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')).toHaveLength(1);
+
+		fake.failing.delete('walkins-highlight:sheet-downriver');
+		expect((await run(fake.api)).walkInsFilled).toBe(1);
+	});
+
+	it('falls back to the known shifts when the column has no drop-down', async () => {
+		const fake = await withWalkIns();
+		fake.setDropdown(null);
+		await checkout({ claimedAt: '2026-09-19T17:30:00.000Z' }); // 1:30 PM
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')[1]).toEqual(['Dana', '1pm']);
+	});
+
+	it('writes a shift the drop-down holds as a real time as typed, not forced to text', async () => {
+		const fake = await withWalkIns();
+		fake.setDropdown([
+			{ label: '10:00 AM', text: false },
+			{ label: '1:00 PM', text: false },
+		]);
+		const raw: Array<[number, string]>[] = [];
+		const write = fake.api.writeCells;
+		fake.api.writeCells = async (input) => {
+			if (input.tabName === WALK_IN_TAB_NAME) raw.push([...input.cells] as Array<[number, string]>);
+			return write(input);
+		};
+		await checkout();
+		await run(fake.api);
+		expect(raw[0]).toEqual([
+			[0, "'Dana"],
+			[1, '10:00 AM'],
+		]);
+	});
+
+	it('marks its row Completed when the turf is walked', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+
+		await update(1, "completed_at = '2026-09-19T17:00:00.000Z', reported_percent = 100");
+		await run(fake.api);
+		await run(fake.api);
+
+		const row = fake.walkInSheet('sheet-downriver')[1]!;
+		expect(row[0]).toBe('Dana');
+		expect(row[6]).toBe('Completed');
+		expect(await walkInState()).toMatchObject({ status: 'Completed' });
+	});
+
+	it('clears only what it wrote, leaving a status the campaign picked', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		const row = fake.walkInSheet('sheet-downriver')[1]!;
+		row[5] = 'changed her mind';
+		row[6] = 'Declined';
+
+		await update(1, GIVEN_BACK);
+		await run(fake.api);
+
+		expect(row.slice(0, 7)).toEqual([
+			'',
+			'',
+			undefined,
+			undefined,
+			undefined,
+			'changed her mind',
+			'Declined',
+		]);
+	});
+
+	// The campaign deleted a row above ours: ours moved up one.
+	it('finds its row again after the rows above it change', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		sheet.splice(1, 1);
+		sheet.push(theirs('Bo'));
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(result.walkInsCleared).toBe(1);
+		expect(sheet[1]!.slice(0, 2)).toEqual(['', '']);
+		expect(sheet[2]).toEqual(theirs('Bo'));
+		expect(result.warnings).toEqual([]);
+	});
+
+	// The known limit: two rows reading "Dana / 10am" cannot be told apart.
+	// The row at its recorded place is taken, which leaves one Dana row — the
+	// right count, though not necessarily the row staff wrote.
+	it('takes an identical row at its recorded place, rather than guessing elsewhere', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		// Ari's row deleted, and staff wrote Dana in again for the same shift.
+		sheet.splice(1, 1);
+		sheet.push(['Dana', '10am']);
+		sheet.push(['Cy']);
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Dana', '', 'Cy']);
+		expect(result.warnings).toEqual([]);
+	});
+
+	it('refuses to guess when its row moved and two others could be it', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		// Our row moved down three, Cy is where it was, and staff wrote Dana
+		// in for the same shift.
+		sheet.splice(1, 0, ['Bo'], ['Cy'], ['Dana', '10am']);
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Bo', 'Cy', 'Dana', 'Ari', 'Dana']);
+		expect(result.warnings.some((w) => w.includes('Walk Ins'))).toBe(true);
+		expect(await walkInState()).toMatchObject({ gone: true });
+	});
+
+	// Two turfs claimed back to back are two identical rows; the nudge after
+	// giving one back loads only that turf.
+	it('clears the right row from the nudge when the same volunteer has two', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
+		await checkout({ id: 2, turfId: 101, list: '35536745-88713' });
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Dana', 'Dana']);
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api, { onlyTurfId: 100 });
+
+		expect(sheet.map((r) => r[0])).toEqual(['Name', '', 'Dana']);
+		expect(result.warnings).toEqual([]);
+		expect(await walkInState(2)).toMatchObject({ rowIndex: 2 });
+	});
+
+	// Ari's row deleted above both of Dana's: every recorded number is off by one.
+	it('clears both identical rows, and nobody else’s, after rows above them go', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
+		await checkout({ id: 2, turfId: 101, list: '35536745-88713' });
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		sheet.splice(1, 1);
+		sheet.push(theirs('Bo'));
+
+		await update(2, "released_at = '2026-09-19T15:00:00.000Z', release_reason = 'volunteer'");
+		const first = await run(fake.api, { onlyTurfId: 101 });
+		await update(1, GIVEN_BACK);
+		const second = await run(fake.api, { onlyTurfId: 100 });
+
+		expect(sheet.map((r) => r[0])).toEqual(['Name', '', '', 'Bo']);
+		expect([...first.warnings, ...second.warnings]).toEqual([]);
+	});
+
+	it('leaves a Final Status the campaign already picked', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		const row = fake.walkInSheet('sheet-downriver')[1]!;
+		row[6] = 'No Show';
+
+		await update(1, "completed_at = '2026-09-19T17:00:00.000Z', reported_percent = 100");
+		await run(fake.api);
+		await run(fake.api);
+
+		expect(row[6]).toBe('No Show');
+		expect(await walkInState()).toMatchObject({ statusDone: true });
+		expect(await walkInState()).not.toHaveProperty('status');
+	});
+
+	it('adds rows when the tab is full, before writing past its end', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+
+		await run(fake.api);
+
+		expect(fake.calls).toContain('walkins-grow:sheet-downriver:2');
+		expect(fake.walkInSheet('sheet-downriver')[2]![0]).toBe('Dana');
+	});
+
+	it('tries again to take the yellow off a cleared row', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		fake.failing.set('walkins-highlight:sheet-downriver', { status: 400, error: 'protected' });
+
+		await update(1, GIVEN_BACK);
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('');
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+		expect(await walkInState()).toMatchObject({ yellowRow: 1 });
+
+		fake.failing.delete('walkins-highlight:sheet-downriver');
+		// The refusal is remembered for an hour; an hour on, it is asked again.
+		await run(fake.api);
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+		_resetLiveReadsForTests();
+		await run(fake.api);
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+		expect(await walkInState()).not.toHaveProperty('yellowRow');
+	});
+
+	it('tries again to take the yellow off a cleared packet, while it is free', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		await run(fake.api);
+		fake.failing.set('highlight:sheet-downriver', { status: 400, error: 'protected' });
+
+		await update(1, GIVEN_BACK);
+		await run(fake.api);
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
+		expect(fake.highlighted('sheet-downriver')).not.toEqual([]);
+		expect(await stateOf(1)).toMatchObject({ yellow: true });
+
+		fake.failing.delete('highlight:sheet-downriver');
+		_resetLiveReadsForTests(); // an hour on
+		await run(fake.api);
+		expect(fake.highlighted('sheet-downriver')).toEqual([]);
+		expect(await stateOf(1)).not.toHaveProperty('yellow');
+	});
+
+	it('forgets its row quietly when the campaign has already emptied it', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		fake.walkInSheet('sheet-downriver').splice(1);
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(result.warnings).toEqual([]);
+		expect(await walkInState()).toMatchObject({ rowIndex: null });
+	});
+
+	// 11pm claim, given back at 12:30am: still that night's walk-in.
+	it('clears a row given back just after midnight', async () => {
+		const fake = await withWalkIns();
+		await checkout({ claimedAt: '2026-09-20T03:00:00.000Z' });
+		await run(fake.api, { now: new Date('2026-09-20T03:05:00.000Z') });
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+
+		await update(1, "released_at = '2026-09-20T04:30:00.000Z', release_reason = 'volunteer'");
+		await run(fake.api, { now: new Date('2026-09-20T04:35:00.000Z') });
+
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('');
+	});
+
+	it('does not hold up the next walk-in when one row is taken mid-run', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
+		await checkout({ id: 2, turfId: 101, list: '35536745-88713', slackUserName: 'Eli' });
+		const realReadRow = fake.api.readRow;
+		fake.api.readRow = async (input) => {
+			if (input.tabName === WALK_IN_TAB_NAME) {
+				fake.walkInSheet('sheet-downriver').push(theirs('Gus'));
+				fake.api.readRow = realReadRow;
+			}
+			return realReadRow(input);
+		};
+
+		const result = await run(fake.api);
+
+		expect(result.walkInsFilled).toBe(1);
+		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', 'Gus', 'Eli']);
+	});
+
+	it('still writes when the highlight is refused for good', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('walkins-highlight:sheet-downriver', { status: 400, error: 'protected' });
+		fake.failing.set('highlight:sheet-downriver', { status: 400, error: 'protected' });
+		await checkout();
+
+		const result = await run(fake.api);
+
+		expect(result.filled).toBe(1);
+		expect(result.walkInsFilled).toBe(1);
+	});
+
+	it('takes the yellow back off when the write fails after it', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('walkins-write:sheet-downriver', { status: 500, error: 'backend' });
+		await checkout();
+
+		await run(fake.api);
+
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+	});
+
+	it('alerts a Walk Ins problem as one, counting what waits', async () => {
+		await turf();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		fake.walkIns('sheet-downriver', [['Who', 'When']]);
+		await checkout();
+
+		const result = await run(fake.api);
+
+		expect(result.filled).toBe(1);
+		expect(result.failed).toBe(1);
+		const [, text] = vi.mocked(postAlert).mock.calls.at(-1)!;
+		expect(text).toContain('Walk Ins tab: it has no "Name" or "Shift Start Time" column');
+		expect(text).toContain('1 checkout(s) are waiting');
+	});
+
+	it('adds the row from the nudge after a claim, for that turf only', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
+		await checkout({ id: 2, turfId: 101, list: '35536745-88713', slackUserName: 'Eli' });
+
+		await run(fake.api, { onlyTurfId: 101 });
+
+		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', 'Eli']);
+	});
+
+	it('adds no walk-in when the Packet Tracker cannot be read', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('sheet-downriver', { status: 500, error: 'backend' });
+		await checkout();
+
+		await run(fake.api);
+
+		expect(fake.walkInSheet('sheet-downriver')).toHaveLength(1);
+	});
+
+	it('does not ask a tab that refused a highlight again within the hour', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('highlight:sheet-downriver', { status: 400, error: 'protected' });
+		await checkout();
+		await run(fake.api);
+		fake.calls.length = 0;
+
+		await update(1, "loaded_in_minivan_at = '2026-09-19T14:41:00.000Z'");
+		const result = await run(fake.api);
+
+		expect(result.updated).toBe(1);
+		expect(fake.calls.filter((c) => c.startsWith('highlight:'))).toEqual([]);
+	});
+
+	it('leaves the yellow alone when the packet’s row has moved', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST), packet('35536745-88799')) });
+		await run(fake.api);
+		fake.failing.set('highlight:sheet-downriver', { status: 400, error: 'protected' });
+		await update(1, GIVEN_BACK);
+		await run(fake.api);
+		fake.failing.delete('highlight:sheet-downriver');
+		_resetLiveReadsForTests();
+		fake.calls.length = 0;
+		// Sorted between the run's read and the re-check: another packet is there now.
+		fake.between(() => {
+			const sheet = fake.sheet('sheet-downriver');
+			[sheet[2], sheet[3]] = [sheet[3]!, sheet[2]!];
+		});
+
+		const result = await run(fake.api);
+
+		expect(result.deferred).toBeGreaterThan(0);
+		expect(fake.calls.filter((c) => c === 'highlight:sheet-downriver:2:off')).toEqual([]);
+		expect(await stateOf(1)).toMatchObject({ yellow: true });
+	});
+
+	it('does not reuse a row another checkout holds, even emptied', async () => {
+		const fake = await withWalkIns();
+		await checkout();
+		await run(fake.api);
+		const sheet = fake.walkInSheet('sheet-downriver');
+		sheet[1] = []; // staff emptied Dana's row
+		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
+		await checkout({ id: 2, turfId: 101, list: '35536745-88713', slackUserName: 'Eli' });
+		await run(fake.api);
+		expect(sheet.map((r) => r[0])).toEqual(['Name', undefined, 'Eli']);
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(result.warnings).toEqual([]);
+		expect(await walkInState()).toMatchObject({ rowIndex: null });
+	});
+
+	// A 500 is Google failing to answer, not saying no: retried, not remembered.
+	it('writes nothing when Google fails the highlight, and does it all next run', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('walkins-highlight:sheet-downriver', { status: 500, error: 'backend' });
+		await checkout();
+
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')).toHaveLength(1);
+
+		fake.failing.delete('walkins-highlight:sheet-downriver');
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+	});
+
+	it('puts the yellow on later when the tab refused it at first', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('walkins-highlight:sheet-downriver', { status: 403, error: 'protected' });
+		await checkout();
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
+		expect(await walkInState()).not.toHaveProperty('painted');
+
+		// Within the hour nothing is asked; an hour on, the protection gone.
+		fake.calls.length = 0;
+		await run(fake.api);
+		expect(fake.calls.filter((c) => c.startsWith('walkins-'))).toEqual([]);
+		fake.failing.delete('walkins-highlight:sheet-downriver');
+		_resetLiveReadsForTests();
+		await run(fake.api);
+
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+		expect(await walkInState()).toMatchObject({ painted: true });
+	});
+
+	it('owes no yellow retry for a packet it never managed to highlight', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		fake.failing.set('highlight:sheet-downriver', { status: 403, error: 'protected' });
+		await run(fake.api);
+		await update(1, GIVEN_BACK);
+		await run(fake.api);
+
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
+		expect(await stateOf(1)).not.toHaveProperty('yellow');
+	});
+
+	// Rows deleted at the bottom since the tab's size was looked up.
+	it('does not take a row past the end for a refusal', async () => {
+		const fake = await withWalkIns();
+		fake.failing.set('walkins-highlight:sheet-downriver', {
+			status: 400,
+			error: 'Range (Walk Ins!A1000) exceeds grid limits',
+		});
+		await checkout();
+
+		await run(fake.api);
+		expect(fake.walkInSheet('sheet-downriver')).toHaveLength(1);
+
+		fake.failing.delete('walkins-highlight:sheet-downriver');
+		await run(fake.api);
+		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
+	});
+
+	it('alerts and writes nothing when Google fails a Packet Tracker highlight', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		fake.failing.set('highlight:sheet-downriver', { status: 503, error: 'backend unavailable' });
+
+		const result = await run(fake.api);
+
+		expect(result.filled).toBe(0);
+		expect(result.failed).toBe(1);
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
+		const [, text] = vi.mocked(postAlert).mock.calls.at(-1)!;
+		expect(text).toContain('backend unavailable');
+
+		// Not remembered as a refusal: the next run highlights and fills.
+		fake.failing.delete('highlight:sheet-downriver');
+		expect((await run(fake.api)).filled).toBe(1);
+		expect(fake.highlighted('sheet-downriver')).not.toEqual([]);
 	});
 });

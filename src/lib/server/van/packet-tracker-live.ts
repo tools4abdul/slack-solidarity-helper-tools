@@ -79,6 +79,8 @@ function mergeResults(a: TrackerResult, b: TrackerResult): TrackerResult {
 		filled: a.filled + b.filled,
 		updated: a.updated + b.updated,
 		failed: a.failed + b.failed,
+		walkInsFilled: a.walkInsFilled + b.walkInsFilled,
+		walkInsCleared: a.walkInsCleared + b.walkInsCleared,
 		deferred: a.deferred + b.deferred,
 		unrouted: a.unrouted + b.unrouted,
 		unroutedRegions: [...a.unroutedRegions, ...b.unroutedRegions],
