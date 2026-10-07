@@ -30,9 +30,10 @@
 // session after Apple accepts it with our client secret. A forged post has
 // none of those. See routes/auth/apple/callback/+server.ts.
 //
-// Net protection is unchanged for the rest of the app: the only same-origin
-// form POST is /auth/logout, and every other mutation is a JSON `fetch`, which
-// Kit's original check already exempted (JSON is not a form content type).
+// Net protection is unchanged for the rest of the app: every other form POST —
+// /auth/logout and the page form actions (/turfs, /turfs/organizer, …) — must
+// come from our own origin, and JSON `fetch` mutations stay exempt as under
+// Kit's original check (JSON is not a form content type).
 
 /** Content types Kit treats as CSRF-vulnerable — a cross-origin <form> can
  *  produce these without a preflight. Mirrors `is_form_content_type`. */

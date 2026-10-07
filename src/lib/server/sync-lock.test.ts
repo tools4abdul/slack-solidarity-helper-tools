@@ -1,7 +1,13 @@
 import { describe, afterEach, it, expect, beforeEach, vi } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
-import { acquireSyncLock, releaseSyncLock, withSyncLock } from './sync-lock.js';
+import {
+	acquireSyncLock,
+	extendSyncLock,
+	heldSyncLocks,
+	releaseSyncLock,
+	withSyncLock,
+} from './sync-lock.js';
 
 // Deliberately a real in-memory libsql rather than the chained-db fake used
 // elsewhere in this directory. The entire value of this module is that acquiring
@@ -74,6 +80,41 @@ describe('releaseSyncLock', () => {
 		await releaseSyncLock(db, 'attendee-sync', stale!);
 
 		expect(await acquireSyncLock(db, 'attendee-sync', MINUTE)).toBeNull();
+	});
+});
+
+describe('extendSyncLock', () => {
+	it('keeps a lock held past its first expiry', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			const token = (await acquireSyncLock(db, 'manual', MINUTE))!;
+			vi.advanceTimersByTime(MINUTE / 2);
+			expect(await extendSyncLock(db, 'manual', token, MINUTE)).toBe(true);
+			vi.advanceTimersByTime(MINUTE * 0.75);
+			expect(await acquireSyncLock(db, 'manual', MINUTE)).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does nothing for a token that lost the lock', async () => {
+		await acquireSyncLock(db, 'manual', MINUTE);
+		expect(await extendSyncLock(db, 'manual', 'not-the-token', MINUTE)).toBe(false);
+	});
+});
+
+describe('heldSyncLocks', () => {
+	it('names only the locks held and unexpired', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			await acquireSyncLock(db, 'short', MINUTE);
+			await acquireSyncLock(db, 'long', 10 * MINUTE);
+			vi.advanceTimersByTime(2 * MINUTE);
+			expect(await heldSyncLocks(db, ['short', 'long', 'never'])).toEqual(['long']);
+			expect(await heldSyncLocks(db, [])).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

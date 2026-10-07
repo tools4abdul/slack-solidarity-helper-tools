@@ -1,10 +1,15 @@
 <script lang="ts">
 	import './organizer.css';
+	import { enhance } from '$app/forms';
 	import { resolve } from '$app/paths';
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import { driftAdvice, driftLabel } from '$lib/van/turf-drift.js';
 
-	const { data } = $props();
+	const { data, form } = $props();
+
+	/** While the "Sync VAN now" press is in flight. The sync itself runs on in
+	 *  the background long after; this only covers starting it. */
+	let syncStarting = $state(false);
 
 	// No `ago()` here, and no clock of any kind: the "ago" labels arrive from the
 	// load function as `claimedAgoLabel` / `completedAgoLabel`. This file used to
@@ -37,8 +42,8 @@
 </script>
 
 <main>
-	<!-- One GET form, so the filter works with JavaScript off; the onchange is
-	     enhancement, not the mechanism. Matches the activity page. -->
+	<!-- One GET form, so changing one filter keeps the other. Each select
+	     submits it on change, with no Show button. Matches the activity page. -->
 	<form class="filters" method="GET" action={resolve('/turfs/organizer')}>
 		<div class="filter">
 			<label for="chapter">Chapter</label>
@@ -71,8 +76,51 @@
 				</select>
 			</div>
 		{/if}
-		<button type="submit" class="filter-go">Show</button>
 		<a class="cross-link" href={resolve('/turfs/activity')}>See what already happened →</a>
+	</form>
+
+	<!-- For turf just cut in VAN to answer a request: pull the catalog now
+	     rather than at the next scheduled sync. Works with JavaScript off too. -->
+	<form
+		class="van-sync"
+		method="POST"
+		action="?/syncVan"
+		use:enhance={() => {
+			syncStarting = true;
+			return async ({ update }) => {
+				await update();
+				syncStarting = false;
+			};
+		}}
+	>
+		<button type="submit" class="van-sync-button" disabled={syncStarting}>
+			{syncStarting ? 'Starting…' : 'Sync VAN now'}
+		</button>
+		<p class="van-sync-status" class:is-error={form?.syncError} role="status">
+			{#if form?.syncError}
+				{form.syncError}
+			{:else if form?.syncQueued}
+				A scheduled sync is running now. Your new turf will load automatically once it finishes — no
+				need to press again.
+			{:else if form?.syncStarted}
+				Sync started. New turf usually shows up within a few minutes — reload to check.
+			{:else if data.lastVanSync.perCampaign}
+				VAN last synced:
+				{#each data.lastVanSync.perCampaign as campaign, i (campaign.id)}
+					{i > 0 ? ' · ' : ''}{campaign.name}
+					{campaign.label ?? 'not yet'}{#if campaign.failed}
+						(<a
+							class="van-sync-failed"
+							href={resolve('/settings/van/[campaignId]', { campaignId: String(campaign.id) })}
+							>last sync failed</a
+						>){/if}{i === data.lastVanSync.perCampaign.length - 1 ? '.' : ''}
+				{/each}
+			{:else if data.lastVanSync.label}
+				VAN last synced {data.lastVanSync.label}.
+			{:else}
+				VAN has not synced yet.
+			{/if}
+		</p>
 	</form>
 
 	<!-- Counts first: on a canvass morning this row is the whole answer. -->

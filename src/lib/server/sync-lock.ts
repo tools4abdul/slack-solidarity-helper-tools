@@ -11,7 +11,7 @@
 // not a substitute for the API-level idempotency in `createAttendance`, which
 // still covers a run killed between the write and the ledger record.
 
-import { and, eq, lte } from 'drizzle-orm';
+import { and, eq, gt, inArray, lte } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { syncLocks } from './schema.js';
 
@@ -55,6 +55,39 @@ export async function acquireSyncLock(db: Db, name: string, ttlMs: number): Prom
  */
 export async function releaseSyncLock(db: Db, name: string, token: string): Promise<void> {
 	await db.delete(syncLocks).where(and(eq(syncLocks.name, name), eq(syncLocks.token, token)));
+}
+
+/**
+ * Push `name`'s expiry to `ttlMs` from now, if `token` still holds it. Returns
+ * whether it did. For a holder whose run has no fixed length: a short TTL kept
+ * alive while it works frees the lock soon after a crash, where one TTL long
+ * enough for the slowest run would strand it for that long.
+ */
+export async function extendSyncLock(
+	db: Db,
+	name: string,
+	token: string,
+	ttlMs: number,
+): Promise<boolean> {
+	const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+	const rows = await db
+		.update(syncLocks)
+		.set({ expiresAt })
+		.where(and(eq(syncLocks.name, name), eq(syncLocks.token, token)))
+		.returning({ name: syncLocks.name });
+	return rows.length > 0;
+}
+
+/** Which of `names` someone holds right now. An expired row is free. */
+export async function heldSyncLocks(db: Db, names: readonly string[]): Promise<string[]> {
+	if (names.length === 0) return [];
+	const rows = await db
+		.select({ name: syncLocks.name })
+		.from(syncLocks)
+		.where(
+			and(inArray(syncLocks.name, [...names]), gt(syncLocks.expiresAt, new Date().toISOString())),
+		);
+	return rows.map((r) => r.name);
 }
 
 /**

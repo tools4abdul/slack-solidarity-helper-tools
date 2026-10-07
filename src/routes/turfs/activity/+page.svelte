@@ -37,8 +37,8 @@
 <main>
 	<!-- One GET form for both facets, so changing either keeps the other. Two
 	     separate forms, or a link per chapter, would silently drop whichever
-	     filter was not being changed. It submits without JavaScript; the
-	     onchange below is enhancement, not the mechanism. -->
+	     filter was not being changed. Each select submits it on change; there
+	     is no Show button, so the filters need JavaScript. -->
 	<form class="filters" method="GET" action={resolve('/turfs/activity')}>
 		<div class="filter">
 			<label for="chapter">Chapter</label>
@@ -83,8 +83,6 @@
 				{/each}
 			</select>
 		</div>
-
-		<button type="submit" class="filter-go">Show</button>
 	</form>
 
 	{#if summary.length > 0}
