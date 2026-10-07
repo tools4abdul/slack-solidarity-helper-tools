@@ -44,9 +44,17 @@ main {
 	outline-offset: 1px;
 }
 
-/* The submit button is what makes the form work with JavaScript off, so it is
-   always rendered rather than hidden once the onchange handler is attached. */
-.filter-go {
+/* --- Sync VAN now -------------------------------------------------------- */
+
+.van-sync {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-3);
+	margin-bottom: var(--space-5);
+}
+
+.van-sync-button {
 	padding: var(--space-2) var(--space-4);
 	font: inherit;
 	font-size: var(--font-size-base);
@@ -58,8 +66,28 @@ main {
 	cursor: pointer;
 }
 
-.filter-go:hover {
+.van-sync-button:hover:not(:disabled) {
 	background: var(--color-action-hover);
+}
+
+.van-sync-button:disabled {
+	opacity: 0.6;
+	cursor: progress;
+}
+
+.van-sync-status {
+	margin: 0;
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+}
+
+.van-sync-failed {
+	font-weight: 600;
+	color: var(--color-error);
+}
+
+.van-sync-status.is-error {
+	color: var(--color-error);
 }
 
 /* --- Summary counts ------------------------------------------------------- */

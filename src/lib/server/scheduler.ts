@@ -85,6 +85,44 @@ export interface Job {
 	run: (slot: Date, call: Caller, db: Db) => Promise<void>;
 }
 
+/**
+ * One pass of the VAN sync: one call per enabled campaign, stalest first, each
+ * with the endpoint's full five minutes. One request cannot sync an arbitrary
+ * number of catalogs, and each campaign has its own lock, so they never
+ * contend. One failing does not stop the rest. With none enabled the endpoint
+ * is still called once, because it also runs the ledger housekeeping —
+ * expiring claims and the six-hour warnings — which must not depend on VAN at
+ * all.
+ *
+ * Exported for the organizers' "Sync VAN now" button (van/manual-sync.ts),
+ * which runs exactly this pass between slots.
+ */
+export async function runVanSync(call: Caller, db: Db): Promise<void> {
+	const campaigns = await campaignsStalestFirst(db);
+	if (campaigns.length === 0) {
+		await call('/api/internal/van-sync', {}, 5 * MINUTE);
+		return;
+	}
+	const failures: string[] = [];
+	for (const [i, campaign] of campaigns.entries()) {
+		// The cross-campaign stages — reconciliation, alerts, the Packet
+		// Tracker — run once a pass, on the last call, after every campaign's
+		// catalog has landed. Run on each call, they did the same work once per
+		// campaign (see runSharedStages in the endpoint).
+		const last = i === campaigns.length - 1;
+		try {
+			await call(
+				'/api/internal/van-sync',
+				{ campaign: String(campaign.id), ...(last ? {} : { shared: '0' }) },
+				5 * MINUTE,
+			);
+		} catch (err) {
+			failures.push(`campaign ${campaign.id}: ${err instanceof Error ? err.message : err}`);
+		}
+	}
+	if (failures.length > 0) throw new Error(failures.join('; '));
+}
+
 /** Mirrors van-catalog-sync.yml: every 30 minutes by day, hourly overnight. No
  *  two runs more than an hour apart — see that file for why that matters. */
 const vanSync: Job = {
@@ -93,37 +131,7 @@ const vanSync: Job = {
 		{ hours: hoursFrom(11, 23), minutes: [7, 37] },
 		{ hours: hoursFrom(0, 10), minutes: [7] },
 	],
-	// One call per enabled campaign, stalest first, each with the endpoint's
-	// full five minutes: one request cannot sync an arbitrary number of
-	// catalogs, and each campaign has its own lock, so they never contend. One
-	// failing does not stop the rest. With none enabled the endpoint is still
-	// called once, because it also runs the ledger housekeeping — expiring
-	// claims and the six-hour warnings — which must not depend on VAN at all.
-	run: async (_slot, call, db) => {
-		const campaigns = await campaignsStalestFirst(db);
-		if (campaigns.length === 0) {
-			await call('/api/internal/van-sync', {}, 5 * MINUTE);
-			return;
-		}
-		const failures: string[] = [];
-		for (const [i, campaign] of campaigns.entries()) {
-			// The cross-campaign stages — reconciliation, alerts, the Packet
-			// Tracker — run once a tick, on the last call, after every campaign's
-			// catalog has landed. Run on each call, they did the same work once per
-			// campaign (see runSharedStages in the endpoint).
-			const last = i === campaigns.length - 1;
-			try {
-				await call(
-					'/api/internal/van-sync',
-					{ campaign: String(campaign.id), ...(last ? {} : { shared: '0' }) },
-					5 * MINUTE,
-				);
-			} catch (err) {
-				failures.push(`campaign ${campaign.id}: ${err instanceof Error ? err.message : err}`);
-			}
-		}
-		if (failures.length > 0) throw new Error(failures.join('; '));
-	},
+	run: (_slot, call, db) => runVanSync(call, db),
 };
 
 /** The 07:40 UTC pass: no signup window, and routine event edits reported. */

@@ -1,5 +1,5 @@
-import { redirect } from '@sveltejs/kit';
-import type { PageServerLoad } from './$types';
+import { fail, redirect } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import { loadSettings } from '$lib/server/settings.js';
 import { chaptersFromChannelMap } from '$lib/chapter-list.js';
@@ -29,6 +29,13 @@ import { relativeSince } from '$lib/components/settings/format-relative.js';
 import { campaignFilter, campaignRefreshSwitches } from '$lib/server/van/campaigns.js';
 import { loadHolderAccounts } from '$lib/server/outside-volunteers.js';
 import type { HolderAccount } from '$lib/holder-account.js';
+import { INTERNAL_CRON_SECRET, PORT } from '$lib/server/env.js';
+import { localCaller } from '$lib/server/scheduler.js';
+import {
+	lastVanSyncs,
+	startManualVanSync,
+	type CampaignLastSync,
+} from '$lib/server/van/manual-sync.js';
 
 // Who holds what right now, what is about to lapse, and which completions look
 // like a missed MiniVAN sync.
@@ -98,18 +105,26 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// the same instant even if a claim lands between the queries.
 	const now = new Date();
 
-	const [holdingRows, completionRows, driftTurfs, driftClaims, driftVisibility, geometry] =
-		await Promise.all([
-			loadCurrentHoldings(db, query),
-			loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
-			loadDriftTurfs(db, query),
-			loadDriftClaims(db, query),
-			loadDriftVisibility(db, query.campaignId),
-			// Campaign-wide rather than per chapter: the queue is drained in one
-			// pass for everyone, so scoping it to the selected chapter would
-			// report a different denominator than the work actually left.
-			loadGeometryProgress(db),
-		]);
+	const [
+		holdingRows,
+		completionRows,
+		driftTurfs,
+		driftClaims,
+		driftVisibility,
+		geometry,
+		lastSyncs,
+	] = await Promise.all([
+		loadCurrentHoldings(db, query),
+		loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
+		loadDriftTurfs(db, query),
+		loadDriftClaims(db, query),
+		loadDriftVisibility(db, query.campaignId),
+		// Campaign-wide rather than per chapter: the queue is drained in one
+		// pass for everyone, so scoping it to the selected chapter would
+		// report a different denominator than the work actually left.
+		loadGeometryProgress(db),
+		lastVanSyncs(db),
+	]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
 	// lands VAN's half — so this costs two reads and no VAN call.
@@ -173,5 +188,66 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// campaign has its own switch, so the page names which is which.
 		regionRefresh: await campaignRefreshSwitches(db),
 		completionsExamined: completionRows.length,
+		// Beside the "Sync VAN now" button: how stale the catalog is, so an
+		// organizer can tell whether the turf they just cut has landed yet.
+		lastVanSync: lastSyncSummary(lastSyncs, now),
 	};
+};
+
+/**
+ * One label while every enabled campaign reads the same ("3m ago"), or one
+ * per campaign once they differ or any last sync failed — a campaign whose
+ * syncs keep failing must not hide behind another's "just now", and an
+ * organizer told their turf is on its way should see when it is not coming.
+ * Compared as shown, not as timestamps, so two syncs seconds apart still read
+ * as one line. Null labels mean "not synced yet".
+ */
+function lastSyncSummary(
+	syncs: CampaignLastSync[],
+	now: Date,
+): {
+	label: string | null;
+	perCampaign: { id: number; name: string; label: string | null; failed: boolean }[] | null;
+} {
+	const labelled = syncs.map((s) => ({
+		id: s.id,
+		name: s.name,
+		label: s.lastSyncAt ? relativeSince(s.lastSyncAt, now) : null,
+		failed: s.failed,
+	}));
+	const labels = new Set(labelled.map((s) => s.label));
+	if (labels.size <= 1 && !labelled.some((s) => s.failed))
+		return { label: labelled[0]?.label ?? null, perCampaign: null };
+	return { label: null, perCampaign: labelled };
+}
+
+export const actions: Actions = {
+	/**
+	 * Run the VAN sync now rather than at the next slot — for turf an organizer
+	 * has just cut to answer a request. Started, not awaited: a pass takes
+	 * minutes. See van/manual-sync.ts.
+	 */
+	syncVan: async ({ locals }) => {
+		if (!locals.session?.isAdmin) return fail(403, { syncError: 'Organizers only.' });
+		if (!INTERNAL_CRON_SECRET) {
+			console.error('[van] manual sync: INTERNAL_CRON_SECRET is not set');
+			return fail(500, { syncError: 'The sync is not configured on this server.' });
+		}
+		let result: Awaited<ReturnType<typeof startManualVanSync>>;
+		try {
+			result = await startManualVanSync(db, localCaller(PORT, INTERNAL_CRON_SECRET));
+		} catch (err) {
+			// A failure here is the lock's database read, before anything ran.
+			// Answered on the form, so the board stays up around it.
+			console.error('[van] manual sync: could not start:', err);
+			return fail(500, { syncError: 'Could not start the sync. Please try again.' });
+		}
+		if (result.status === 'busy') {
+			return fail(409, {
+				syncError:
+					"Someone already started a sync and it's still running. Try again in a few minutes.",
+			});
+		}
+		return result.status === 'queued' ? { syncQueued: true } : { syncStarted: true };
+	},
 };

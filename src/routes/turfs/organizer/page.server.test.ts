@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { load } from './+page.server.js';
+import { actions, load } from './+page.server.js';
 import { campaignFilter } from '$lib/server/van/campaigns.js';
 
 const mockSettings = vi.hoisted(() => vi.fn());
@@ -10,11 +10,19 @@ const mockDriftClaims = vi.hoisted(() => vi.fn());
 const mockDriftVisibility = vi.hoisted(() => vi.fn());
 
 const mockGeometryProgress = vi.hoisted(() => vi.fn());
+const mockLastVanSync = vi.hoisted(() => vi.fn());
+const mockStartSync = vi.hoisted(() => vi.fn());
+const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'secret', PORT: 3000 }));
 const mockRefreshSwitches = vi.hoisted(() =>
 	vi.fn(async () => ({ on: [] as string[], off: ['One Team Michigan'] })),
 );
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
+vi.mock('$lib/server/env.js', () => mockEnv);
+vi.mock('$lib/server/van/manual-sync.js', () => ({
+	lastVanSyncs: mockLastVanSync,
+	startManualVanSync: mockStartSync,
+}));
 vi.mock('$lib/server/settings.js', () => ({ loadSettings: mockSettings }));
 vi.mock('$lib/server/van/campaigns.js', () => ({
 	campaignRefreshSwitches: mockRefreshSwitches,
@@ -105,6 +113,8 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	mockSettings.mockResolvedValue({ chapterChannelMap: CHAPTERS });
+	mockLastVanSync.mockResolvedValue([]);
+	mockEnv.INTERNAL_CRON_SECRET = 'secret';
 	mockGeometryProgress.mockResolvedValue({
 		eligible: 0,
 		shaped: 0,
@@ -500,5 +510,123 @@ describe('/turfs/organizer geometry line', () => {
 		await run(event(ADMIN, 'chapter=71'));
 		expect(mockGeometryProgress).toHaveBeenCalledWith(expect.anything());
 		expect(mockGeometryProgress.mock.calls[0]).toHaveLength(1);
+	});
+});
+
+describe('/turfs/organizer VAN sync', () => {
+	type LastSync = {
+		lastVanSync: {
+			label: string | null;
+			perCampaign: { id: number; name: string; label: string | null; failed: boolean }[] | null;
+		};
+	};
+	const ago = (minutes: number) => iso(NOW.getTime() - minutes * 60_000);
+
+	it('says how long ago VAN last synced', async () => {
+		mockLastVanSync.mockResolvedValueOnce([
+			{ id: 1, name: 'Primary', lastSyncAt: ago(12), failed: false },
+		]);
+		const data = (await load(event(ADMIN))) as LastSync;
+		expect(data.lastVanSync).toEqual({ label: '12m ago', perCampaign: null });
+	});
+
+	it('says nothing has synced yet with no sync on record', async () => {
+		const data = (await load(event(ADMIN))) as LastSync;
+		expect(data.lastVanSync).toEqual({ label: null, perCampaign: null });
+	});
+
+	// Seconds apart is the same line on the page, so it is one line.
+	it('keeps one line while every campaign reads the same', async () => {
+		mockLastVanSync.mockResolvedValueOnce([
+			{ id: 1, name: 'Primary', lastSyncAt: ago(12), failed: false },
+			{
+				id: 2,
+				name: 'Partner',
+				lastSyncAt: iso(NOW.getTime() - 12 * 60_000 - 20_000),
+				failed: false,
+			},
+		]);
+		const data = (await load(event(ADMIN))) as LastSync;
+		expect(data.lastVanSync).toEqual({ label: '12m ago', perCampaign: null });
+	});
+
+	// A failing campaign must not hide behind another's fresh sync.
+	it('names each campaign once they differ', async () => {
+		mockLastVanSync.mockResolvedValueOnce([
+			{ id: 1, name: 'Primary', lastSyncAt: ago(3), failed: false },
+			{ id: 2, name: 'Partner', lastSyncAt: ago(180), failed: false },
+			{ id: 3, name: 'New', lastSyncAt: null, failed: false },
+		]);
+		const data = (await load(event(ADMIN))) as LastSync;
+		expect(data.lastVanSync).toEqual({
+			label: null,
+			perCampaign: [
+				{ id: 1, name: 'Primary', label: '3m ago', failed: false },
+				{ id: 2, name: 'Partner', label: '3h ago', failed: false },
+				{ id: 3, name: 'New', label: null, failed: false },
+			],
+		});
+	});
+
+	// "Will load automatically" was a promise; a failed sync has to show.
+	it('names a campaign whose last sync failed, even when the times agree', async () => {
+		mockLastVanSync.mockResolvedValueOnce([
+			{ id: 1, name: 'Primary', lastSyncAt: ago(12), failed: false },
+			{ id: 2, name: 'Partner', lastSyncAt: ago(12), failed: true },
+		]);
+		const data = (await load(event(ADMIN))) as LastSync;
+		expect(data.lastVanSync).toEqual({
+			label: null,
+			perCampaign: [
+				{ id: 1, name: 'Primary', label: '12m ago', failed: false },
+				{ id: 2, name: 'Partner', label: '12m ago', failed: true },
+			],
+		});
+	});
+
+	const press = (session: unknown) => actions.syncVan({ locals: { session } } as never);
+
+	it.each([
+		['no session', null],
+		['a non-admin', { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false }],
+	])('refuses %s without starting anything', async (_label, session) => {
+		await expect(press(session)).resolves.toMatchObject({ status: 403 });
+		expect(mockStartSync).not.toHaveBeenCalled();
+	});
+
+	it('starts a sync for an organizer', async () => {
+		mockStartSync.mockResolvedValueOnce({ status: 'started', done: Promise.resolve() });
+		await expect(press(ADMIN)).resolves.toEqual({ syncStarted: true });
+		expect(mockStartSync).toHaveBeenCalledOnce();
+	});
+
+	it('says when it will follow a scheduled sync already running', async () => {
+		mockStartSync.mockResolvedValueOnce({ status: 'queued', done: Promise.resolve() });
+		await expect(press(ADMIN)).resolves.toEqual({ syncQueued: true });
+	});
+
+	it('says so when a pressed sync is still running', async () => {
+		mockStartSync.mockResolvedValueOnce({ status: 'busy' });
+		await expect(press(ADMIN)).resolves.toMatchObject({
+			status: 409,
+			data: { syncError: expect.stringContaining('already started') },
+		});
+	});
+
+	// The board must stay up around a failed press, not give way to the error page.
+	it('answers on the form when the sync cannot start', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockStartSync.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+		await expect(press(ADMIN)).resolves.toMatchObject({
+			status: 500,
+			data: { syncError: expect.stringContaining('Could not start') },
+		});
+	});
+
+	it('fails plainly without the internal secret', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockEnv.INTERNAL_CRON_SECRET = '';
+		await expect(press(ADMIN)).resolves.toMatchObject({ status: 500 });
+		expect(mockStartSync).not.toHaveBeenCalled();
 	});
 });

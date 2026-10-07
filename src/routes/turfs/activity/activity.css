@@ -44,24 +44,6 @@ main {
 	outline-offset: 1px;
 }
 
-/* The submit button is what makes the form work with JavaScript off, so it is
-   always rendered rather than hidden once the onchange handler is attached. */
-.filter-go {
-	padding: var(--space-2) var(--space-4);
-	font: inherit;
-	font-size: var(--font-size-base);
-	font-weight: 600;
-	color: var(--color-action-text);
-	background: var(--color-action);
-	border: none;
-	border-radius: var(--radius-md);
-	cursor: pointer;
-}
-
-.filter-go:hover {
-	background: var(--color-action-hover);
-}
-
 /* --- Summary counts ------------------------------------------------------- */
 
 .summary {
