@@ -81,7 +81,7 @@ const LAYOUT = layoutOf(SHEET);
 describe('desiredCells', () => {
 	it('fills in a fresh claim as Unwalked', () => {
 		expect(desiredCells(checkout())).toEqual({
-			Canvasser: 'Dana',
+			Canvasser: '*Dana',
 			'Shift Time': '10:07 AM',
 			'Date Sent Out': '09/19/2026',
 			'Time Departed': '',
@@ -263,7 +263,7 @@ describe('isUnfilled and stillOurs', () => {
 
 	it('knows our entry by the canvasser name', () => {
 		const written = desiredCells(checkout())!;
-		expect(stillOurs(packet('1', { Canvasser: 'Dana', Status: 'Out' }), LAYOUT, written)).toBe(
+		expect(stillOurs(packet('1', { Canvasser: '*Dana', Status: 'Out' }), LAYOUT, written)).toBe(
 			true,
 		);
 		expect(stillOurs(packet('1', { Canvasser: 'Sam' }), LAYOUT, written)).toBe(false);

@@ -24,7 +24,7 @@
 // Pure — no DB, no network. The store is packet-tracker-store.ts.
 
 import { campaignDayKey, campaignTimeLabel } from '../campaign-time.js';
-import { HEADER_SEARCH_ROWS, normaliseHeader } from './packet-tracker.js';
+import { HEADER_SEARCH_ROWS, markedName, normaliseHeader } from './packet-tracker.js';
 
 export const WALK_IN_TAB_NAME = 'Walk Ins';
 
@@ -176,13 +176,13 @@ export function shiftFor(claimedAt: string, options: readonly ShiftOption[]): Sh
 	return pick.option;
 }
 
-/** The cells a checkout fills in on its row: Name, and Shift Start Time
- *  when it has one. Final Status comes later, once walked. */
+/** The cells a checkout fills in on its row: Name (marked as ours), and
+ *  Shift Start Time when it has one. Final Status comes later, once walked. */
 export function walkInCells(
 	checkout: { slackUserName: string },
 	shift: string | null,
 ): Array<[WalkInColumn, string]> {
-	const cells: Array<[WalkInColumn, string]> = [['Name', checkout.slackUserName]];
+	const cells: Array<[WalkInColumn, string]> = [['Name', markedName(checkout.slackUserName)]];
 	if (shift !== null) cells.push(['Shift Start Time', shift]);
 	return cells;
 }

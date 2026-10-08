@@ -69,7 +69,7 @@ describe('cells', () => {
 	it('writes the name and a text shift as text, so the drop-down still matches', () => {
 		const cells = walkInCells({ slackUserName: '=IMPORTXML(1)' }, '10am');
 		expect(walkInWrites(cells, layout)).toEqual([
-			[0, "'=IMPORTXML(1)"],
+			[0, "'*=IMPORTXML(1)"],
 			[1, "'10am"],
 		]);
 		expect(walkInWrites([['Final Status', 'Completed']], layout)).toEqual([[6, "'Completed"]]);
@@ -78,14 +78,14 @@ describe('cells', () => {
 	it('writes a shift held as a real time as typed, and blanks as blanks', () => {
 		const cells = walkInCells({ slackUserName: 'Dana' }, '10:00 AM');
 		expect(walkInWrites(cells, layout, { shiftAsTyped: true })).toEqual([
-			[0, "'Dana"],
+			[0, "'*Dana"],
 			[1, '10:00 AM'],
 		]);
 		expect(walkInWrites([['Name', '']], layout)).toEqual([[0, '']]);
 	});
 
 	it('leaves the shift out when there is none', () => {
-		expect(walkInCells({ slackUserName: 'Dana' }, null)).toEqual([['Name', 'Dana']]);
+		expect(walkInCells({ slackUserName: 'Dana' }, null)).toEqual([['Name', '*Dana']]);
 	});
 
 	it('highlights every column the tab has', () => {

@@ -43,6 +43,7 @@ import {
 	desiredCells,
 	findLayout,
 	isUnfilled,
+	markedName,
 	priorCells,
 	normaliseListNumber,
 	packetRows,
@@ -990,7 +991,7 @@ async function syncWalkIns(
 			await save(candidate.checkoutId, {
 				spreadsheetId,
 				rowIndex,
-				name: candidate.slackUserName,
+				name: markedName(candidate.slackUserName),
 				shift: shift?.label ?? null,
 				day: today,
 				...(styled === 'done' ? { painted: true as const } : {}),

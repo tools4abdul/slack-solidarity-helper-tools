@@ -310,7 +310,7 @@ describe('a checkout through its life', () => {
 
 		expect(result.filled).toBe(1);
 		expect(fake.entry('sheet-downriver')).toMatchObject({
-			Canvasser: 'Dana',
+			Canvasser: '*Dana',
 			'Shift Time': '10:07 AM',
 			'Date Sent Out': '09/19/2026',
 			'Walk Mode': 'MiniVAN',
@@ -384,7 +384,7 @@ describe('a checkout through its life', () => {
 		const fake = fakeSheets({ 'sheet-downriver': tracker(listed) });
 
 		expect((await run(fake.api)).filled).toBe(1);
-		expect(fake.entry('sheet-downriver')).toMatchObject({ Canvasser: 'Dana', Status: 'Unwalked' });
+		expect(fake.entry('sheet-downriver')).toMatchObject({ Canvasser: '*Dana', Status: 'Unwalked' });
 		await update(1, "loaded_in_minivan_at = '2026-09-19T14:41:00.000Z'");
 		await run(fake.api);
 		expect(fake.entry('sheet-downriver').Status).toBe('Out');
@@ -441,7 +441,7 @@ describe('a checkout through its life', () => {
 
 		fake.failing.delete('highlight:sheet-downriver');
 		expect((await run(fake.api)).filled).toBe(1);
-		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('*Dana');
 	});
 
 	it('clears a lapsed claim once its doors are counted at zero', async () => {
@@ -475,7 +475,7 @@ describe('a checkout through its life', () => {
 		);
 		await run(fake.api);
 		expect(fake.entry('sheet-downriver')).toMatchObject({
-			Canvasser: 'Dana',
+			Canvasser: '*Dana',
 			Status: 'Incomplete',
 			'Knocked #': '12',
 		});
@@ -552,7 +552,29 @@ describe('the campaign’s entries are never overwritten', () => {
 		const second = await run(fake.api);
 
 		expect(second).toMatchObject({ filled: 1, warnings: [] });
-		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('*Dana');
+	});
+
+	// Entries written before the app marked its names keep their plain name:
+	// still ours, and the Canvasser cell is never rewritten to add the mark.
+	it('keeps managing an entry written before names were marked', async () => {
+		await turf();
+		await checkout();
+		const fake = fakeSheets({ 'sheet-downriver': tracker(packet(LIST)) });
+		await run(fake.api);
+		fake.sheet('sheet-downriver')[2]![col('Canvasser')] = 'Dana';
+		await update(1, "sheet_state = REPLACE(sheet_state, '*Dana', 'Dana')");
+
+		await update(1, "loaded_in_minivan_at = '2026-09-19T14:41:00.000Z'");
+		const out = await run(fake.api);
+		expect(out.warnings).toEqual([]);
+		expect(fake.entry('sheet-downriver')).toMatchObject({ Canvasser: 'Dana', Status: 'Out' });
+
+		await update(1, "released_at = '2026-09-19T15:00:00.000Z', release_reason = 'volunteer'");
+		const back = await run(fake.api);
+		expect(back.warnings).toEqual([]);
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
+		expect((await stateOf(1))?.gone).toBeUndefined();
 	});
 
 	it('stops managing an entry once someone types another canvasser over it', async () => {
@@ -590,7 +612,7 @@ describe('the campaign’s entries are never overwritten', () => {
 		expect(fake.sheet('sheet-downriver')[2]).toEqual(other);
 		// Picked up next run, at the packet's new row.
 		await run(fake.api);
-		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('*Dana');
 		expect(fake.sheet('sheet-downriver')[2]).toEqual(other);
 	});
 
@@ -881,7 +903,7 @@ describe('backfill and scope', () => {
 		await run(fake.api, { onlyTurfId: 101 });
 
 		expect(fake.entry('sheet-downriver').Canvasser).toBe('');
-		expect(fake.entry('sheet-downriver', '2-2').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-downriver', '2-2').Canvasser).toBe('*Dana');
 	});
 });
 
@@ -905,7 +927,7 @@ describe('one campaign at a time', () => {
 		const result = await run(fake.api);
 
 		expect(result.filled).toBe(1);
-		expect(fake.entry('sheet-downriver').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-downriver').Canvasser).toBe('*Dana');
 		expect(fake.entry('sheet-downriver', '9-9').Canvasser).toBe('');
 		expect(await stateOf(2)).toBeNull();
 		expect(result.unrouted).toBe(0);
@@ -919,7 +941,7 @@ describe('one campaign at a time', () => {
 
 		await run(fake.api, { campaignId: 2, targets: [PARTNER] });
 
-		expect(fake.entry('sheet-partner', '9-9').Canvasser).toBe('Dana');
+		expect(fake.entry('sheet-partner', '9-9').Canvasser).toBe('*Dana');
 		expect(fake.calls.some((c) => c.includes('sheet-downriver'))).toBe(false);
 		expect(await stateOf(1)).toBeNull();
 	});
@@ -1003,11 +1025,11 @@ describe('the Walk Ins tab', () => {
 		expect(result.walkInsFilled).toBe(1);
 		// The gap between the campaign's rows, not the bottom.
 		// 10:07 falls in the 10am shift, picked from the drop-down.
-		expect(fake.walkInSheet('sheet-downriver')[2]).toEqual(['Dana', '10am']);
+		expect(fake.walkInSheet('sheet-downriver')[2]).toEqual(['*Dana', '10am']);
 		expect(fake.walkInYellow('sheet-downriver', 2)).toBe(true);
 		expect(await walkInState()).toMatchObject({
 			rowIndex: 2,
-			name: 'Dana',
+			name: '*Dana',
 			shift: '10am',
 			day: '2026-09-19',
 		});
@@ -1022,7 +1044,7 @@ describe('the Walk Ins tab', () => {
 		await run(fake.api);
 
 		const names = fake.walkInSheet('sheet-downriver').map((r) => r[0]);
-		expect(names).toEqual(['Name', 'Ari', 'Dana', 'Eli']);
+		expect(names).toEqual(['Name', 'Ari', '*Dana', '*Eli']);
 	});
 
 	it('clears its own row on a give-back, and only that row', async () => {
@@ -1041,6 +1063,24 @@ describe('the Walk Ins tab', () => {
 		expect(fake.walkInYellow('sheet-downriver', 2)).toBe(false);
 	});
 
+	// A row written before the app marked its names is still found by its
+	// plain name, and cleared.
+	it('clears a row written before names were marked', async () => {
+		const fake = await withWalkIns(theirs('Ari'));
+		await checkout();
+		await run(fake.api);
+		fake.walkInSheet('sheet-downriver')[2]![0] = 'Dana';
+		await update(1, "walk_in_state = REPLACE(walk_in_state, '*Dana', 'Dana')");
+
+		await update(1, GIVEN_BACK);
+		const result = await run(fake.api);
+
+		expect(result.walkInsCleared).toBe(1);
+		expect(result.warnings).toEqual([]);
+		expect(fake.walkInSheet('sheet-downriver')[2]![0]).toBe('');
+		expect(fake.walkInSheet('sheet-downriver')[1]).toEqual(theirs('Ari'));
+	});
+
 	it('clears on expiry only once no doors were knocked', async () => {
 		const fake = await withWalkIns();
 		await checkout();
@@ -1051,7 +1091,7 @@ describe('the Walk Ins tab', () => {
 			"released_at = '2026-09-19T17:00:00.000Z', release_reason = 'expired', doors_knocked = 4",
 		);
 		await run(fake.api);
-		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('*Dana');
 
 		await update(1, 'doors_knocked = 0');
 		await run(fake.api);
@@ -1087,7 +1127,7 @@ describe('the Walk Ins tab', () => {
 		await update(1, GIVEN_BACK);
 		await run(fake.api, { now: new Date('2026-09-20T15:00:00.000Z') });
 
-		expect(sheet[1]![0]).toBe('Dana');
+		expect(sheet[1]![0]).toBe('*Dana');
 	});
 
 	it('leaves a row someone has written over, and says so once', async () => {
@@ -1142,7 +1182,7 @@ describe('the Walk Ins tab', () => {
 		fake.setDropdown(null);
 		await checkout({ claimedAt: '2026-09-19T17:30:00.000Z' }); // 1:30 PM
 		await run(fake.api);
-		expect(fake.walkInSheet('sheet-downriver')[1]).toEqual(['Dana', '1pm']);
+		expect(fake.walkInSheet('sheet-downriver')[1]).toEqual(['*Dana', '1pm']);
 	});
 
 	it('writes a shift the drop-down holds as a real time as typed, not forced to text', async () => {
@@ -1160,7 +1200,7 @@ describe('the Walk Ins tab', () => {
 		await checkout();
 		await run(fake.api);
 		expect(raw[0]).toEqual([
-			[0, "'Dana"],
+			[0, "'*Dana"],
 			[1, '10:00 AM'],
 		]);
 	});
@@ -1175,7 +1215,7 @@ describe('the Walk Ins tab', () => {
 		await run(fake.api);
 
 		const row = fake.walkInSheet('sheet-downriver')[1]!;
-		expect(row[0]).toBe('Dana');
+		expect(row[0]).toBe('*Dana');
 		expect(row[6]).toBe('Completed');
 		expect(await walkInState()).toMatchObject({ status: 'Completed' });
 	});
@@ -1230,13 +1270,13 @@ describe('the Walk Ins tab', () => {
 		const sheet = fake.walkInSheet('sheet-downriver');
 		// Ari's row deleted, and staff wrote Dana in again for the same shift.
 		sheet.splice(1, 1);
-		sheet.push(['Dana', '10am']);
+		sheet.push(['*Dana', '10am']);
 		sheet.push(['Cy']);
 
 		await update(1, GIVEN_BACK);
 		const result = await run(fake.api);
 
-		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Dana', '', 'Cy']);
+		expect(sheet.map((r) => r[0])).toEqual(['Name', '*Dana', '', 'Cy']);
 		expect(result.warnings).toEqual([]);
 	});
 
@@ -1247,12 +1287,12 @@ describe('the Walk Ins tab', () => {
 		const sheet = fake.walkInSheet('sheet-downriver');
 		// Our row moved down three, Cy is where it was, and staff wrote Dana
 		// in for the same shift.
-		sheet.splice(1, 0, ['Bo'], ['Cy'], ['Dana', '10am']);
+		sheet.splice(1, 0, ['Bo'], ['Cy'], ['*Dana', '10am']);
 
 		await update(1, GIVEN_BACK);
 		const result = await run(fake.api);
 
-		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Bo', 'Cy', 'Dana', 'Ari', 'Dana']);
+		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Bo', 'Cy', '*Dana', 'Ari', '*Dana']);
 		expect(result.warnings.some((w) => w.includes('Walk Ins'))).toBe(true);
 		expect(await walkInState()).toMatchObject({ gone: true });
 	});
@@ -1266,12 +1306,12 @@ describe('the Walk Ins tab', () => {
 		await checkout({ id: 2, turfId: 101, list: '35536745-88713' });
 		await run(fake.api);
 		const sheet = fake.walkInSheet('sheet-downriver');
-		expect(sheet.map((r) => r[0])).toEqual(['Name', 'Dana', 'Dana']);
+		expect(sheet.map((r) => r[0])).toEqual(['Name', '*Dana', '*Dana']);
 
 		await update(1, GIVEN_BACK);
 		const result = await run(fake.api, { onlyTurfId: 100 });
 
-		expect(sheet.map((r) => r[0])).toEqual(['Name', '', 'Dana']);
+		expect(sheet.map((r) => r[0])).toEqual(['Name', '', '*Dana']);
 		expect(result.warnings).toEqual([]);
 		expect(await walkInState(2)).toMatchObject({ rowIndex: 2 });
 	});
@@ -1319,7 +1359,7 @@ describe('the Walk Ins tab', () => {
 		await run(fake.api);
 
 		expect(fake.calls).toContain('walkins-grow:sheet-downriver:2');
-		expect(fake.walkInSheet('sheet-downriver')[2]![0]).toBe('Dana');
+		expect(fake.walkInSheet('sheet-downriver')[2]![0]).toBe('*Dana');
 	});
 
 	it('tries again to take the yellow off a cleared row', async () => {
@@ -1382,7 +1422,7 @@ describe('the Walk Ins tab', () => {
 		const fake = await withWalkIns();
 		await checkout({ claimedAt: '2026-09-20T03:00:00.000Z' });
 		await run(fake.api, { now: new Date('2026-09-20T03:05:00.000Z') });
-		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('*Dana');
 
 		await update(1, "released_at = '2026-09-20T04:30:00.000Z', release_reason = 'volunteer'");
 		await run(fake.api, { now: new Date('2026-09-20T04:35:00.000Z') });
@@ -1407,7 +1447,7 @@ describe('the Walk Ins tab', () => {
 		const result = await run(fake.api);
 
 		expect(result.walkInsFilled).toBe(1);
-		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', 'Gus', 'Eli']);
+		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', 'Gus', '*Eli']);
 	});
 
 	it('still writes when the highlight is refused for good', async () => {
@@ -1455,7 +1495,7 @@ describe('the Walk Ins tab', () => {
 
 		await run(fake.api, { onlyTurfId: 101 });
 
-		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', 'Eli']);
+		expect(fake.walkInSheet('sheet-downriver').map((r) => r[0])).toEqual(['Name', '*Eli']);
 	});
 
 	it('adds no walk-in when the Packet Tracker cannot be read', async () => {
@@ -1515,7 +1555,7 @@ describe('the Walk Ins tab', () => {
 		await turf({ turfId: 101, name: 'Turf 02', list: '35536745-88713' });
 		await checkout({ id: 2, turfId: 101, list: '35536745-88713', slackUserName: 'Eli' });
 		await run(fake.api);
-		expect(sheet.map((r) => r[0])).toEqual(['Name', undefined, 'Eli']);
+		expect(sheet.map((r) => r[0])).toEqual(['Name', undefined, '*Eli']);
 
 		await update(1, GIVEN_BACK);
 		const result = await run(fake.api);
@@ -1535,7 +1575,7 @@ describe('the Walk Ins tab', () => {
 
 		fake.failing.delete('walkins-highlight:sheet-downriver');
 		await run(fake.api);
-		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('*Dana');
 		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(true);
 	});
 
@@ -1544,7 +1584,7 @@ describe('the Walk Ins tab', () => {
 		fake.failing.set('walkins-highlight:sheet-downriver', { status: 403, error: 'protected' });
 		await checkout();
 		await run(fake.api);
-		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('Dana');
+		expect(fake.walkInSheet('sheet-downriver')[1]![0]).toBe('*Dana');
 		expect(fake.walkInYellow('sheet-downriver', 1)).toBe(false);
 		expect(await walkInState()).not.toHaveProperty('painted');
 
