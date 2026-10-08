@@ -71,7 +71,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// channel. Mapping the rows directly put a duplicate key in the picker's
 	// `{#each}` and took the whole page's hydration down with it. See
 	// chaptersFromChannelMap.
-	const chapters = chaptersFromChannelMap(settings.chapterChannelMap);
+	const chapters = chaptersFromChannelMap(settings.chapterChannelMap, settings.turfCustomChapters);
 
 	// Validated against the chapter list rather than trusted from the query
 	// string, the same way /turfs does it: an unknown id falls back to "every

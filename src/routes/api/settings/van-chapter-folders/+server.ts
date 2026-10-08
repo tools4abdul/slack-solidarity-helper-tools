@@ -6,6 +6,7 @@ import {
 	saveVanChapterFolders,
 	saveVanFolderChapters,
 	deleteVanChapterFolders,
+	isDeletedTurfCustomChapterError,
 	type Editor,
 } from '$lib/server/settings.js';
 
@@ -19,6 +20,13 @@ import {
 // no folders here has no turf, and the sync does nothing until an admin fills
 // it in. That is why it can be edited before a VAN key exists — it needs to be
 // ready the day the key lands.
+//
+// Chapter ids are Solidarity's, which are positive, or an admin's turf-only
+// chapter (turf_custom_chapters), which are negative — so any non-zero integer,
+// and a negative one must still exist: a page left open while another admin
+// deleted the entry would otherwise write mapping rows back for a chapter no
+// picker offers. The database refuses those rows (migration 0067) and the write
+// answers 400. `remove` writes none, so stray rows can always be cleared.
 //
 // Folder ids are typed in by hand from VAN, so they are validated as positive
 // integers but NOT checked against VAN — there is no key to check with yet, and
@@ -45,6 +53,22 @@ interface ChapterFoldersBody {
 const MAX_FOLDERS_PER_CHAPTER = 50;
 const MAX_CHAPTERS_PER_FOLDER = 50;
 const MAX_CHAPTER_NAME_LENGTH = 200;
+
+/** Run a mapping write, answering 400 when it named a turf-only chapter that
+ *  has been deleted. The check is the database's (migration 0067), so it holds
+ *  however close the delete came to the write. */
+async function write(save: () => Promise<void>) {
+	try {
+		await save();
+	} catch (err) {
+		if (!isDeletedTurfCustomChapterError(err)) throw err;
+		return json(
+			{ error: 'A custom chapter in this mapping has been deleted. Reload the page.' },
+			{ status: 400 },
+		);
+	}
+	return json({ ok: true });
+}
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.session) {
@@ -93,9 +117,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			if (
 				typeof chapter?.chapterId !== 'number' ||
 				!Number.isInteger(chapter.chapterId) ||
-				chapter.chapterId <= 0
+				chapter.chapterId === 0
 			) {
-				return json({ error: 'every chapterId must be a positive integer' }, { status: 400 });
+				return json({ error: 'every chapterId must be a non-zero integer' }, { status: 400 });
 			}
 			// The name is stored denormalised, so it is bounded here rather than
 			// trusted: it reaches /settings and the turf page as a label.
@@ -114,12 +138,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			entries.push({ chapterId: chapter.chapterId, chapterName: chapter.chapterName.trim() });
 		}
 
-		await saveVanFolderChapters(db, { campaignId, folderId, chapters: entries }, editor);
-		return json({ ok: true });
+		return write(() =>
+			saveVanFolderChapters(db, { campaignId, folderId, chapters: entries }, editor),
+		);
 	}
 
-	if (typeof chapterId !== 'number' || !Number.isInteger(chapterId) || chapterId <= 0) {
-		return json({ error: 'chapterId must be a positive integer' }, { status: 400 });
+	if (typeof chapterId !== 'number' || !Number.isInteger(chapterId) || chapterId === 0) {
+		return json({ error: 'chapterId must be a non-zero integer' }, { status: 400 });
 	}
 
 	if (action === 'remove') {
@@ -145,15 +170,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		}
 	}
 
-	await saveVanChapterFolders(
-		db,
-		{
-			campaignId,
-			chapterId,
-			chapterName: chapterName.trim(),
-			folderIds: folderIds as number[],
-		},
-		editor,
+	return write(() =>
+		saveVanChapterFolders(
+			db,
+			{
+				campaignId,
+				chapterId,
+				chapterName: chapterName.trim(),
+				folderIds: folderIds as number[],
+			},
+			editor,
+		),
 	);
-	return json({ ok: true });
 };

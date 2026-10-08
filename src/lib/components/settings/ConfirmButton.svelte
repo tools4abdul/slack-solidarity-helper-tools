@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { AlertDialog } from 'bits-ui';
 	import { errMessage } from '$lib/err-message.js';
 
@@ -12,6 +13,9 @@
 		tone?: 'danger' | 'neutral';
 		/** The confirm button's text; the trigger's label by default. */
 		confirmLabel?: string;
+		/** Drawn in the trigger in place of `label`, which becomes its
+		 *  accessible name. */
+		icon?: Snippet;
 	}
 
 	let {
@@ -21,6 +25,7 @@
 		disabled = false,
 		tone = 'danger',
 		confirmLabel,
+		icon,
 	}: Props = $props();
 
 	let open = $state(false);
@@ -45,13 +50,15 @@
 <div class="delete-confirm">
 	<AlertDialog.Root bind:open>
 		<AlertDialog.Trigger
-			class={['delete-confirm-trigger', tone === 'neutral' && 'neutral']}
+			class={['delete-confirm-trigger', tone === 'neutral' && 'neutral', icon && 'icon']}
 			{disabled}
+			aria-label={icon ? label : undefined}
+			title={icon ? label : undefined}
 			onclick={() => {
 				error = null;
 			}}
 		>
-			{label}
+			{#if icon}{@render icon()}{:else}{label}{/if}
 		</AlertDialog.Trigger>
 		<AlertDialog.Portal>
 			<AlertDialog.Overlay class="delete-confirm-overlay" />
@@ -94,6 +101,13 @@
 		font: inherit;
 		font-size: 0.9em;
 		cursor: pointer;
+	}
+
+	:global(.delete-confirm-trigger.icon) {
+		display: inline-flex;
+		align-items: center;
+		border-color: transparent;
+		padding: 4px;
 	}
 
 	:global(.delete-confirm-trigger:hover:not(:disabled)) {

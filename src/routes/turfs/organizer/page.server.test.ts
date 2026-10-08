@@ -157,6 +157,20 @@ describe('/turfs/organizer filters', () => {
 		});
 	});
 
+	// An admin's turf-only chapter is listed and scopes like a real one.
+	it('lists and scopes to a turf-only chapter', async () => {
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
+		});
+		const data = await run(event(ADMIN, 'chapter=-1'));
+		expect(data.chapters[0]).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: -1,
+			campaignId: null,
+		});
+	});
+
 	it('scopes both queries to a chosen chapter', async () => {
 		await run(event(ADMIN, 'chapter=71'));
 		expect(mockHoldings).toHaveBeenCalledWith(expect.anything(), {

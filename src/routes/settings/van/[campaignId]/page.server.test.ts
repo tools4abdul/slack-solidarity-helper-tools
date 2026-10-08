@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { migrate } from 'drizzle-orm/libsql/migrator';
+import { sql } from 'drizzle-orm';
 
 // One campaign's settings page. The credential goes through the real
 // credentialStatus, holding a real-looking key, so "the key is never in the
@@ -49,6 +50,13 @@ function run(campaignId: string, session: unknown = ADMIN) {
 			credentials: Record<string, unknown>;
 		}
 	>;
+}
+
+async function insertCustomChapter(name: string): Promise<void> {
+	await (holder.db as ReturnType<typeof drizzle>).run(
+		sql`INSERT INTO turf_custom_chapters (name, last_edited_by, last_edited_by_name, last_edited_at)
+			VALUES (${name}, 'U_ADMIN', 'Alice', 'x')`,
+	);
 }
 
 beforeEach(async () => {
@@ -111,7 +119,28 @@ describe('the page', () => {
 	it('still renders when the chapter list cannot be read', async () => {
 		vi.mocked(getSolidarityChapters).mockRejectedValueOnce(new Error('Solidarity is down'));
 		const data = await run('1');
-		expect(data.chapters).toBeNull();
+		expect(data.chapters).toEqual([]);
 		expect(data.chaptersError).toBe('Solidarity is down');
+	});
+
+	// Turf-only chapters are offered for mapping beside Solidarity's, by their
+	// negative id — and still offered when Solidarity is down.
+	it('lists the admin’s turf-only chapters in the folder picker', async () => {
+		await insertCustomChapter('Outreach team');
+		expect((await run('1')).chapters).toEqual([
+			{ id: -1, name: 'Outreach team' },
+			{ id: 71, name: 'Wayne County' },
+		]);
+
+		vi.mocked(getSolidarityChapters).mockRejectedValueOnce(new Error('Solidarity is down'));
+		expect((await run('1')).chapters).toEqual([{ id: -1, name: 'Outreach team' }]);
+	});
+
+	it('labels a turf-only chapter that shares a Solidarity chapter’s name', async () => {
+		await insertCustomChapter('Wayne County');
+		expect((await run('1')).chapters).toEqual([
+			{ id: 71, name: 'Wayne County' },
+			{ id: -1, name: 'Wayne County (custom)' },
+		]);
 	});
 });

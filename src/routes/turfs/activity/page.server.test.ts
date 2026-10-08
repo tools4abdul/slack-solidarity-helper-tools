@@ -118,6 +118,21 @@ describe('/turfs/activity filters', () => {
 		);
 	});
 
+	// An admin's turf-only chapter is listed and scopes like a real one.
+	it('lists and scopes to a turf-only chapter', async () => {
+		mockSettings.mockResolvedValue({
+			chapterChannelMap: CHAPTERS,
+			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
+		});
+		const data = await run(event(ADMIN, 'chapter=-1'));
+		expect(data.chapters[0]).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+		expect(data.chapter).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+		expect(mockRows).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ chapterId: -1 }),
+		);
+	});
+
 	// A mistyped URL should show a page, not a 400 — and must not be passed
 	// through to the query, where it would silently return nothing at all.
 	it.each([

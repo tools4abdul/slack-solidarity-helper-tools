@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chaptersFromChannelMap, turfChapters } from './chapter-list.js';
+import { chaptersFromChannelMap, labelCustomChapters, turfChapters } from './chapter-list.js';
 
 describe('chaptersFromChannelMap', () => {
 	it('collapses a chapter that has several channels into one option', () => {
@@ -87,5 +87,56 @@ describe('turfChapters', () => {
 	// A chapter hidden and later dropped from the map has nothing to hide.
 	it('ignores a hidden id that is not in the map', () => {
 		expect(turfChapters(map, new Set([999]))).toHaveLength(3);
+	});
+});
+
+describe('turf-only chapters', () => {
+	const entries = [
+		{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' },
+		{ chapterId: 72, channelId: 'C2', name: 'Wayne County' },
+	];
+	const custom = [{ chapterId: -1, name: 'Ann Arbor outreach' }];
+
+	it('merges them in, sorted by name with the mapped chapters', () => {
+		expect(chaptersFromChannelMap(entries, custom)).toEqual([
+			{ chapterId: -1, name: 'Ann Arbor outreach' },
+			{ chapterId: 71, name: 'Washtenaw County' },
+			{ chapterId: 72, name: 'Wayne County' },
+		]);
+	});
+
+	it('offers them on /turfs alongside the chapters left visible', () => {
+		expect(turfChapters(entries, new Set([71]), custom)).toEqual([
+			{ chapterId: -1, name: 'Ann Arbor outreach' },
+			{ chapterId: 72, name: 'Wayne County' },
+		]);
+	});
+});
+
+// A real chapter can come to share a custom entry's name after it was added —
+// a Solidarity rename, a chapter newly given a channel. The pickers must still
+// tell the two apart.
+describe('labelCustomChapters', () => {
+	it('marks a custom entry whose name a real chapter has, ignoring case', () => {
+		expect(
+			labelCustomChapters(
+				[
+					{ chapterId: -1, name: 'Wayne County' },
+					{ chapterId: -2, name: 'Outreach' },
+				],
+				['  wayne county ', 'Washtenaw County'],
+			),
+		).toEqual([
+			{ chapterId: -1, name: 'Wayne County (custom)' },
+			{ chapterId: -2, name: 'Outreach' },
+		]);
+	});
+
+	it('labels a collision in the /turfs picker', () => {
+		const entries = [{ chapterId: 72, channelId: 'C2', name: 'Wayne County' }];
+		expect(turfChapters(entries, new Set(), [{ chapterId: -1, name: 'Wayne County' }])).toEqual([
+			{ chapterId: 72, name: 'Wayne County' },
+			{ chapterId: -1, name: 'Wayne County (custom)' },
+		]);
 	});
 });

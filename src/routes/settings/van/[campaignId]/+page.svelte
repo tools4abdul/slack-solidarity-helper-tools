@@ -126,13 +126,11 @@
 			{#if data.chaptersError}
 				<p class="error">Solidarity chapters: {data.chaptersError}</p>
 			{/if}
-			{#if data.chapters}
-				<VanChapterFoldersEditor
-					campaignId={campaign.id}
-					chapters={data.chapters}
-					mappings={data.mappings}
-				/>
-			{/if}
+			<VanChapterFoldersEditor
+				campaignId={campaign.id}
+				chapters={data.chapters}
+				mappings={data.mappings}
+			/>
 			<p class="note">
 				<a href="{resolve('/turfs/folder-map')}?campaign={campaign.id}"
 					>See these folders on a map</a

@@ -176,6 +176,30 @@ describe('runCatalogSync', () => {
 		expect(turfRows[0]).toMatchObject({ turfId: 100, chapterId: 71 });
 	});
 
+	// A turf-only chapter (negative id) sorting first must not take the label —
+	// and with it the doors board's credit — from a real chapter sharing the
+	// folder. It labels a folder only when nothing real is mapped there.
+	it('labels a shared folder with a real chapter over a turf-only one', async () => {
+		const { db, inserted } = makeDb();
+
+		await runCatalogSync(db, makeClient(), 1, [
+			{ chapterId: -1, chapterName: 'Ann Arbor outreach', folderIds: [1152] },
+			{ chapterId: 71, chapterName: 'Washtenaw County', folderIds: [1152] },
+		]);
+		const turfRows = inserted.filter((row) => (row as { chapterId?: number }).chapterId);
+		expect(turfRows[0]).toMatchObject({ chapterId: 71, chapterName: 'Washtenaw County' });
+	});
+
+	it('labels a folder only a turf-only chapter is mapped to with that chapter', async () => {
+		const { db, inserted } = makeDb();
+
+		await runCatalogSync(db, makeClient(), 1, [
+			{ chapterId: -1, chapterName: 'Ann Arbor outreach', folderIds: [1152] },
+		]);
+		const turfRows = inserted.filter((row) => (row as { chapterId?: number }).chapterId);
+		expect(turfRows[0]).toMatchObject({ chapterId: -1, chapterName: 'Ann Arbor outreach' });
+	});
+
 	it('does nothing but warn when no chapter is mapped to a folder', async () => {
 		const client = makeClient();
 		const spy = vi.spyOn(client, 'mapRegions');

@@ -107,6 +107,17 @@ describe('GET /api/turfs', () => {
 		expect(res.status).toBe(400);
 	});
 
+	// An admin's turf-only chapter is a real chapter here, by its negative id.
+	it('serves a turf-only chapter', async () => {
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
+			chapterChannelMap: [{ chapterId: 71, channelId: 'C1', name: 'Washtenaw County' }],
+			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
+		});
+		const res = await GET(event(VOLUNTEER, 'chapter=-1&bbox=42,-84,43,-83'));
+		expect(res.status).toBe(200);
+	});
+
 	it('rejects a chapter that is not a real chapter', async () => {
 		const res = await GET(event(VOLUNTEER, 'chapter=999&bbox=42,-84,43,-83'));
 		expect(res.status).toBe(400);

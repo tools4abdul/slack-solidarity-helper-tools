@@ -75,9 +75,11 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// is not the only thing standing between a volunteer and its turf.
 	const settings = await loadSettings(db);
 	if (
-		!turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds).some(
-			(c) => c.chapterId === chapterId,
-		)
+		!turfChapters(
+			settings.chapterChannelMap,
+			settings.turfHiddenChapterIds,
+			settings.turfCustomChapters,
+		).some((c) => c.chapterId === chapterId)
 	) {
 		return json({ error: 'Unknown chapter' }, { status: 400 });
 	}

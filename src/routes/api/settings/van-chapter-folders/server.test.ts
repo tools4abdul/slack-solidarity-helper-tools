@@ -10,7 +10,13 @@ vi.mock('$lib/server/settings', () => ({
 	saveVanChapterFolders: mockSave,
 	saveVanFolderChapters: mockSaveFolder,
 	deleteVanChapterFolders: mockDelete,
+	// The real matcher is tested against the real trigger in
+	// van-folder-chapters.test.ts; here only the route's wiring is.
+	isDeletedTurfCustomChapterError: (err: unknown) =>
+		err instanceof Error && err.message.includes('turf_custom_chapter_deleted'),
 }));
+
+const deletedError = () => new Error('SQLITE_CONSTRAINT: turf_custom_chapter_deleted');
 // Campaign 2 exists; any other positive id does not. The validation itself is
 // campaignFromRequest's, exercised for real.
 vi.mock('$lib/server/van/campaigns.js', async (importOriginal) => {
@@ -96,7 +102,38 @@ describe('POST /api/settings/van-chapter-folders', () => {
 		expect(mockDelete).toHaveBeenCalledWith({}, 2, 71, { id: 'U_ADMIN', name: 'Alice' });
 	});
 
-	it('rejects non-integer and non-positive ids', async () => {
+	// Negative ids are an admin's turf-only chapters (turf_custom_chapters).
+	it('saves and removes a turf-only chapter’s negative id', async () => {
+		const res = await POST(
+			makeEvent(authed, save({ chapterId: -3, chapterName: 'Outreach team' })) as never,
+		);
+		expect(res.status).toBe(200);
+		expect(mockSave.mock.calls[0]![1]).toMatchObject({ chapterId: -3 });
+
+		await POST(makeEvent(authed, { campaignId: 2, action: 'remove', chapterId: -3 }) as never);
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, -3, { id: 'U_ADMIN', name: 'Alice' });
+	});
+
+	// A page left open while another admin deleted the entry must not write
+	// its mapping back. Removing stays open, so stray rows can be cleared.
+	it('refuses to save a deleted custom chapter, but still removes one', async () => {
+		mockSave.mockRejectedValueOnce(deletedError());
+		const res = await POST(
+			makeEvent(authed, save({ chapterId: -4, chapterName: 'Gone team' })) as never,
+		);
+		expect(res.status).toBe(400);
+		expect((await res.json()).error).toMatch(/deleted/);
+
+		await POST(makeEvent(authed, { campaignId: 2, action: 'remove', chapterId: -4 }) as never);
+		expect(mockDelete).toHaveBeenCalledWith({}, 2, -4, { id: 'U_ADMIN', name: 'Alice' });
+	});
+
+	it('still fails loudly on any other write error', async () => {
+		mockSave.mockRejectedValueOnce(new Error('disk I/O error'));
+		await expect(POST(makeEvent(authed, save()) as never)).rejects.toThrow('disk I/O error');
+	});
+
+	it('rejects non-integer and zero chapter ids and non-positive folder ids', async () => {
 		for (const body of [
 			save({ chapterId: 'seventy-one' }),
 			save({ chapterId: 0 }),
@@ -192,11 +229,29 @@ describe('POST /api/settings/van-chapter-folders', () => {
 			expect(mockSaveFolder).toHaveBeenCalledTimes(1);
 		});
 
+		it('accepts a turf-only chapter’s negative id', async () => {
+			const chapters = [{ chapterId: -3, chapterName: 'Outreach team' }];
+			const res = await POST(makeEvent(authed, saveFolder({ chapters })) as never);
+			expect(res.status).toBe(200);
+			expect(mockSaveFolder.mock.calls[0]![1].chapters).toEqual(chapters);
+		});
+
+		it('refuses a folder list naming a deleted custom chapter', async () => {
+			const chapters = [
+				{ chapterId: 71, chapterName: 'Oakland County' },
+				{ chapterId: -4, chapterName: 'Gone team' },
+			];
+			mockSaveFolder.mockRejectedValueOnce(deletedError());
+			const res = await POST(makeEvent(authed, saveFolder({ chapters })) as never);
+			expect(res.status).toBe(400);
+			expect((await res.json()).error).toMatch(/deleted/);
+		});
+
 		it('rejects bad folder ids, chapter ids and a non-array', async () => {
 			for (const folderId of [0, -1, 1.5, '68299', undefined]) {
 				expect((await POST(makeEvent(authed, saveFolder({ folderId })) as never)).status).toBe(400);
 			}
-			for (const chapterId of [0, -1, 1.5, '71', undefined]) {
+			for (const chapterId of [0, 1.5, '71', undefined]) {
 				const body = saveFolder({ chapters: [{ chapterId, chapterName: 'Oakland County' }] });
 				expect((await POST(makeEvent(authed, body) as never)).status).toBe(400);
 			}

@@ -720,12 +720,16 @@ const PROMPT_REASON: Record<LocationPrompt, string> = {
 
 /**
  * Shown when we cannot tell which county the volunteer means: ask for a ZIP or
- * an address, and link each county's map for anyone who would rather browse.
+ * an address, and link the /turfs chapter picker for anyone who would rather
+ * browse.
  *
- * Lists every chapter with a Slack channel, NOT the chapters that have turf —
- * the latter is a cross-chapter aggregate revealing where the field operation
- * is running, which is exactly what chapter scoping exists to prevent. The same
- * reasoning is spelled out in routes/turfs/+page.server.ts.
+ * One link to the picker rather than one per chapter: the list grew with every
+ * chapter and every admin-added turf-only chapter, and a Slack section caps
+ * its text at 3,000 characters — past that the whole message is refused and
+ * /turfs answers nobody. The web page already lists the chapters, by the same
+ * rule (turfChapters) and behind the same gates.
+ *
+ * `chapters` is still taken, only to say so when there are none to pick.
  */
 export function buildChapterPickerBlocks(
 	chapters: readonly ChapterRef[],
@@ -744,9 +748,6 @@ export function buildChapterPickerBlocks(
 		};
 	}
 
-	const links = chapters
-		.map((c) => `• <${escapeMrkdwn(turfPageUrl(appUrl, c.chapterId))}|${escapeMrkdwn(c.name)}>`)
-		.join('\n');
 	const reason = prompt ? `${PROMPT_REASON[prompt]}\n` : '';
 
 	return {
@@ -759,8 +760,10 @@ export function buildChapterPickerBlocks(
 						'`/turfs 48104` or `/turfs 100 N Main St, Ann Arbor MI`.',
 				),
 			},
-			context("Or open your county's map:"),
-			{ type: 'section', text: mrkdwn(links) },
+			{
+				type: 'section',
+				text: mrkdwn(`Or <${escapeMrkdwn(turfPageUrl(appUrl))}|pick your county on the turf map>.`),
+			},
 		],
 	};
 }
