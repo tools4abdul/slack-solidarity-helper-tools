@@ -84,6 +84,23 @@ describe('OutsideIdScrubber', () => {
 		).toBeNull();
 	});
 
+	// The app marks the names it writes into the sheet (`*Ana Ruiz`): the
+	// name under the mark is replaced, and the mark kept.
+	it('replaces a marked name in sheet_state and walk_in_state', () => {
+		const columns = ['slack_user_id', 'slack_user_name', 'sheet_state', 'walk_in_state'];
+		const [, , sheet, walkIn] = new OutsideIdScrubber().scrub(columns, [
+			'apple:001.abc',
+			'Ana Ruiz',
+			JSON.stringify({ cells: { Canvasser: '*Ana Ruiz' } }),
+			JSON.stringify({ spreadsheetId: 'S1', name: '*Ana Ruiz' }),
+		]);
+		expect(JSON.parse(sheet as string)).toEqual({ cells: { Canvasser: '*Apple volunteer 1' } });
+		expect(JSON.parse(walkIn as string)).toEqual({
+			spreadsheetId: 'S1',
+			name: '*Apple volunteer 1',
+		});
+	});
+
 	it('drops a sheet_state it cannot read rather than copy it blind', () => {
 		const columns = ['slack_user_id', 'slack_user_name', 'sheet_state'];
 		expect(
@@ -157,6 +174,20 @@ describe('OutsideIdScrubber', () => {
 				cells: { Canvasser: 'Dana' },
 				prior: { Canvasser: 'Apple volunteer 1' },
 			});
+		});
+
+		it('replaces them under the app’s mark, keeping the mark', () => {
+			expect(learned().scrub(['turf_id', 'sheet_assigned_to'], [7, '*Ana Ruiz'])).toEqual([
+				7,
+				'*Apple volunteer 1',
+			]);
+		});
+
+		it('still knows a name that itself starts with the mark', () => {
+			const scrubber = new OutsideIdScrubber();
+			scrubber.learn('apple:1', '*Ana');
+			expect(scrubber.scrub(['canvasser'], ['*Ana'])).toEqual(['Apple volunteer 1']);
+			expect(scrubber.scrub(['canvasser'], ['**Ana'])).toEqual(['*Apple volunteer 1']);
 		});
 
 		// One volunteer learned as just "Jane" must not cut another's full name

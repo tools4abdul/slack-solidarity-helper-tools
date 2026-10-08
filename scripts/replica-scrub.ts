@@ -30,7 +30,8 @@
  *
  * What it cannot see: a name VAN or the sheet spells differently from how the
  * volunteer gave it (a nickname, a missing middle name) is copied unchanged.
- * Case and spacing are ignored, nothing more.
+ * Case and spacing are ignored, and the mark the app puts before the names it
+ * writes into the sheet (`*Ana Ruiz`), which the stand-in keeps; nothing more.
  *
  * Only the id columns decide whose row it is, so a Slack member's row that
  * merely mentions `google:` in free text keeps its reason and name. Otherwise
@@ -38,6 +39,7 @@
  */
 
 import type { InValue } from '@libsql/client';
+import { OUR_NAME_MARK } from '../src/lib/van/packet-tracker.js';
 
 /** Tables whose rows are never copied because they hold outside volunteers'
  *  personal details. */
@@ -173,8 +175,17 @@ export class OutsideIdScrubber {
 				}
 			});
 		}
-		const replace = (name: string): string | undefined =>
+		const whole = (name: string): string | undefined =>
 			own && ownNames.has(nameKey(name)) ? own.name : this.looseName(name);
+		const replace = (name: string): string | undefined => {
+			const found = whole(name);
+			if (found !== undefined || !name.startsWith(OUR_NAME_MARK)) return found;
+			// A name the app wrote into the sheet carries its mark; the name
+			// under it is still theirs. Tried second, for a volunteer whose own
+			// name starts with the mark.
+			const bare = whole(name.slice(OUR_NAME_MARK.length));
+			return bare === undefined ? undefined : `${OUR_NAME_MARK}${bare}`;
+		};
 
 		let changed = false;
 		const out = values.map((value, i) => {

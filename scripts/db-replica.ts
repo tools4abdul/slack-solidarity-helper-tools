@@ -354,12 +354,19 @@ async function copyInto(
 ): Promise<void> {
 	// The schema, as production has it. Tables first, so indexes, triggers and
 	// views have something to attach to; SQLite's own tables are made for us.
+	// Triggers wait until the rows are in: they guard the app's writes, and
+	// tables are copied in no particular order, so one checking another table
+	// (van_chapter_folders → turf_custom_chapters) would refuse rows that are
+	// fine once both are copied.
 	const schema = await read(
 		`select type, name, sql from sqlite_master
 		 where sql is not null and name not like 'sqlite_%'
 		 order by case type when 'table' then 0 when 'index' then 1 else 2 end, rowid`,
 	);
-	for (const row of schema.rows) await local.execute(String(row.sql));
+	const triggers = schema.rows.filter((r) => r.type === 'trigger');
+	for (const row of schema.rows) {
+		if (row.type !== 'trigger') await local.execute(String(row.sql));
+	}
 	const tables = schema.rows.filter((r) => r.type === 'table').map((r) => String(r.name));
 
 	// Every Google or Apple volunteer's real name, before any row is copied,
@@ -449,6 +456,7 @@ async function copyInto(
 		);
 		counts.push([table, copied, how]);
 	}
+	for (const row of triggers) await local.execute(String(row.sql));
 	const count = (table: string) => counts.find(([t]) => t === table)?.[1] ?? 0;
 	console.log(`\n${count('__drizzle_migrations')} migration(s) recorded as applied.`);
 	console.log(`${scrubber.count} Google or Apple volunteer(s) replaced with stand-ins.`);

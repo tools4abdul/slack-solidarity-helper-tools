@@ -721,36 +721,38 @@
 									<span class="card-top">
 										<span class="turf-name">{turf.name}</span>
 										<!-- Grouped, so the status chip is hard against the right
-										     edge whether or not UPDATING is beside it. Loose in the
-										     row, the space-between would strand it in the middle on
-										     the rows that carry both. -->
+										     edge whether or not UPDATING is beside it, and stacked,
+										     status over campaign, so the chips take one chip's width
+										     and leave the rest of the row to the name. -->
 										<span class="card-badges">
+											<span class="card-status">
+												{#if turf.updating}
+													<!-- VAN is re-cutting this turf's region, so its door
+												     count is about to move. Deliberately a chip and not
+												     a disabled state: Story 4.5 keeps the turf claimable
+												     during a refresh, because blocking would take the
+												     page down on exactly the mornings it is busiest.
+												     Left of the status: it qualifies the count, while
+												     the status decides whether the row is worth opening
+												     at all, and that one keeps the edge. -->
+													<span class="badge badge-updating" title="VAN is recounting this area"
+														>Updating</span
+													>
+												{/if}
+												<!-- Status reads as a badge rather than another line of meta
+											     text: it is the field that decides whether the row is
+											     worth opening, and colour makes that answerable without
+											     reading. The class follows the status verbatim, so a new
+											     status shows up as an unstyled chip rather than silently
+											     borrowing the wrong colour. -->
+												<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
+											</span>
 											{#if badgeFor(turf)}
 												<!-- Which campaign's VAN the turf is from, while there is
 												     more than one. Neutral and outlined: it names a source,
 												     not a state, and must not read as another status. -->
 												<span class="badge badge-campaign">{badgeFor(turf)}</span>
 											{/if}
-											{#if turf.updating}
-												<!-- VAN is re-cutting this turf's region, so its door
-											     count is about to move. Deliberately a chip and not
-											     a disabled state: Story 4.5 keeps the turf claimable
-											     during a refresh, because blocking would take the
-											     page down on exactly the mornings it is busiest.
-											     Left of the status: it qualifies the count, while
-											     the status decides whether the row is worth opening
-											     at all, and that one keeps the edge. -->
-												<span class="badge badge-updating" title="VAN is recounting this area"
-													>Updating</span
-												>
-											{/if}
-											<!-- Status reads as a badge rather than another line of meta
-										     text: it is the field that decides whether the row is
-										     worth opening, and colour makes that answerable without
-										     reading. The class follows the status verbatim, so a new
-										     status shows up as an unstyled chip rather than silently
-										     borrowing the wrong colour. -->
-											<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
 										</span>
 									</span>
 									{#if expanded}

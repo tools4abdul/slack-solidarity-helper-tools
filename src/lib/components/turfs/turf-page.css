@@ -659,18 +659,26 @@ main {
 	font-size: 1.05rem;
 	line-height: 1.25;
 	/* Wraps rather than pushing the chips off the edge: in the desktop list
-	   column a long name and two chips want more width than there is. The
-	   break-anywhere is for the names that have nowhere to break — VAN cuts
-	   turf names like WARD_03_PRECINCT_07, which is one word to a browser. */
+	   column a long name and the chips beside it want more width than there
+	   is. The break-anywhere is for the names that have nowhere to break —
+	   VAN cuts turf names like WARD_03_PRECINCT_07, which is one word to a
+	   browser. */
 	min-width: 0;
 	overflow-wrap: anywhere;
 }
 
 .card-badges {
 	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.card-status {
+	display: flex;
 	align-items: center;
 	gap: 6px;
-	flex-shrink: 0;
 }
 
 /* The closed row's one line. Nothing to separate from anything, so it stays

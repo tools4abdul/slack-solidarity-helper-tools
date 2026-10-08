@@ -75,6 +75,16 @@ const WRITE_ONCE: ReadonlySet<FillColumn> = new Set([
 	'Walk Mode',
 ]);
 
+/** Put before the name on every row the app fills in, alongside the yellow,
+ *  so the campaign can tell our entries from theirs even where the
+ *  highlight did not take. */
+export const OUR_NAME_MARK = '*';
+
+/** A volunteer's name as the app writes it into the sheet. */
+export function markedName(name: string): string {
+	return `${OUR_NAME_MARK}${name}`;
+}
+
 /** A Status that says the packet is out even with no canvasser named. */
 const BLOCKING_STATUSES: ReadonlySet<string> = new Set(['out', 'complete']);
 
@@ -168,7 +178,7 @@ export function desiredCells(
 	const percent = walked ? checkout.reportedPercent! : null;
 
 	return {
-		Canvasser: checkout.slackUserName,
+		Canvasser: markedName(checkout.slackUserName),
 		// When they claimed it, in Slack or on the site.
 		'Shift Time': campaignTimeLabel(checkout.claimedAt),
 		'Date Sent Out': sheetDate(checkout.claimedAt),
