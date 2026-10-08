@@ -475,13 +475,21 @@ describe('buildClaimedBlocks', () => {
 });
 
 describe('buildChapterPickerBlocks', () => {
-	it('lists every chapter as a deep link', () => {
-		const body = serialise(
-			buildChapterPickerBlocks([CHAPTER, { chapterId: 72, name: 'Wayne County' }], APP_URL).blocks,
-		);
-		expect(body).toContain('chapter=71');
-		expect(body).toContain('chapter=72');
-		expect(body).toContain('Wayne County');
+	// One link to the web picker, not one per chapter: a Slack section refuses
+	// text over 3,000 characters, and the per-chapter list grew past that.
+	it('links the /turfs chapter picker instead of listing chapters', () => {
+		const chapters = Array.from({ length: 80 }, (_, i) => ({
+			chapterId: 1000 + i,
+			name: `A long chapter name for county number ${i}`,
+		}));
+		const { blocks } = buildChapterPickerBlocks(chapters, APP_URL);
+		const body = serialise(blocks);
+		expect(body).toContain(`<${APP_URL}/turfs|`);
+		expect(body).not.toContain('chapter=');
+		expect(body).not.toContain('county number');
+		for (const block of blocks as Array<{ text?: { text: string } }>) {
+			expect(block.text?.text.length ?? 0).toBeLessThan(3000);
+		}
 	});
 
 	it('asks for a ZIP or an address', () => {

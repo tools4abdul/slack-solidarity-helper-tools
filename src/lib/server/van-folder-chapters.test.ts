@@ -20,6 +20,7 @@ const {
 	saveVanFolderChapters,
 	deleteVanChapterFolders,
 	loadVanChapterFolders,
+	isDeletedTurfCustomChapterError,
 } = await import('./settings.js');
 
 // A real engine rather than a chained fake: the guarantee here is that two
@@ -195,5 +196,79 @@ describe('campaigns', () => {
 
 	it('loads only the campaign asked for', async () => {
 		expect(await mapping()).toEqual({});
+	});
+});
+
+// Turf-only chapters (negative ids) are guarded in the database: a mapping row
+// must name a turf_custom_chapters row that exists (migration 0067). That is
+// what closes the gap between the route's check and the write — and the saves
+// run as one batch, so a refused insert takes its delete back with it.
+describe('a deleted turf-only chapter', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO turf_custom_chapters (id, name, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES (1, 'Ann Arbor outreach', 'U', 'u', 'x')`,
+		);
+		await saveVanFolderChapters(
+			db,
+			{
+				campaignId: 1,
+				folderId: 68300,
+				chapters: [
+					{ chapterId: 71, chapterName: 'Washtenaw County' },
+					{ chapterId: -1, chapterName: 'Ann Arbor outreach' },
+				],
+			},
+			EDITOR,
+		);
+	});
+
+	it('maps a turf-only chapter that exists', async () => {
+		expect(await mapping()).toEqual({ [-1]: [68300], 71: [68300] });
+	});
+
+	it('refuses a folder list naming one, and keeps the folder as it was', async () => {
+		const err = await saveVanFolderChapters(
+			db,
+			{
+				campaignId: 1,
+				folderId: 68300,
+				chapters: [
+					{ chapterId: 71, chapterName: 'Washtenaw County' },
+					{ chapterId: -2, chapterName: 'Gone team' },
+				],
+			},
+			EDITOR,
+		).catch((e: unknown) => e);
+		expect(isDeletedTurfCustomChapterError(err)).toBe(true);
+		// The delete ran in the same batch and was rolled back with the insert.
+		expect(await mapping()).toEqual({ [-1]: [68300], 71: [68300] });
+	});
+
+	it('refuses a chapter-first save for one, and keeps its old folders', async () => {
+		await client.execute('DELETE FROM turf_custom_chapters WHERE id = 1');
+		const err = await saveVanChapterFolders(
+			db,
+			{ campaignId: 1, chapterId: -1, chapterName: 'Ann Arbor outreach', folderIds: [68301] },
+			EDITOR,
+		).catch((e: unknown) => e);
+		expect(isDeletedTurfCustomChapterError(err)).toBe(true);
+		expect(await mapping()).toEqual({ [-1]: [68300], 71: [68300] });
+	});
+
+	it('refuses an update that points a row at one', async () => {
+		await expect(
+			client.execute('UPDATE van_chapter_folders SET chapter_id = -2 WHERE chapter_id = 71'),
+		).rejects.toThrow('turf_custom_chapter_deleted');
+	});
+
+	it('still lets a real chapter be saved, and its rows removed', async () => {
+		await saveVanChapterFolders(
+			db,
+			{ campaignId: 1, chapterId: 72, chapterName: 'Wayne County', folderIds: [68302] },
+			EDITOR,
+		);
+		await deleteVanChapterFolders(db, 1, -1, EDITOR);
+		expect(await mapping()).toEqual({ 71: [68300], 72: [68302] });
 	});
 });

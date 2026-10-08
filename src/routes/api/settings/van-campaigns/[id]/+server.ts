@@ -7,7 +7,7 @@ import { checkBoolean, checkSheetTabName } from '$lib/server/app-config-fields.j
 import { vanClientFor } from '$lib/server/van-env.js';
 import { loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadCampaignStatus } from '$lib/server/van/campaign-status-store.js';
-import { errMessage } from '$lib/err-message.js';
+import { errChainText, errMessage } from '$lib/err-message.js';
 
 // One VAN campaign's settings (specs/012-multi-van-campaigns, Phase 5): the
 // fields an admin edits on /settings/van/<id>. Credentials are not among them —
@@ -150,7 +150,7 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 	} catch (err) {
 		// Two admins naming two campaigns alike at once: the check above passed
 		// for both, and the index refused the second.
-		if (patch.label && /van_campaigns_label_unique|UNIQUE constraint/.test(causeText(err))) {
+		if (patch.label && /van_campaigns_label_unique|UNIQUE constraint/.test(errChainText(err))) {
 			return labelTaken(patch.label);
 		}
 		throw err;
@@ -164,14 +164,6 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 
 function labelTaken(label: string) {
 	return json({ error: `Another campaign is already called "${label}"` }, { status: 409 });
-}
-
-/** A failed write's message, with its driver cause: drizzle wraps the
- *  constraint error, so the index name is on `cause`. */
-function causeText(err: unknown): string {
-	const parts: string[] = [];
-	for (let e: unknown = err; e instanceof Error; e = e.cause) parts.push(e.message);
-	return parts.join(' ');
 }
 
 /**

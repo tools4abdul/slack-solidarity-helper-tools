@@ -20,6 +20,7 @@ import {
 	reportExcludedChapters,
 	zipExcludedChapters,
 	turfHiddenChapters,
+	turfCustomChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
@@ -38,6 +39,7 @@ import {
 	MOBILIZE_CONTACT_PHONE,
 } from './env.js';
 import { clampTickerColumnsPerSecond } from '../ticker-speed.js';
+import { errChainText } from '../err-message.js';
 import { resolveClaimOptions } from '../van/checkout.js';
 import { invalidateThemeCache } from './theme.js';
 import { invalidateSiteNameCache } from './site.js';
@@ -50,6 +52,7 @@ export {
 	reportExcludedChapters,
 	zipExcludedChapters,
 	turfHiddenChapters,
+	turfCustomChapters,
 	channelWelcomeFlags,
 	appConfig,
 	infoCommands,
@@ -114,6 +117,9 @@ export interface Settings {
 	/** Chapters left out of the /turfs chapter pickers (turf_hidden_chapters).
 	 *  Their Slack channel mapping is untouched. DB-only; empty shows them all. */
 	turfHiddenChapterIds: Set<number>;
+	/** Turf-only chapters an admin named by hand (turf_custom_chapters), with
+	 *  their negative chapter ids, sorted by name. DB-only; empty is the norm. */
+	turfCustomChapters: TurfCustomChapter[];
 	/** Channels the bot should NOT post its channel welcome message in after
 	 *  inviting a new member. Absent = welcome on (the default). DB-only. */
 	welcomeDisabledChannelIds: Set<string>;
@@ -244,6 +250,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		infoCommandRows,
 		moderatorRows,
 		turfHiddenRows,
+		turfCustomRows,
 	] = await Promise.all([
 		db.select().from(chapterChannelMap),
 		db.select().from(coalitionChannelMap),
@@ -258,6 +265,8 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		db.select().from(slackModerators),
 		// After the moderators, for the same reason.
 		db.select().from(turfHiddenChapters),
+		// After the hidden chapters, for the same reason.
+		db.select().from(turfCustomChapters),
 	]);
 
 	const chapterChannelMapField: ChapterEntry[] =
@@ -349,6 +358,7 @@ export async function loadSettings(db: Database): Promise<Settings> {
 		reportExcludedChapterIds,
 		zipExcludedChapterIds,
 		turfHiddenChapterIds: new Set(turfHiddenRows.map((r) => r.chapterId)),
+		turfCustomChapters: customChapterOptions(turfCustomRows),
 		welcomeDisabledChannelIds,
 		slackTrackingChannelId,
 		slackGrowthReportChannelId,
@@ -916,6 +926,108 @@ export async function deleteTurfHiddenChapter(
 	);
 }
 
+/** A turf_custom_chapters row as every chapter list sees it. */
+export interface TurfCustomChapter {
+	/** Negative: `-row.id`. See turfCustomChapters in schema.ts. */
+	chapterId: number;
+	name: string;
+}
+
+export const MAX_TURF_CUSTOM_CHAPTER_NAME_LENGTH = 200;
+
+function customChapterOptions(
+	rows: ReadonlyArray<{ id: number; name: string }>,
+): TurfCustomChapter[] {
+	return rows
+		.map((r) => ({ chapterId: -r.id, name: r.name }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Just the custom chapters, for the folder-mapping pages, which do not
+ *  otherwise need the nine tables `loadSettings` reads. */
+export async function loadTurfCustomChapters(db: Database): Promise<TurfCustomChapter[]> {
+	return customChapterOptions(await db.select().from(turfCustomChapters));
+}
+
+export type SaveTurfCustomChapterResult =
+	{ ok: true; chapter: TurfCustomChapter } | { ok: false; error: string };
+
+/**
+ * Add a turf-only chapter. The name must not match, ignoring case, another
+ * custom chapter, a chapter in the channel map, or any of `takenNames` — the
+ * caller's Solidarity chapter list, which the folder-mapping pickers show and
+ * which can hold chapters with no channel. All of them land in the same
+ * pickers, and two identical names there cannot be told apart.
+ */
+export async function saveTurfCustomChapter(
+	db: Database,
+	rawName: string,
+	editor: Editor,
+	takenNames: readonly string[] = [],
+): Promise<SaveTurfCustomChapterResult> {
+	const name = rawName.trim();
+	if (name === '') return { ok: false, error: 'Enter a name.' };
+	if (name.length > MAX_TURF_CUSTOM_CHAPTER_NAME_LENGTH) {
+		return {
+			ok: false,
+			error: `Names are at most ${MAX_TURF_CUSTOM_CHAPTER_NAME_LENGTH} characters.`,
+		};
+	}
+
+	const { chapterChannelMap: mapEntries, turfCustomChapters: existing } = await loadSettings(db);
+	const folded = name.toLocaleLowerCase();
+	const taken = [...mapEntries, ...existing].map((c) => c.name).concat(takenNames);
+	const duplicate = { ok: false as const, error: `There is already a chapter named "${name}".` };
+	if (taken.some((n) => n.trim().toLocaleLowerCase() === folded)) return duplicate;
+
+	let row: { id: number; name: string };
+	try {
+		[row] = await db
+			.insert(turfCustomChapters)
+			.values({
+				name,
+				lastEditedBy: editor.id,
+				lastEditedByName: editor.name,
+				lastEditedAt: new Date().toISOString(),
+			})
+			.returning({ id: turfCustomChapters.id, name: turfCustomChapters.name });
+	} catch (err) {
+		// Two adds of the same name racing past the check above: the unique
+		// index stops the second, which is the same answer the check gives.
+		if (/UNIQUE constraint/.test(errChainText(err))) return duplicate;
+		throw err;
+	}
+	console.log(
+		`[settings] saved turf_custom_chapters id=${row.id} "${name}" by ${editor.id} (${editor.name})`,
+	);
+	return { ok: true, chapter: { chapterId: -row.id, name: row.name } };
+}
+
+/** Whether a write failed because it named a turf-only chapter that has been
+ *  deleted — the van_chapter_folders triggers in migration 0067. */
+export function isDeletedTurfCustomChapterError(err: unknown): boolean {
+	return errChainText(err).includes('turf_custom_chapter_deleted');
+}
+
+/**
+ * Remove a turf-only chapter and every folder mapped to it, in every campaign,
+ * in one batch: a mapping row left behind would keep a chapter id nothing can
+ * pick or edit any more.
+ */
+export async function deleteTurfCustomChapter(
+	db: Database,
+	chapterId: number,
+	editor: Editor,
+): Promise<void> {
+	await db.batch([
+		db.delete(vanChapterFolders).where(eq(vanChapterFolders.chapterId, chapterId)),
+		db.delete(turfCustomChapters).where(eq(turfCustomChapters.id, -chapterId)),
+	]);
+	console.log(
+		`[settings] deleted turf_custom_chapters chapter_id=${chapterId} and its van_chapter_folders by ${editor.id} (${editor.name})`,
+	);
+}
+
 // Write path — app-config singleton. Set-only contract: an undefined or null
 // patch value is treated as ABSENT (kept), not as a NULL write. Unspecified
 // fields are preserved across the upsert because they don't appear in the `set`
@@ -1165,32 +1277,37 @@ export async function saveVanChapterFolders(
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	// Scoped to the campaign as well as the chapter: the same chapter can have
-	// folders in several campaigns, and saving one campaign's list must not
-	// delete the others.
-	await db
-		.delete(vanChapterFolders)
-		.where(
-			and(
-				eq(vanChapterFolders.campaignId, entry.campaignId),
-				eq(vanChapterFolders.chapterId, entry.chapterId),
-			),
-		);
-
 	const unique = [...new Set(entry.folderIds)];
-	if (unique.length > 0) {
-		await db.insert(vanChapterFolders).values(
-			unique.map((folderId) => ({
-				campaignId: entry.campaignId,
-				chapterId: entry.chapterId,
-				folderId,
-				chapterName: entry.chapterName,
-				lastEditedBy: editor.id,
-				lastEditedByName: editor.name,
-				lastEditedAt,
-			})),
-		);
-	}
+	// One batch, so a refused insert (a deleted turf-only chapter — see
+	// migration 0067) rolls the delete back rather than leaving it applied.
+	await db.batch([
+		// Scoped to the campaign as well as the chapter: the same chapter can
+		// have folders in several campaigns, and saving one campaign's list must
+		// not delete the others.
+		db
+			.delete(vanChapterFolders)
+			.where(
+				and(
+					eq(vanChapterFolders.campaignId, entry.campaignId),
+					eq(vanChapterFolders.chapterId, entry.chapterId),
+				),
+			),
+		...(unique.length > 0
+			? [
+					db.insert(vanChapterFolders).values(
+						unique.map((folderId) => ({
+							campaignId: entry.campaignId,
+							chapterId: entry.chapterId,
+							folderId,
+							chapterName: entry.chapterName,
+							lastEditedBy: editor.id,
+							lastEditedByName: editor.name,
+							lastEditedAt,
+						})),
+					),
+				]
+			: []),
+	]);
 	console.log(
 		`[van] saved van_chapter_folders chapter_id=${entry.chapterId} folders=${unique.join(',') || '(none)'} by ${editor.id} (${editor.name})`,
 	);
@@ -1216,32 +1333,37 @@ export async function saveVanFolderChapters(
 	editor: Editor,
 ): Promise<void> {
 	const lastEditedAt = new Date().toISOString();
-	// A folder id names a folder only within its campaign.
-	await db
-		.delete(vanChapterFolders)
-		.where(
-			and(
-				eq(vanChapterFolders.campaignId, entry.campaignId),
-				eq(vanChapterFolders.folderId, entry.folderId),
-			),
-		);
-
 	// First spelling of a chapter id wins, so a duplicated pick cannot violate
 	// the (chapter_id, folder_id) primary key.
 	const unique = new Map(entry.chapters.map((c) => [c.chapterId, c.chapterName]));
-	if (unique.size > 0) {
-		await db.insert(vanChapterFolders).values(
-			[...unique].map(([chapterId, chapterName]) => ({
-				campaignId: entry.campaignId,
-				chapterId,
-				folderId: entry.folderId,
-				chapterName,
-				lastEditedBy: editor.id,
-				lastEditedByName: editor.name,
-				lastEditedAt,
-			})),
-		);
-	}
+	// One batch, so a refused insert (a deleted turf-only chapter — see
+	// migration 0067) cannot leave the folder stripped of its real chapters.
+	await db.batch([
+		// A folder id names a folder only within its campaign.
+		db
+			.delete(vanChapterFolders)
+			.where(
+				and(
+					eq(vanChapterFolders.campaignId, entry.campaignId),
+					eq(vanChapterFolders.folderId, entry.folderId),
+				),
+			),
+		...(unique.size > 0
+			? [
+					db.insert(vanChapterFolders).values(
+						[...unique].map(([chapterId, chapterName]) => ({
+							campaignId: entry.campaignId,
+							chapterId,
+							folderId: entry.folderId,
+							chapterName,
+							lastEditedBy: editor.id,
+							lastEditedByName: editor.name,
+							lastEditedAt,
+						})),
+					),
+				]
+			: []),
+	]);
 	console.log(
 		`[van] saved van_chapter_folders folder_id=${entry.folderId} chapters=${[...unique.keys()].join(',') || '(none)'} by ${editor.id} (${editor.name})`,
 	);

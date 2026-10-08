@@ -23,6 +23,7 @@ vi.mock('$lib/server/autocomplete-sources.js', () => ({
 }));
 
 import { load } from './+page.server.js';
+import { getSolidarityChapters } from '$lib/server/autocomplete-sources.js';
 
 let client: ReturnType<typeof createClient>;
 
@@ -40,6 +41,8 @@ type Data = {
 	}>;
 	emptyFolders: Array<{ folderId: number; name: string }>;
 	mapping: Array<{ folderId: number; chapters: Array<{ chapterId: number }> }>;
+	chapters: Array<{ id: number; name: string }>;
+	chaptersError: string | null;
 	error: string | null;
 	states: string[];
 	statesSource: string;
@@ -152,6 +155,50 @@ describe('which campaign', () => {
 
 	it('404s for a campaign that does not exist', async () => {
 		await expect(run('?campaign=99')).rejects.toMatchObject({ status: 404 });
+	});
+});
+
+// The picker offers the admin's turf-only chapters beside Solidarity's, by
+// their negative id — and still offers them when Solidarity is down.
+describe('the chapter picker', () => {
+	beforeEach(async () => {
+		await client.execute(
+			`INSERT INTO turf_custom_chapters (name, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES ('Ann Arbor outreach', 'U', 'u', 'x')`,
+		);
+	});
+
+	it('lists turf-only chapters sorted in with Solidarity’s', async () => {
+		const data = await run('?refresh=1');
+		expect(data.chapters).toEqual([
+			{ id: -1, name: 'Ann Arbor outreach' },
+			{ id: 71, name: 'Wayne County' },
+		]);
+		expect(data.chaptersError).toBeNull();
+	});
+
+	it('still lists them when Solidarity is down, and says why the rest are missing', async () => {
+		vi.mocked(getSolidarityChapters).mockRejectedValueOnce(new Error('Solidarity is down'));
+		const data = await run('?refresh=1');
+		expect(data.chapters).toEqual([{ id: -1, name: 'Ann Arbor outreach' }]);
+		expect(data.chaptersError).toBe('Solidarity is down');
+	});
+
+	it('labels a turf-only chapter that shares a Solidarity chapter’s name', async () => {
+		await client.execute(
+			`INSERT INTO turf_custom_chapters (name, last_edited_by, last_edited_by_name, last_edited_at)
+			 VALUES ('wayne county', 'U', 'u', 'x')`,
+		);
+		const data = await run('?refresh=1');
+		expect(data.chapters).toContainEqual({ id: 71, name: 'Wayne County' });
+		expect(data.chapters).toContainEqual({ id: -2, name: 'wayne county (custom)' });
+	});
+
+	it('says so when the turf-only chapters cannot be read', async () => {
+		await client.execute('DROP TABLE turf_custom_chapters');
+		const data = await run('?refresh=1');
+		expect(data.chapters).toEqual([{ id: 71, name: 'Wayne County' }]);
+		expect(data.chaptersError).toMatch(/^custom chapters: /);
 	});
 });
 

@@ -182,6 +182,20 @@ export const turfHiddenChapters = sqliteTable('turf_hidden_chapters', {
 	lastEditedAt: text('last_edited_at').notNull(),
 });
 
+// Turf-only "chapters" an admin names by hand: an entry on the /turfs pickers
+// and in the chapter → VAN folder mappings with no Solidarity chapter or Slack
+// channel behind it. Every chapter consumer is keyed by an integer chapter id,
+// so an entry is exposed as `chapterId = -id`: Solidarity ids are positive, so
+// the two can never collide, and the Solidarity rename sweep never touches it.
+// Deleting an entry deletes its van_chapter_folders rows with it.
+export const turfCustomChapters = sqliteTable('turf_custom_chapters', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull().unique(),
+	lastEditedBy: text('last_edited_by').notNull(),
+	lastEditedByName: text('last_edited_by_name').notNull(),
+	lastEditedAt: text('last_edited_at').notNull(),
+});
+
 // Per-channel team_join behavior: whether the bot posts its "everybody
 // welcome @X" message in the channel after inviting a new member. Row absent
 // means the default (show the welcome message), so only channels an admin has

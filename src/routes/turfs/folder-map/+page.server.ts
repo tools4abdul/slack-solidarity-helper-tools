@@ -4,8 +4,9 @@ import { db } from '$lib/server/db.js';
 import { PRIMARY_CAMPAIGN_ID, vanCampaigns, type VanCampaignRow } from '$lib/server/schema.js';
 import { vanClientFor } from '$lib/server/van-env.js';
 import { campaignName, loadCampaign } from '$lib/server/van/campaigns.js';
-import { loadVanChapterFolders } from '$lib/server/settings.js';
+import { loadTurfCustomChapters, loadVanChapterFolders } from '$lib/server/settings.js';
 import { getSolidarityChapters } from '$lib/server/autocomplete-sources.js';
+import { labelCustomChapters } from '$lib/chapter-list.js';
 import {
 	CAMPAIGN_STATES,
 	MAP_TILE_API_KEY,
@@ -249,9 +250,10 @@ async function loadFolderData(
 	// degrade rather than failing the page: with no chapter list the map and the
 	// counties still answer the question the page is for, and the editor says
 	// why it is empty instead of offering an empty dropdown.
-	const [mappingResult, chapterResult, snapshotResult] = await Promise.allSettled([
+	const [mappingResult, chapterResult, customResult, snapshotResult] = await Promise.allSettled([
 		loadVanChapterFolders(db, campaign.id),
 		getSolidarityChapters(SOLIDARITY_API_TOKEN),
+		loadTurfCustomChapters(db),
 		snapshot(campaign, force),
 	]);
 
@@ -268,12 +270,32 @@ async function loadFolderData(
 		}
 	}
 
-	const chapters =
+	// Solidarity's chapters plus the admin's turf-only ones, which still list
+	// when Solidarity is down — they are ours, not its.
+	const solidarity =
 		chapterResult.status === 'fulfilled'
 			? chapterResult.value.items.map((c) => ({ id: c.id, name: c.name }))
 			: [];
+	const chapters = [
+		...solidarity,
+		...(customResult.status === 'fulfilled'
+			? labelCustomChapters(
+					customResult.value,
+					solidarity.map((c) => c.name),
+				).map((c) => ({ id: c.chapterId, name: c.name }))
+			: []),
+	].sort((a, b) => a.name.localeCompare(b.name));
+	// Either list failing is said, not swallowed: a custom chapter missing from
+	// the picker with no reason given reads as one that was deleted.
 	const chaptersError =
-		chapterResult.status === 'rejected' ? errMessage(chapterResult.reason) : null;
+		[
+			chapterResult.status === 'rejected' ? errMessage(chapterResult.reason) : null,
+			customResult.status === 'rejected'
+				? `custom chapters: ${errMessage(customResult.reason)}`
+				: null,
+		]
+			.filter((e) => e !== null)
+			.join('; ') || null;
 	const mappingError =
 		mappingResult.status === 'rejected' ? errMessage(mappingResult.reason) : null;
 

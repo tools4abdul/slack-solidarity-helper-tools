@@ -166,6 +166,22 @@ describe('/turfs load', () => {
 		]);
 	});
 
+	// Turf-only chapters an admin named in settings sit in the same picker,
+	// sorted in, and open by their negative id like any other chapter.
+	it('lists and opens a turf-only chapter', async () => {
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
+			chapterChannelMap: CHAPTERS,
+			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
+			vanTurfClaimTtlHours: 48,
+			vanTurfMaxConcurrentClaims: 2,
+		});
+
+		const data = await run(event({ slackUserId: 'U1', isAdmin: false }, 'chapter=-1') as never);
+		expect(data.chapters[0]).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+		expect(data.chapter).toEqual({ chapterId: -1, name: 'Ann Arbor outreach' });
+	});
+
 	describe('signed out', () => {
 		beforeEach(() => {
 			mockSettings.mockResolvedValue({

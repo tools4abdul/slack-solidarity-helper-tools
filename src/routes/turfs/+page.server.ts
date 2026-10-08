@@ -97,10 +97,13 @@ function tileSource() {
 function offeredChapterIds(settings: {
 	chapterChannelMap: Array<{ chapterId: number; name: string }>;
 	turfHiddenChapterIds: ReadonlySet<number>;
+	turfCustomChapters: Array<{ chapterId: number; name: string }>;
 }): number[] {
-	return turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds).map(
-		(c) => c.chapterId,
-	);
+	return turfChapters(
+		settings.chapterChannelMap,
+		settings.turfHiddenChapterIds,
+		settings.turfCustomChapters,
+	).map((c) => c.chapterId);
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -194,7 +197,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// /turfs/activity reintroduce the bug in a form that broke hydration. Less
 	// the chapters an admin has hidden from turf, which then read as unknown
 	// below — a `?chapter=` link to one opens the picker, not the chapter.
-	const chapters = turfChapters(settings.chapterChannelMap, settings.turfHiddenChapterIds);
+	const chapters = turfChapters(
+		settings.chapterChannelMap,
+		settings.turfHiddenChapterIds,
+		settings.turfCustomChapters,
+	);
 
 	// What the turf sweeps would have DMed a Google or Apple holder, who has no
 	// Slack (User Story 5 of specs/013-google-sso-login). Slack holders got theirs as

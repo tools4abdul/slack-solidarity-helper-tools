@@ -12,6 +12,7 @@
 	import ExcludedChaptersEditor from '$lib/components/settings/ExcludedChaptersEditor.svelte';
 	import ZipExcludedChaptersEditor from '$lib/components/settings/ZipExcludedChaptersEditor.svelte';
 	import TurfHiddenChaptersEditor from '$lib/components/settings/TurfHiddenChaptersEditor.svelte';
+	import TurfCustomChaptersEditor from '$lib/components/settings/TurfCustomChaptersEditor.svelte';
 	import { chaptersFromChannelMap } from '$lib/chapter-list.js';
 	import VanTurfCheckoutEditor from '$lib/components/settings/VanTurfCheckoutEditor.svelte';
 	import VanCampaignsList from '$lib/components/settings/VanCampaignsList.svelte';
@@ -260,6 +261,15 @@
 				chapters={turfPickerChapters}
 				hiddenIds={[...data.settings.turfHiddenChapterIds]}
 			/>
+		</section>
+
+		<section
+			id={SECTION_IDS.turfCustomChapters}
+			data-settings-anchor={SECTION_IDS.turfCustomChapters}
+			tabindex="-1"
+		>
+			<h2>Custom /turfs chapters</h2>
+			<TurfCustomChaptersEditor chapters={data.settings.turfCustomChapters} />
 		</section>
 
 		<section

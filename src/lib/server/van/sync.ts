@@ -187,10 +187,17 @@ export async function runCatalogSync(
 	// The chapter carried here is the first one mapped to the folder, in mapping
 	// order. It is the row's display label — who can SEE the turf is every
 	// chapter in `chapters`, which this loop no longer has to care about.
+	//
+	// A real chapter outranks an admin's turf-only one (negative id, see
+	// turf_custom_chapters) whatever the order: the label is what the doors
+	// board credits, and mapping a custom entry onto a chapter's folder must
+	// not move that chapter's doors to it. A custom entry labels only a folder
+	// no real chapter is mapped to.
 	const folderOwners = new Map<number, { chapterId: number; chapterName: string }>();
 	for (const mapping of mappings) {
 		for (const folderId of mapping.folderIds) {
-			if (!folderOwners.has(folderId)) {
+			const current = folderOwners.get(folderId);
+			if (!current || (current.chapterId < 0 && mapping.chapterId > 0)) {
 				folderOwners.set(folderId, {
 					chapterId: mapping.chapterId,
 					chapterName: mapping.chapterName,

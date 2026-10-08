@@ -86,6 +86,7 @@ const settingsFixture = {
 	reportExcludedChapterIds: new Set<number>(),
 	zipExcludedChapterIds: new Set<number>(),
 	turfHiddenChapterIds: new Set<number>(),
+	turfCustomChapters: [],
 	slackTrackingChannelId: 'C_TRACK',
 	slackGrowthReportChannelId: 'C_GROWTH',
 	slackMobilizeSyncChannelId: 'C_GROWTH',

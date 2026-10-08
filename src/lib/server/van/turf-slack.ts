@@ -434,6 +434,7 @@ async function passGates(db: Db, ctx: TurfRequestContext, now: number): Promise<
 	const chapters: ChapterRef[] = turfChapters(
 		settings.chapterChannelMap,
 		settings.turfHiddenChapterIds,
+		settings.turfCustomChapters,
 	);
 
 	// What the volunteer typed wins. With nothing typed, and no chapter carried

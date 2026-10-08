@@ -3,11 +3,16 @@ import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db.js';
 import { SOLIDARITY_API_TOKEN } from '$lib/server/env.js';
 import { sheetsServiceAccountEmail } from '$lib/server/google-env.js';
-import { loadVanChapterFolders, loadVanSheetTargets } from '$lib/server/settings.js';
+import {
+	loadTurfCustomChapters,
+	loadVanChapterFolders,
+	loadVanSheetTargets,
+} from '$lib/server/settings.js';
 import { credentialStatus, vanExportJobTypeIdFor } from '$lib/server/van-env.js';
 import { campaignName, loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadCampaignStatus } from '$lib/server/van/campaign-status-store.js';
 import { getSolidarityChapters } from '$lib/server/autocomplete-sources.js';
+import { labelCustomChapters } from '$lib/chapter-list.js';
 import { errMessage } from '$lib/err-message.js';
 import { campaignChip } from '$lib/van/campaign-list.js';
 
@@ -25,10 +30,11 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 	const campaign = Number.isInteger(id) && id > 0 ? await loadCampaign(db, id) : null;
 	if (!campaign) error(404, 'No such campaign');
 
-	const [status, mappings, targets, chapters] = await Promise.all([
+	const [status, mappings, targets, customChapters, chapters] = await Promise.all([
 		loadCampaignStatus(db, campaign.id, new Date()),
 		loadVanChapterFolders(db, campaign.id),
 		loadVanSheetTargets(db, campaign.id),
+		loadTurfCustomChapters(db),
 		// The folder editor's chapter picker. Not page-fatal: without it the
 		// rest of the page still answers what it is for.
 		getSolidarityChapters(SOLIDARITY_API_TOKEN).then(
@@ -38,6 +44,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 	]);
 
 	const name = campaignName(campaign);
+	const solidarityChapters = chapters.ok ? chapters.items : [];
 	return {
 		pageTitle: `${name} · VAN campaign`,
 		campaign: {
@@ -64,7 +71,14 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		status,
 		mappings,
 		targets,
-		chapters: chapters.ok ? chapters.items : null,
+		// The admin's turf-only chapters list even when Solidarity is down.
+		chapters: [
+			...solidarityChapters,
+			...labelCustomChapters(
+				customChapters,
+				solidarityChapters.map((c) => c.name),
+			).map((c) => ({ id: c.chapterId, name: c.name })),
+		].sort((a, b) => a.name.localeCompare(b.name)),
 		chaptersError: chapters.ok ? null : chapters.error,
 		sheetsServiceAccountEmail: sheetsServiceAccountEmail(),
 	};

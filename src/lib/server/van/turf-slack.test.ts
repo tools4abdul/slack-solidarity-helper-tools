@@ -237,8 +237,24 @@ describe('turfListMessage', () => {
 		});
 		const msg = await turfListMessage(makeDb(), { slackUserId: freshUser(), chapterId: 72 });
 		expect(mockLoadChapterTurfs).not.toHaveBeenCalled();
-		expect(body(msg)).toContain('Washtenaw County');
+		expect(body(msg)).toContain('pick your county');
 		expect(body(msg)).not.toContain('Wayne County');
+	});
+
+	// An admin's turf-only chapter (negative id) opens like a real one from a
+	// button carrying it. The picker itself is a link to the web page, which
+	// lists it.
+	it('opens a turf-only chapter', async () => {
+		mockSettings.mockResolvedValue({
+			turfHiddenChapterIds: new Set<number>(),
+			chapterChannelMap: CHANNEL_MAP,
+			turfCustomChapters: [{ chapterId: -1, name: 'Ann Arbor outreach' }],
+		});
+		await turfListMessage(makeDb(), { slackUserId: freshUser(), chapterId: -1 });
+		expect(mockLoadChapterTurfs).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ chapterId: -1 }),
+		);
 	});
 
 	it('ignores a zip→chapter mapping that is not a real chapter', async () => {

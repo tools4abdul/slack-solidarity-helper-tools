@@ -113,7 +113,7 @@ A bare `/turfs` finds your Solidarity account the same way `/members` does — a
 link first, then your Slack email — and never uses the channel it was typed in. If it can't
 place you (no account, no address or chapter on it, or nothing that maps to a county with
 turf checkout), the reply says which. Whenever no county resolves — including a typed
-location that maps to none — it asks for a ZIP or address, with links to each county's map:
+location that maps to none — it asks for a ZIP or address, with a link to the `/turfs` county picker:
 the same gate the web page applies, where no county means no turf rather than a default one.
 
 **Anyone in the workspace can run it**, minus the block list at **Settings → Blocked from

@@ -12,6 +12,27 @@ export interface ChapterOption {
 }
 
 /**
+ * An admin's turf-only chapters, labelled so none reads the same as a real
+ * chapter beside it in a picker: one whose name matches any of `realNames`,
+ * ignoring case, becomes "<name> (custom)".
+ *
+ * Adding a name checks it against the real chapters, but that check is only as
+ * good as the day it ran — a Solidarity chapter renamed later, or a chapter
+ * newly given a Slack channel, can still arrive under the same name. Labelling
+ * where the lists meet covers that whenever it happens, and stops as soon as
+ * the names differ again, with nothing stored to clean up.
+ */
+export function labelCustomChapters(
+	custom: ReadonlyArray<ChapterOption>,
+	realNames: readonly string[],
+): ChapterOption[] {
+	const real = new Set(realNames.map((n) => n.trim().toLocaleLowerCase()));
+	return custom.map((c) =>
+		real.has(c.name.trim().toLocaleLowerCase()) ? { ...c, name: `${c.name} (custom)` } : c,
+	);
+}
+
+/**
  * Deduplicate a channel map down to its chapters, sorted by name.
  *
  * `chapter_channel_map` is keyed by CHANNEL, so a chapter with two channels
@@ -36,12 +57,21 @@ export interface ChapterOption {
  *
  * First row wins on the name. The two agree in practice, and picking arbitrarily
  * between two spellings of one chapter would make the order jitter per request.
+ *
+ * `custom` is the admin's turf-only chapters (turf_custom_chapters), which have
+ * negative ids and no channel, merged in and sorted with the rest — labelled by
+ * labelCustomChapters where a name collides.
  */
 export function chaptersFromChannelMap(
 	entries: ReadonlyArray<{ chapterId: number; name: string }>,
+	custom: ReadonlyArray<ChapterOption> = [],
 ): ChapterOption[] {
 	const byChapterId = new Map<number, ChapterOption>();
-	for (const entry of entries) {
+	const labelled = labelCustomChapters(
+		custom,
+		entries.map((e) => e.name),
+	);
+	for (const entry of [...entries, ...labelled]) {
 		if (!byChapterId.has(entry.chapterId)) {
 			byChapterId.set(entry.chapterId, { chapterId: entry.chapterId, name: entry.name });
 		}
@@ -52,7 +82,8 @@ export function chaptersFromChannelMap(
 /**
  * The chapters a volunteer can pick on /turfs and in the Slack `/turfs`
  * command: every chapter in the channel map, less the ones an admin has hidden
- * from turf (turf_hidden_chapters). Hiding is turf-only — the same chapter
+ * from turf (turf_hidden_chapters), plus the admin's turf-only chapters
+ * (turf_custom_chapters). Hiding is turf-only — the same chapter
  * keeps its Slack channels and its place in the reports, which read the map
  * directly.
  *
@@ -64,6 +95,7 @@ export function chaptersFromChannelMap(
 export function turfChapters(
 	entries: ReadonlyArray<{ chapterId: number; name: string }>,
 	hiddenChapterIds: ReadonlySet<number>,
+	custom: ReadonlyArray<ChapterOption> = [],
 ): ChapterOption[] {
-	return chaptersFromChannelMap(entries).filter((c) => !hiddenChapterIds.has(c.chapterId));
+	return chaptersFromChannelMap(entries, custom).filter((c) => !hiddenChapterIds.has(c.chapterId));
 }
