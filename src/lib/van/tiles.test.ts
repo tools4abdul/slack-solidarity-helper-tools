@@ -12,6 +12,7 @@ import {
 	tileUrl,
 	toWorld,
 	withTileApiKey,
+	splitLabelLayers,
 	scaleBarStep,
 	SCALE_STEPS,
 } from './tiles.js';
@@ -365,6 +366,35 @@ describe('withTileApiKey', () => {
 		expect(
 			tileUrl({ z: 13, x: 2482, y: 3040, left: 0, top: 0, size: TILE_SIZE, key: 'k' }, template),
 		).toBe('https://basemaps.cartocdn.com/light_all/13/2482/3040@2x.png?key=a%20b%26c');
+	});
+});
+
+describe('splitLabelLayers', () => {
+	it('splits Positron into a no-labels base and a labels-only overlay', () => {
+		expect(splitLabelLayers(TILE_URL_TEMPLATE)).toEqual({
+			base: 'https://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}@2x.png',
+			labels: 'https://basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}@2x.png',
+		});
+	});
+
+	it('keeps the API key on both layers', () => {
+		const split = splitLabelLayers(withTileApiKey(TILE_URL_TEMPLATE, 'abc'));
+		expect(split?.base).toMatch(/light_nolabels\/.*\?key=abc$/);
+		expect(split?.labels).toMatch(/light_only_labels\/.*\?key=abc$/);
+	});
+
+	it('handles the rastertiles path CARTO also serves', () => {
+		expect(
+			splitLabelLayers('https://a.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png')
+				?.labels,
+		).toBe('https://a.basemaps.cartocdn.com/rastertiles/light_only_labels/{z}/{x}/{y}.png');
+	});
+
+	it('returns null for other CARTO styles and other providers', () => {
+		expect(splitLabelLayers('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png')).toBeNull();
+		expect(splitLabelLayers('https://tiles.stadiamaps.test/light_all/{z}/{x}/{y}.png')).toBeNull();
+		expect(splitLabelLayers('https://cartocdn.com.evil.test/light_all/{z}/{x}/{y}.png')).toBeNull();
+		expect(splitLabelLayers('/local/light_all/{z}/{x}/{y}.png')).toBeNull();
 	});
 });
 

@@ -38,6 +38,7 @@
 		MIN_ZOOM,
 		TILE_ATTRIBUTION,
 		TILE_URL_TEMPLATE,
+		splitLabelLayers,
 		tileUrl,
 	} from '$lib/van/tiles.js';
 	import { statusLabel, type VolunteerStatus } from '$lib/van/turf-status.js';
@@ -113,6 +114,31 @@
 	/** Above this projected size there's room for a turf number. Higher than
 	 *  PIN_BELOW_PX because a 20px polygon can be drawn but not labelled. */
 	const LABEL_ABOVE_PX = 34;
+
+	/** Turf fills are drawn only as a band inside each hull's edge, so the
+	 *  streets in the middle of a turf — and wherever hulls overlap — stay
+	 *  visible. Full strength for the first 16px, then two 4px steps a third
+	 *  of the way at a time down to BAND_CENTRE, the share of the normal fill
+	 *  left tinting the middle so it still reads as inside a turf. */
+	const BAND_CENTRE = 0.15;
+
+	/** The steps as nested strokes on the hull's own path, widest first so
+	 *  each narrower one paints over it. A stroke straddles the edge, so its
+	 *  width is twice the step's distance in from it; the half outside the
+	 *  hull is never drawn. Opaque greys rather than white at partial opacity,
+	 *  because overlapping translucent strokes would compound; the luminance
+	 *  mask reads each grey as that step's strength. */
+	const BAND_STEPS = [
+		{ insetPx: 24, strength: BAND_CENTRE + (1 - BAND_CENTRE) / 3 },
+		{ insetPx: 20, strength: BAND_CENTRE + ((1 - BAND_CENTRE) * 2) / 3 },
+		{ insetPx: 16, strength: 1 },
+	].map((step) => ({ width: step.insetPx * 2, grey: maskGrey(step.strength) }));
+	const BAND_CENTRE_GREY = maskGrey(BAND_CENTRE);
+
+	function maskGrey(strength: number): string {
+		const v = Math.round(strength * 255);
+		return `rgb(${v} ${v} ${v})`;
+	}
 
 	// With a location, open on the volunteer plus the nearest few turfs: a
 	// chapter can run 150 miles across and framing the whole thing shows a
@@ -223,6 +249,11 @@
 	const tilesBroken = $derived(
 		view.tiles.length > 0 && view.tiles.every((t) => failedTiles[t.key]),
 	);
+
+	/** Positron split into a label-free base and a labels overlay drawn above
+	 *  the turfs; null for a provider that doesn't publish the split. */
+	const layers = $derived(splitLabelLayers(tiles.urlTemplate));
+	let failedLabelTiles = $state<Record<string, boolean>>({});
 
 	/** "Ward 3 Turf 01" → "01". The card carries the full name; the map only
 	 *  needs to tell neighbours apart. */
@@ -671,6 +702,8 @@
 	 *  "Show all" is meaningful. Falls out of the cull for free. */
 	const hasOffscreenTurfs = $derived(rendered.length < turfs.length);
 
+	const selectedItem = $derived(rendered.find((item) => item.turf.turfId === selectedId));
+
 	function statusClass(turf: MappableTurf): string {
 		// Two classes, doing two jobs: the status sets the hue, the shade sets
 		// how strongly it is filled. Keeping them separate is what lets the
@@ -746,7 +779,7 @@
 				<g class="basemap">
 					{#each view.tiles as tile (tile.key)}
 						<image
-							href={tileUrl(tile, tiles.urlTemplate)}
+							href={tileUrl(tile, layers?.base ?? tiles.urlTemplate)}
 							x={tile.left}
 							y={tile.top}
 							width={tile.size}
@@ -773,7 +806,30 @@
 						}}
 					>
 						{#if item.points}
-							<polygon points={item.points} />
+							<!-- Luminance mask: white along the inside of the edge, stepping
+							     down to BAND_CENTRE in the middle. Paths rather than
+							     polygons so none of the .turf polygon rules reach them. -->
+							<mask
+								id="turf-band-{item.turf.turfId}"
+								class="band-mask"
+								maskUnits="userSpaceOnUse"
+								color-interpolation="sRGB"
+								x={-mapWidth}
+								y={-mapHeight}
+								width={mapWidth * 3}
+								height={mapHeight * 3}
+							>
+								<path d="M{item.points}Z" fill={BAND_CENTRE_GREY} />
+								{#each BAND_STEPS as step (step.width)}
+									<path
+										class="band-step"
+										d="M{item.points}Z"
+										stroke={step.grey}
+										stroke-width={step.width}
+									/>
+								{/each}
+							</mask>
+							<polygon points={item.points} mask="url(#turf-band-{item.turf.turfId})" />
 						{:else}
 							<!-- Too small to read as a shape, or a degenerate hull
 							     (collinear doors, or too few). Either way: a pin, never a
@@ -783,13 +839,54 @@
 							     path anyway. -->
 							<circle cx={item.x} cy={item.y} r="7" />
 						{/if}
+					</g>
+				{/each}
+
+				<!-- The selected turf's outline, redrawn above every turf so a
+				     neighbour's band can't cover it. -->
+				{#if selectedItem}
+					<g class="selected-outline" aria-hidden="true">
+						{#each ['halo', 'core'] as part (part)}
+							{#if selectedItem.points}
+								<polygon class={part} points={selectedItem.points} />
+							{:else}
+								<circle class={part} cx={selectedItem.x} cy={selectedItem.y} r="7" />
+							{/if}
+						{/each}
+					</g>
+				{/if}
+
+				{#if layers}
+					<!-- Street names above every turf fill, so no stack of hulls can
+					     bury them. Not counted toward tilesBroken: losing the names
+					     still leaves a usable map. -->
+					<g class="basemap street-labels" aria-hidden="true">
+						{#each view.tiles as tile (tile.key)}
+							{#if !failedLabelTiles[tile.key]}
+								<image
+									href={tileUrl(tile, layers.labels)}
+									x={tile.left}
+									y={tile.top}
+									width={tile.size}
+									height={tile.size}
+									onerror={() => (failedLabelTiles[tile.key] = true)}
+								/>
+							{/if}
+						{/each}
+					</g>
+				{/if}
+
+				<!-- Turf numbers sit above the street names: they are the one thing
+				     on the map a volunteer taps by. -->
+				<g class="turf-labels" aria-hidden="true">
+					{#each rendered as item (item.turf.turfId)}
 						{#if item.label}
 							<text x={item.x} y={item.y} text-anchor="middle" dominant-baseline="central">
 								{item.label}
 							</text>
 						{/if}
-					</g>
-				{/each}
+					{/each}
+				</g>
 
 				<g class="me" aria-hidden="true">
 					{#if me}
@@ -1066,7 +1163,7 @@
 	   so the label became dark navy behind a dark scrim on light tiles. Neither
 	   token can be used here: both change meaning with the theme, and the map
 	   underneath does not. */
-	.turf text {
+	.turf-labels text {
 		font-size: 13px;
 		font-weight: 700;
 		fill: var(--color-header-text);
@@ -1099,9 +1196,42 @@
 
 	.turf.is-selected polygon,
 	.turf.is-selected circle {
-		stroke: var(--color-near-black);
-		stroke-width: 4;
 		fill-opacity: calc(var(--turf-fill) + 0.2);
+	}
+
+	/* Two-tone, because no single colour stands out on every turf: black
+	   vanished on deep purple, white would on the pale end of the ramp and
+	   the basemap. A paper halo under a near-black core contrasts with
+	   whatever is beneath it. Fixed rather than themed for the same reason
+	   as the labels: the map underneath does not change with the theme. */
+	.selected-outline {
+		pointer-events: none;
+	}
+
+	.selected-outline .halo,
+	.selected-outline .core {
+		fill: none;
+		stroke-linejoin: round;
+	}
+
+	.selected-outline .halo {
+		stroke: var(--color-header-text);
+		stroke-width: 8;
+	}
+
+	.selected-outline .core {
+		stroke: var(--color-near-black);
+		stroke-width: 3;
+	}
+
+	/* Greys and widths come from the markup (BAND_STEPS); this only keeps the
+	   steps from filling and their inner edges from spiking at corners. The
+	   full-strength step also covers the 2–4px outline, which keeps the
+	   outline whole. sRGB on the mask so every browser reads a grey as the
+	   same strength. */
+	.band-mask .band-step {
+		fill: none;
+		stroke-linejoin: round;
 	}
 
 	/* Hue answers "can I take this?"; fill answers "how much is left in it?".
