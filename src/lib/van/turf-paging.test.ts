@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+	coarseNear,
 	parseBounds,
+	parseNear,
+	parseTurfSort,
 	selectNearest,
 	withinBounds,
 	TURFS_PER_PAYLOAD,
@@ -38,6 +41,38 @@ describe('selectNearest', () => {
 		const { selected } = selectNearest(rows, { location: HERE });
 		expect(selected.map((t) => t.name)).toEqual(['Near', 'No geometry']);
 		expect(selected).toHaveLength(2);
+	});
+
+	describe('density', () => {
+		const density = new Map<number, number | null>([
+			[1, 50],
+			[2, 900],
+			[3, null],
+			[4, 900],
+		]);
+		const byDensity = (row: Locatable) => density.get(row.turfId) ?? null;
+
+		it('puts the densest first, and turf with no density last', () => {
+			const rows = [
+				turf(1, 'Sparse', 42.281, -83.741),
+				turf(2, 'Dense', 42.6, -83.2),
+				turf(3, 'No hull', 42.281, -83.741),
+			];
+			const { selected } = selectNearest(rows, { density: byDensity });
+			expect(selected.map((t) => t.name)).toEqual(['Dense', 'Sparse', 'No hull']);
+		});
+
+		it('breaks a tie by distance', () => {
+			const rows = [turf(2, 'Dense far', 42.6, -83.2), turf(4, 'Dense near', 42.281, -83.741)];
+			const { selected } = selectNearest(rows, { location: HERE, density: byDensity });
+			expect(selected.map((t) => t.name)).toEqual(['Dense near', 'Dense far']);
+		});
+
+		it('ranks before the cut, not after it', () => {
+			const rows = [turf(1, 'Alpha', 1, 1), turf(3, 'Bravo', 2, 2), turf(2, 'Zulu', 3, 3)];
+			const { selected } = selectNearest(rows, { density: byDensity, limit: 1 });
+			expect(selected.map((t) => t.name)).toEqual(['Zulu']);
+		});
 	});
 
 	it('caps the payload and reports what it left out', () => {
@@ -259,5 +294,35 @@ describe('selectNearest paging', () => {
 
 	it('leaves the default behaviour untouched', () => {
 		expect(selectNearest(rows, { limit: 5 })).toEqual(selectNearest(rows, { limit: 5, offset: 0 }));
+	});
+});
+
+describe('parseTurfSort', () => {
+	it('reads densest, and anything else as nearest', () => {
+		expect(parseTurfSort('densest')).toBe('densest');
+		expect(parseTurfSort('nearest')).toBe('nearest');
+		expect(parseTurfSort(null)).toBe('nearest');
+		expect(parseTurfSort('DROP TABLE')).toBe('nearest');
+	});
+});
+
+describe('parseNear', () => {
+	it('reads lat,lng and rounds it to about a kilometre', () => {
+		expect(parseNear('42.28123,-83.74876')).toEqual({ lat: 42.28, lng: -83.75 });
+	});
+
+	it.each([null, '', 'nope', '42', '42,-83,1', '91,-83', '42,-181', 'NaN,1'])(
+		'is null for %s',
+		(raw) => {
+			expect(parseNear(raw)).toBeNull();
+		},
+	);
+});
+
+describe('coarseNear', () => {
+	it('rounds to the precision parseNear keeps, so the two agree', () => {
+		const point = coarseNear({ lat: 42.281234, lng: -83.745678 });
+		expect(point).toEqual({ lat: 42.28, lng: -83.75 });
+		expect(parseNear(`${point.lat},${point.lng}`)).toEqual(point);
 	});
 });

@@ -44,6 +44,7 @@ import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
 import type { CampaignBadges, TurfView } from '$lib/van/turf-view.js';
 import { TILE_ATTRIBUTION, TILE_URL_TEMPLATE, withTileApiKey } from '$lib/van/tiles.js';
 import type { LatLng } from '$lib/van/geometry.js';
+import { parseTurfSort, type TurfSort } from '$lib/van/turf-paging.js';
 
 // The volunteer turf page.
 //
@@ -183,6 +184,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			campaignBadges: null as CampaignBadges | null,
 			location: null as LatLng | null,
 			zip: null as string | null,
+			sort: 'nearest' as TurfSort,
 			tiles,
 			claimTtlHours: options.ttlHours,
 		};
@@ -229,6 +231,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		campaignBadges: null as CampaignBadges | null,
 		location: null as LatLng | null,
 		zip: null as string | null,
+		sort: 'nearest' as TurfSort,
 		tiles,
 		claimTtlHours: options.ttlHours,
 	};
@@ -292,6 +295,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// sorting, not the page.
 	const zip = url.searchParams.get('zip');
 	const location = zip ? await lookupZipCentroid(db, zip) : null;
+	// Applied before the payload cut, not just in the browser: a chapter of
+	// 2,000 turfs sends 600, and the densest might be in neither the nearest
+	// 600 nor the first 600 by name.
+	const sort = parseTurfSort(url.searchParams.get('sort'));
 
 	// Retired turf is excluded except when the viewer still holds it, and the
 	// viewer's own turf is pinned to the payload whatever the distance sort
@@ -302,6 +309,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		chapterId: chapter.chapterId,
 		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
 		location,
+		sort,
 		includeHeldByViewer: true,
 		// So `claimable` and the at-the-limit message reflect what the claim
 		// route will actually enforce — the map and the button must not
@@ -333,6 +341,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		campaignBadges,
 		location,
 		zip: location ? zip : null,
+		sort,
 		tiles,
 		// What the page tells a volunteer they are getting. Sourced from the same
 		// setting the claim route enforces, so the promise on the button and the

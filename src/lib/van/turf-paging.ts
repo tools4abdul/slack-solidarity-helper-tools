@@ -38,6 +38,16 @@ import { haversineMeters, type BoundingBox, type LatLng } from './geometry.js';
  */
 export const TURFS_PER_PAYLOAD = 600;
 
+/** How the volunteer asked for the list: nearest first, or the most doors per
+ *  area of hull first (see `doorDensity`). Carried as `?sort=` on the page and
+ *  on /api/turfs, so the turf the server picks is the turf the list ranks. */
+export type TurfSort = 'nearest' | 'densest';
+
+/** `?sort=` → a TurfSort. Anything but `densest` is the default, nearest. */
+export function parseTurfSort(raw: string | null): TurfSort {
+	return raw === 'densest' ? 'densest' : 'nearest';
+}
+
 /**
  * What every selector needs to place a turf.
  *
@@ -88,6 +98,12 @@ function pointOf(row: Locatable): LatLng | null {
 /**
  * The rows to serialise, nearest first when we know where the volunteer is.
  *
+ * With `density`, densest first instead, then nearest among equals. In a
+ * chapter larger than the payload this is the whole point of passing it: the
+ * browser can only rank the turf it was sent, so ordering the 600 nearest by
+ * density would hide every dense turf past the cut. Turf `density` has no
+ * figure for (no hull) sorts after every turf it does.
+ *
  * Without a location there is no meaningful "nearest", so it falls back to
  * name order — stable and predictable, which matters more than clever when the
  * volunteer is going to scan the list anyway.
@@ -120,6 +136,7 @@ export function selectNearest<T extends Locatable>(
 		limit?: number;
 		offset?: number;
 		alwaysInclude?: Iterable<number>;
+		density?: (row: T) => number | null;
 	} = {},
 ): Selection<T> {
 	const { location = null, limit = TURFS_PER_PAYLOAD } = options;
@@ -133,20 +150,30 @@ export function selectNearest<T extends Locatable>(
 	const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
 
 	const ordered = [...rows];
+	// Worked out once per row rather than per comparison: a density parses the
+	// row's hull, and a sort compares each row many times.
+	const density = new Map<number, number>();
+	if (options.density) {
+		for (const row of ordered) {
+			density.set(row.turfId, options.density(row) ?? -Infinity);
+		}
+	}
+	const distance = new Map<number, number>();
 	if (location) {
-		const distance = new Map<number, number>();
 		for (const row of ordered) {
 			const point = pointOf(row);
 			distance.set(row.turfId, point ? haversineMeters(location, point) : Infinity);
 		}
-		ordered.sort(
-			(a, b) =>
-				(distance.get(a.turfId) ?? Infinity) - (distance.get(b.turfId) ?? Infinity) ||
-				a.name.localeCompare(b.name),
-		);
-	} else {
-		ordered.sort((a, b) => a.name.localeCompare(b.name));
 	}
+	// Each key is 0 when it is not in play. A missing key on both sides is
+	// -Infinity minus -Infinity, NaN, which is falsy and falls through to the
+	// next key the same way.
+	ordered.sort(
+		(a, b) =>
+			(density.get(b.turfId) ?? 0) - (density.get(a.turfId) ?? 0) ||
+			(distance.get(a.turfId) ?? 0) - (distance.get(b.turfId) ?? 0) ||
+			a.name.localeCompare(b.name),
+	);
 
 	// Pinned only on the FIRST page. Repeating them on every page of the Slack
 	// list would hand the same turf back under each "More" press, and the page
@@ -196,4 +223,33 @@ export function parseBounds(raw: string | null): BoundingBox | null {
 	if (minLat < -90 || maxLat > 90 || minLng < -180 || maxLng > 180) return null;
 	if (minLat > maxLat || minLng > maxLng) return null;
 	return { minLat, minLng, maxLat, maxLng };
+}
+
+/** Decimal places a `near` point keeps: about a kilometre. */
+const NEAR_PLACES = 2;
+
+/** A point rounded for `near`. The browser rounds before it sends, and
+ *  parseNear rounds again on arrival — the server is the boundary, and the
+ *  client is not trusted to have done it. */
+export function coarseNear(point: LatLng): LatLng {
+	const f = 10 ** NEAR_PLACES;
+	return { lat: Math.round(point.lat * f) / f, lng: Math.round(point.lng * f) / f };
+}
+
+/**
+ * Parse a `lat,lng` query parameter — where the volunteer is, for picking the
+ * nearest turf before the payload cut. Null for anything malformed or out of
+ * range, like parseBounds.
+ *
+ * Rounded to about a kilometre on arrival. That is plenty to pick the nearest
+ * 600 of a chapter's turf, and the browser re-sorts them by its own exact fix;
+ * the server never needs, and so never holds, a volunteer's front door.
+ */
+export function parseNear(raw: string | null): LatLng | null {
+	if (!raw) return null;
+	const parts = raw.split(',').map((n) => Number(n.trim()));
+	if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) return null;
+	const [lat, lng] = parts as [number, number];
+	if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+	return coarseNear({ lat, lng });
 }

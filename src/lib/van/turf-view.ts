@@ -16,7 +16,7 @@
 //   2. The holder's name, for non-admins. See turf-status.ts.
 //   3. The MiniVAN list number, unless you hold the turf. See below.
 
-import { boundingBox, type BoundingBox, type LatLng } from './geometry.js';
+import { boundingBox, hullAreaSquareMeters, type BoundingBox, type LatLng } from './geometry.js';
 import {
 	canClaim,
 	hoursRemaining,
@@ -330,6 +330,32 @@ export type MappableTurf = TurfView & { centre: LatLng; bounds: BoundingBox };
  *  without export-job access). */
 export function mappableTurfs(turfs: readonly TurfView[]): MappableTurf[] {
 	return turfs.filter((t): t is MappableTurf => t.centre !== null && t.bounds !== null);
+}
+
+/**
+ * The smallest hull given a density at all, in square metres — about one city
+ * block. Below it the figure measures how the hull was drawn, not the street:
+ * a single apartment building, or a cluster of doors geocoded onto a few
+ * points, wraps a sliver that would out-rank every real neighbourhood. Clamping
+ * such a hull up to a block still ranked a 150-door building above any street,
+ * and a building is a question of access, not walking. So these are left
+ * unranked, like turf with no hull. Shown to volunteers in the Densest note.
+ */
+const MIN_DENSITY_AREA_M2 = 10_000;
+
+/**
+ * Doors remaining per square kilometre of hull: how little walking each door
+ * costs. Null when the turf has no hull to measure, or one smaller than a block
+ * (MIN_DENSITY_AREA_M2) — it sorts after every turf that has one.
+ *
+ * Approximate on purpose. The hull is convex and drawn around every address in
+ * the cut, so it counts ground the turf does not cover, and the doors already
+ * knocked are spread across it too. It ranks turf; it does not measure it.
+ */
+export function doorDensity(turf: Pick<TurfView, 'hull' | 'doorsRemaining'>): number | null {
+	const area = hullAreaSquareMeters(turf.hull);
+	if (area < MIN_DENSITY_AREA_M2) return null;
+	return turf.doorsRemaining / (area / 1_000_000);
 }
 
 /** Parse a stored hull. Never throws: a corrupt or hand-edited hullJson must

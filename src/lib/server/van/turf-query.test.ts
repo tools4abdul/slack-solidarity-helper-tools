@@ -162,6 +162,33 @@ describe('loadChapterTurfs', () => {
 		expect(turfs.map((t) => t.name)).toEqual(['Near', 'Far']);
 	});
 
+	// The reason densest is sorted here and not only in the browser: in a
+	// chapter larger than the payload, the densest turf can be past the cut by
+	// name and by distance alike.
+	it('picks the densest turf before cutting when sort is densest', async () => {
+		const square = (side: number) =>
+			JSON.stringify([
+				{ lat: 42.28, lng: -83.74 },
+				{ lat: 42.28, lng: -83.74 + side },
+				{ lat: 42.28 + side, lng: -83.74 + side },
+				{ lat: 42.28 + side, lng: -83.74 },
+			]);
+		const rows = [
+			turfRow({ turfId: 1, name: 'A sprawl', hullJson: square(0.02), doorCount: 250 }),
+			turfRow({ turfId: 2, name: 'B no shape', hullJson: null, doorCount: 250 }),
+			turfRow({ turfId: 3, name: 'Z packed', hullJson: square(0.002), doorCount: 250 }),
+		];
+		const { db } = makeDb([rows, []]);
+		const { turfs, omitted } = await loadChapterTurfs(db, {
+			chapterId: 71,
+			viewer: VIEWER,
+			sort: 'densest',
+			limit: 2,
+		});
+		expect(turfs.map((t) => t.name)).toEqual(['Z packed', 'A sprawl']);
+		expect(omitted).toBe(1);
+	});
+
 	it('restricts to the viewport when bounds are given', async () => {
 		const rows = [
 			turfRow({ turfId: 1, name: 'Inside', centroidLat: 42.28, centroidLng: -83.74 }),

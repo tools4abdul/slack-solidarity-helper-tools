@@ -4,6 +4,7 @@ import {
 	parseHull,
 	mappableTurfs,
 	doorsLeft,
+	doorDensity,
 	vanAssignmentBlocks,
 	regionRefreshKey,
 	type TurfRowInput,
@@ -448,5 +449,47 @@ describe('vanAssignmentBlocks', () => {
 			sheetAssignedTo: 'Jo Park',
 		});
 		expect(toTurfView(lapsed, [], ADMIN, NOW).heldBy).toBe('Jo Park');
+	});
+});
+
+describe('doorDensity', () => {
+	const square = [
+		{ lat: 42, lng: -71 },
+		{ lat: 42, lng: -70.99 },
+		{ lat: 42.01, lng: -70.99 },
+		{ lat: 42.01, lng: -71 },
+	];
+
+	it('is doors remaining per square kilometre of hull', () => {
+		// The square is ~0.92 km².
+		expect(doorDensity({ hull: square, doorsRemaining: 92 })).toBeCloseTo(100, 0);
+	});
+
+	it('is null without a hull to measure', () => {
+		expect(doorDensity({ hull: [], doorsRemaining: 50 })).toBeNull();
+	});
+
+	// A single apartment building: hundreds of doors on a hull a few metres
+	// across, which would out-rank every street in the county.
+	it('is null for a hull smaller than a block', () => {
+		const building = [
+			{ lat: 42, lng: -71 },
+			{ lat: 42, lng: -70.9995 },
+			{ lat: 42.0005, lng: -70.9995 },
+			{ lat: 42.0005, lng: -71 },
+		];
+		// ~41 m × 56 m, about 2,300 m².
+		expect(doorDensity({ hull: building, doorsRemaining: 150 })).toBeNull();
+	});
+
+	it('ranks a hull just over a block', () => {
+		const block = [
+			{ lat: 42, lng: -71 },
+			{ lat: 42, lng: -70.9988 },
+			{ lat: 42.001, lng: -70.9988 },
+			{ lat: 42.001, lng: -71 },
+		];
+		// ~99 m × 111 m, about 11,000 m².
+		expect(doorDensity({ hull: block, doorsRemaining: 11 })).toBeCloseTo(1000, -2);
 	});
 });

@@ -165,6 +165,28 @@ export function dropOutliers(points: readonly LatLng[], maxSigma = 3): LatLng[] 
 	return points.filter((_, i) => distances[i] <= limit);
 }
 
+/**
+ * Area of a hull in square metres, by the shoelace formula on a local
+ * equirectangular projection. Like `convexHull`, it treats a turf-sized patch
+ * of the earth as flat; the curvature error over a few km is far below what
+ * the convex shape already overstates.
+ *
+ * Zero for fewer than 3 points — a degenerate hull has no area to divide by.
+ */
+export function hullAreaSquareMeters(hull: readonly LatLng[]): number {
+	if (hull.length < 3) return 0;
+	const lat0 = toRad(hull.reduce((sum, p) => sum + p.lat, 0) / hull.length);
+	const xOf = (p: LatLng) => EARTH_RADIUS_M * toRad(p.lng) * Math.cos(lat0);
+	const yOf = (p: LatLng) => EARTH_RADIUS_M * toRad(p.lat);
+	let twice = 0;
+	for (let i = 0; i < hull.length; i++) {
+		const a = hull[i];
+		const b = hull[(i + 1) % hull.length];
+		twice += xOf(a) * yOf(b) - xOf(b) * yOf(a);
+	}
+	return Math.abs(twice) / 2;
+}
+
 /** Union of several bounding boxes, e.g. to frame every turf at once. */
 export function unionBounds(boxes: readonly BoundingBox[]): BoundingBox | null {
 	if (boxes.length === 0) return null;

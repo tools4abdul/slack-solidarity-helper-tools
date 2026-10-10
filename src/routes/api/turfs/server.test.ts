@@ -128,6 +128,9 @@ describe('GET /api/turfs', () => {
 		['a malformed bbox', 'chapter=71&bbox=nope'],
 		['an inverted bbox', 'chapter=71&bbox=43,-84,42,-83'],
 		['an out-of-range bbox', 'chapter=71&bbox=42,-84,91,-83'],
+		['a malformed near', 'chapter=71&near=nope'],
+		['an out-of-range near', 'chapter=71&near=91,-83'],
+		['a bad bbox beside a good near', 'chapter=71&near=42.28,-83.74&bbox=nope'],
 	])('rejects %s with 400 rather than matching everything', async (_label, query) => {
 		const res = await GET(event(VOLUNTEER, query));
 		expect(res.status).toBe(400);
@@ -213,6 +216,27 @@ describe('GET /api/turfs', () => {
 			}
 			expect(statuses).toContain(429);
 		});
+	});
+
+	// "Nearest me": the page load never sees the device's position, so in a
+	// chapter over the cap the nearest turf can be past the first 600 by name.
+	it('with near and no bbox, sends the nearest turf in the chapter', async () => {
+		stubQueries([
+			...Array.from({ length: TURFS_PER_PAYLOAD }, (_, i) =>
+				turfRow({
+					turfId: i,
+					name: `Turf ${String(i).padStart(4, '0')}`,
+					centroidLat: 45,
+					centroidLng: -85,
+				}),
+			),
+			turfRow({ turfId: 9999, name: 'Zz next door', centroidLat: 42.281, centroidLng: -83.741 }),
+		]);
+		const res = await GET(event(VOLUNTEER, 'chapter=71&near=42.28,-83.74'));
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.turfs).toHaveLength(TURFS_PER_PAYLOAD);
+		expect(body.turfs[0].name).toBe('Zz next door');
 	});
 
 	it('caps the response and reports the chapter total', async () => {
