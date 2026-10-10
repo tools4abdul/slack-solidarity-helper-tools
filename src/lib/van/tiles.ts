@@ -307,3 +307,33 @@ export function withTileApiKey(template: string, apiKey: string): string {
 	const separator = template.includes('?') ? '&' : '?';
 	return `${template}${separator}key=${encodeURIComponent(key)}`;
 }
+
+/**
+ * Splits a CARTO Positron template into its no-labels base and its
+ * labels-only overlay, or null for anything else.
+ *
+ * Street names are what a volunteer reads off the map, and they are the first
+ * thing a turf fill buries. With the labels drawn as a second tile layer above
+ * the turfs, every name stays legible however many hulls overlap under it.
+ * The base drops its own labels so each name is not drawn twice — once tinted
+ * under the fill, once crisp on top, which reads as a blur.
+ *
+ * Only CARTO publishes Positron as these three matching layers, so any other
+ * provider keeps its single template and the map simply has no overlay. The
+ * query string (a `key`, say) carries over untouched.
+ */
+export function splitLabelLayers(template: string): { base: string; labels: string } | null {
+	let url: URL;
+	try {
+		url = new URL(template);
+	} catch {
+		return null;
+	}
+	if (url.hostname !== 'cartocdn.com' && !url.hostname.endsWith('.cartocdn.com')) return null;
+	if (!/\/light_all\//.test(url.pathname)) return null;
+
+	return {
+		base: template.replace('/light_all/', '/light_nolabels/'),
+		labels: template.replace('/light_all/', '/light_only_labels/'),
+	};
+}
