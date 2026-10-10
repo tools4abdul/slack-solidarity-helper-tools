@@ -146,6 +146,9 @@ function fakeSheets(initial: Record<string, string[][]> = {}) {
 		async describe() {
 			return { ok: true, value: { title: '', hasTab: true, tabs: [] } };
 		},
+		async replaceTab() {
+			throw new Error('the Packet Tracker never replaces a tab');
+		},
 	};
 
 	return {

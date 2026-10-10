@@ -148,6 +148,7 @@
 				refreshEnabled={campaign.refreshEnabled}
 				sheetsEnabled={campaign.sheetsEnabled}
 				sheetTabName={campaign.sheetTabName}
+				dailyReportSpreadsheetId={campaign.dailyReportSpreadsheetId}
 				targets={data.targets}
 				serviceAccountEmail={data.sheetsServiceAccountEmail}
 				onSaved={() => void invalidateAll()}

@@ -3,7 +3,11 @@ import type { RequestHandler } from './$types';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { db } from '$lib/server/db.js';
 import { vanCampaigns, type NewVanCampaignRow } from '$lib/server/schema.js';
-import { checkBoolean, checkSheetTabName } from '$lib/server/app-config-fields.js';
+import {
+	checkBoolean,
+	checkSheetTabName,
+	checkSpreadsheetId,
+} from '$lib/server/app-config-fields.js';
 import { vanClientFor } from '$lib/server/van-env.js';
 import { loadCampaign } from '$lib/server/van/campaigns.js';
 import { loadCampaignStatus } from '$lib/server/van/campaign-status-store.js';
@@ -30,6 +34,7 @@ interface CampaignBody {
 	refreshEnabled?: unknown;
 	sheetsEnabled?: unknown;
 	sheetTabName?: unknown;
+	dailyReportSpreadsheetId?: unknown;
 	enabled?: unknown;
 }
 
@@ -114,6 +119,16 @@ export const PATCH: RequestHandler = async ({ request, locals, params }) => {
 		const parsed = checkSheetTabName('sheetTabName', body.sheetTabName);
 		if (!parsed.ok) return json({ error: parsed.error }, { status: 400 });
 		patch.sheetTabName = parsed.value === '' ? null : parsed.value;
+	}
+
+	// Not checked against Google, like the Packet Tracker's: a sheet not yet
+	// shared with the service account surfaces as an alert on the first report.
+	if ('dailyReportSpreadsheetId' in body) {
+		const parsed = checkSpreadsheetId('dailyReportSpreadsheetId', body.dailyReportSpreadsheetId, {
+			allowEmpty: true,
+		});
+		if (!parsed.ok) return json({ error: parsed.error }, { status: 400 });
+		patch.dailyReportSpreadsheetId = parsed.value === '' ? null : parsed.value;
 	}
 
 	const editorName = locals.session.slackUserName ?? locals.session.slackUserId;

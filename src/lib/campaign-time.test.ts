@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
 	CAMPAIGN_TIME_ZONE,
 	DEFAULT_CAMPAIGN_TIME_ZONE,
+	campaignDayBounds,
 	campaignDayKey,
 	campaignDayLabel,
 	campaignTimeLabel,
@@ -186,5 +187,26 @@ describe('campaignWallClockToUtc', () => {
 		expect(campaignWallClockToUtc('')).toBeNull();
 		expect(campaignWallClockToUtc('2026-09-22')).toBeNull();
 		expect(campaignWallClockToUtc('yesterday')).toBeNull();
+	});
+});
+
+describe('campaignDayBounds', () => {
+	const iso = (day: string) => {
+		const b = campaignDayBounds(day);
+		return b && [b.start.toISOString(), b.end.toISOString()];
+	};
+
+	it('runs from one Detroit midnight to the next', () => {
+		expect(iso('2026-10-07')).toEqual(['2026-10-07T04:00:00.000Z', '2026-10-08T04:00:00.000Z']);
+	});
+
+	it('is 25 hours on the day the clocks fall back', () => {
+		expect(iso('2026-11-01')).toEqual(['2026-11-01T04:00:00.000Z', '2026-11-02T05:00:00.000Z']);
+	});
+
+	it('is null for anything that is not a real day', () => {
+		expect(campaignDayBounds('2026-02-31')).toBeNull();
+		expect(campaignDayBounds('2026-10-07T00:00:00')).toBeNull();
+		expect(campaignDayBounds('')).toBeNull();
 	});
 });

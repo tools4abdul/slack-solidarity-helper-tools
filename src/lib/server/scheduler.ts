@@ -22,6 +22,8 @@ import http from 'node:http';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { acquireSyncLock } from './sync-lock.js';
 import { campaignsStalestFirst } from './van/campaigns.js';
+import { dailyReportCampaigns } from './van/daily-door-report.js';
+import { campaignDayKey, campaignHour } from '../campaign-time.js';
 
 type Db = LibSQLDatabase<Record<string, unknown>>;
 
@@ -208,7 +210,71 @@ const slackInviteAudit: Job = {
 	},
 };
 
-export const JOBS: readonly Job[] = [vanSync, mobilizeSync, mobilizeImport, slackInviteAudit];
+/** The campaign-local hours the door report runs: the day's report, and its
+ *  rewrite the next morning with what MiniVAN synced overnight. */
+export const DOOR_REPORT_HOUR = 22;
+export const DOOR_REPORT_REFRESH_HOUR = 8;
+
+/** The UTC hours on which it is one of `localHours` in the campaign's zone, on
+ *  either side of daylight saving — a January and a July day between them see
+ *  both offsets. The run checks the hour again, so the one of each pair that
+ *  is not it this season does nothing. */
+export function utcHoursAt(localHours: readonly number[]): number[] {
+	const hours = new Set<number>();
+	for (const day of [Date.UTC(2026, 0, 15), Date.UTC(2026, 6, 15)]) {
+		for (let h = 0; h < 24; h++) {
+			const local = campaignHour(new Date(day + h * 60 * MINUTE));
+			if (local !== null && localHours.includes(local)) hours.add(h);
+		}
+	}
+	return [...hours].sort((a, b) => a - b);
+}
+
+/** The nightly door report (api/internal/van-daily-report). No workflow
+ *  mirrors it: a missed night is a missing tab, not a broken claim. */
+const vanDailyReport: Job = {
+	name: 'van-daily-report',
+	schedule: [{ hours: utcHoursAt([DOOR_REPORT_HOUR, DOOR_REPORT_REFRESH_HOUR]), minutes: [0] }],
+	run: async (slot, call, db) => {
+		const hour = campaignHour(slot);
+		const nightly = hour === DOOR_REPORT_HOUR;
+		if (!nightly && hour !== DOOR_REPORT_REFRESH_HOUR) return;
+		const campaigns = await dailyReportCampaigns(db);
+		if (campaigns.length === 0) return;
+		// The morning run rewrites yesterday's tab.
+		const day = campaignDayKey(
+			new Date(slot.getTime() - (nightly ? 0 : 12 * 60 * MINUTE)).toISOString(),
+		);
+		if (nightly) {
+			// The day's turf and rosters first, so a route cut this afternoon has
+			// its doors to count. The endpoint reads the newest contacts itself,
+			// with the minutes VAN's export takes. A sync that fails still leaves
+			// a report worth making.
+			try {
+				await runVanSync(call, db);
+			} catch (err) {
+				console.warn(
+					`${LOG} van-daily-report: sync before the report failed:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
+		await call(
+			'/api/internal/van-daily-report',
+			{ day, ...(nightly ? { slack: '1' } : {}) },
+			// Each campaign waits up to three minutes on VAN, then two on Google.
+			(2 + 6 * campaigns.length) * MINUTE,
+		);
+	},
+};
+
+export const JOBS: readonly Job[] = [
+	vanSync,
+	mobilizeSync,
+	mobilizeImport,
+	slackInviteAudit,
+	vanDailyReport,
+];
 
 /**
  * Calls this machine's own server. `node:http` rather than fetch: fetch gives

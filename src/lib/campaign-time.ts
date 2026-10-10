@@ -261,3 +261,23 @@ export function campaignWallClockToUtc(wallClock: string): Date | null {
 	const guess = naive - zoneOffsetMs(naive);
 	return new Date(naive - zoneOffsetMs(guess));
 }
+
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * The UTC instants a campaign-local day (`YYYY-MM-DD`) starts and ends at:
+ * `[start, end)`, from one local midnight to the next. Not always 24 hours
+ * apart — the days the clocks change are 23 and 25. Null for anything that is
+ * not a real `YYYY-MM-DD`.
+ */
+export function campaignDayBounds(day: string): { start: Date; end: Date } | null {
+	const match = DAY.exec(day);
+	if (!match) return null;
+	const noon = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+	// Round-tripped so 2026-02-31 is refused rather than read as March 3.
+	if (new Date(noon).toISOString().slice(0, 10) !== day) return null;
+	const next = new Date(noon + 86_400_000).toISOString().slice(0, 10);
+	const start = campaignWallClockToUtc(`${day}T00:00:00`);
+	const end = campaignWallClockToUtc(`${next}T00:00:00`);
+	return start && end ? { start, end } : null;
+}

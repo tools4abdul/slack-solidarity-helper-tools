@@ -190,6 +190,21 @@ describe('the switches and fields', () => {
 		expect((await patch({ sheetTabName: "Bob's" })).status).toBe(400);
 	});
 
+	it('saves the report spreadsheet from its URL, and clears it when empty', async () => {
+		const id = '1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd';
+		await patch({
+			dailyReportSpreadsheetId: `https://docs.google.com/spreadsheets/d/${id}/edit#gid=0`,
+		});
+		expect((await row()).daily_report_spreadsheet_id).toBe(id);
+		await patch({ dailyReportSpreadsheetId: '' });
+		expect((await row()).daily_report_spreadsheet_id).toBeNull();
+	});
+
+	it('refuses a report spreadsheet that is not a Sheets id or URL', async () => {
+		expect((await patch({ dailyReportSpreadsheetId: 'my sheet' })).status).toBe(400);
+		expect((await patch({ dailyReportSpreadsheetId: 7 })).status).toBe(400);
+	});
+
 	it('saves the export job type, or none', async () => {
 		await patch({ exportJobTypeId: 5 });
 		expect((await row()).export_job_type_id).toBe(5);

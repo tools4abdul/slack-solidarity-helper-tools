@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import { columnLetter, createSheetsClient, type ServiceAccountConfig } from './sheets.js';
 
@@ -498,6 +498,167 @@ describe('ensureRows', () => {
 		]);
 		expect(await client.ensureRows(at(101))).toEqual({ ok: true, value: true });
 		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+});
+
+describe('replaceTab', () => {
+	const ROWS = [{ cells: ['Doors contacted'], bold: true }, { cells: ['Folder', 'Turf 1', 12] }];
+	const replace = () =>
+		createSheetsClient(CONFIG, { fetchFn }).replaceTab({
+			spreadsheetId: 'sheet-1',
+			tabName: '2026-10-07',
+			rows: ROWS,
+		});
+	let fetchFn: Mock<typeof fetch>;
+	const body = (call: number) =>
+		JSON.parse((fetchFn.mock.calls[call] as [string, RequestInit])[1].body as string);
+
+	it('adds the tab first when it is not there, then writes it', async () => {
+		fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(ok({ sheets: [{ properties: { sheetId: 1, title: 'Other' } }] }))
+			.mockResolvedValueOnce(ok({ replies: [{ addSheet: { properties: { sheetId: 77 } } }] }))
+			.mockResolvedValueOnce(ok({}));
+
+		expect(await replace()).toEqual({ ok: true, value: { sheetId: 77 } });
+		expect(body(2).requests[0].addSheet.properties).toMatchObject({
+			title: '2026-10-07',
+			index: 0,
+			gridProperties: { rowCount: 2, columnCount: 3 },
+		});
+		const [clear, write] = body(3).requests;
+		expect(clear).toEqual({
+			updateCells: { range: { sheetId: 77 }, fields: 'userEnteredValue,userEnteredFormat' },
+		});
+		expect(write.updateCells.rows).toEqual([
+			{
+				values: [
+					{
+						userEnteredValue: { stringValue: 'Doors contacted' },
+						userEnteredFormat: { textFormat: { bold: true } },
+					},
+				],
+			},
+			{
+				values: [
+					{ userEnteredValue: { stringValue: 'Folder' } },
+					{ userEnteredValue: { stringValue: 'Turf 1' } },
+					{ userEnteredValue: { numberValue: 12 } },
+				],
+			},
+		]);
+	});
+
+	it('clears and rewrites a tab that is already there, growing it when short', async () => {
+		fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				ok({
+					sheets: [
+						{ properties: { sheetId: 5, title: '2026-10-07', gridProperties: { rowCount: 1 } } },
+					],
+				}),
+			)
+			.mockResolvedValueOnce(ok({}));
+
+		expect(await replace()).toEqual({ ok: true, value: { sheetId: 5 } });
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+		const requests = body(2).requests;
+		expect(requests[0]).toEqual({
+			appendDimension: { sheetId: 5, dimension: 'ROWS', length: 1 },
+		});
+		expect(requests[1].updateCells.range).toEqual({ sheetId: 5 });
+	});
+
+	const existing = () =>
+		ok({
+			sheets: [
+				{ properties: { sheetId: 5, title: '2026-10-07', gridProperties: { rowCount: 10 } } },
+			],
+		});
+	const owned = (
+		input: Partial<Parameters<ReturnType<typeof createSheetsClient>['replaceTab']>[0]>,
+	) =>
+		createSheetsClient(CONFIG, { fetchFn }).replaceTab({
+			spreadsheetId: 'sheet-1',
+			tabName: '2026-10-07',
+			rows: ROWS,
+			ownedPrefix: 'Doors contacted',
+			...input,
+		});
+
+	it('refuses to clear a tab of the same name that it did not write', async () => {
+		fetchFn = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(existing())
+			.mockResolvedValueOnce(ok({ values: [['Shift notes']] }));
+
+		const res = await owned({});
+		expect(res).toMatchObject({ ok: false, status: 409 });
+		expect(fetchFn).toHaveBeenCalledTimes(3);
+	});
+
+	it('rewrites its own tab, or an empty one', async () => {
+		for (const a1 of [{ values: [['Doors contacted · Main']] }, {}]) {
+			fetchFn = vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(tokenResponse())
+				.mockResolvedValueOnce(existing())
+				.mockResolvedValueOnce(ok(a1))
+				.mockResolvedValueOnce(ok({}));
+			expect(await owned({})).toEqual({ ok: true, value: { sheetId: 5 } });
+		}
+	});
+
+	it('sets fixed column widths instead of fitting them, when given', async () => {
+		fetchFn = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(existing())
+			.mockResolvedValueOnce(ok({}));
+
+		await owned({ ownedPrefix: undefined, columnWidths: [200, 80] });
+		const requests = body(2).requests as Array<Record<string, unknown>>;
+		expect(requests.some((r) => 'autoResizeDimensions' in r)).toBe(false);
+		expect(requests.filter((r) => 'updateDimensionProperties' in r)).toEqual([
+			{
+				updateDimensionProperties: {
+					range: { sheetId: 5, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 },
+					properties: { pixelSize: 200 },
+					fields: 'pixelSize',
+				},
+			},
+			{
+				updateDimensionProperties: {
+					range: { sheetId: 5, dimension: 'COLUMNS', startIndex: 1, endIndex: 2 },
+					properties: { pixelSize: 80 },
+					fields: 'pixelSize',
+				},
+			},
+		]);
+	});
+
+	it('reports a spreadsheet it may not open', async () => {
+		fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(tokenResponse())
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ error: { message: 'The caller does not have permission' } }),
+					{
+						status: 403,
+					},
+				),
+			);
+
+		expect(await replace()).toEqual({
+			ok: false,
+			status: 403,
+			error: 'The caller does not have permission',
+		});
 	});
 });
 

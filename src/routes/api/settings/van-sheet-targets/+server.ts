@@ -11,6 +11,7 @@ import { normaliseSheetKey } from '$lib/van/sheet-routing.js';
 import { sheetsClient } from '$lib/server/google-env.js';
 import { DEFAULT_SHEET_TAB_NAME } from '$lib/van/packet-tracker.js';
 import { campaignFromRequest } from '$lib/server/van/campaigns.js';
+import { checkSpreadsheetId } from '$lib/server/app-config-fields.js';
 
 // Which spreadsheet each region's turf checkouts are logged to, for one
 // campaign (`campaignId`, required): each campaign that keeps a Packet Tracker
@@ -45,21 +46,6 @@ interface SheetTargetBody {
 }
 
 const MAX_PREFIX_LENGTH = 120;
-/** Google's ids are 44 chars today; the cap is loose because the length is not
- *  documented as stable and a too-tight check would reject a valid sheet. */
-const MAX_SPREADSHEET_ID_LENGTH = 200;
-
-/** What a spreadsheet id looks like in a Sheets URL. Deliberately a shape
- *  check, not an existence check — see the header. */
-const SPREADSHEET_ID = /^[A-Za-z0-9_-]{20,}$/;
-
-/** Pull the id out of a pasted URL, because that is what an admin has on their
- *  clipboard. Accepting the whole URL and extracting it here is the difference
- *  between a field that works first time and one that needs an explanation. */
-function extractSpreadsheetId(raw: string): string {
-	const match = raw.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
-	return (match?.[1] ?? raw).trim();
-}
 
 /**
  * The spreadsheet's name as Google reports it, or the id when it cannot be
@@ -123,8 +109,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	const prefix = typeof body.prefix === 'string' ? body.prefix.trim() : '';
-	const spreadsheetId =
-		typeof body.spreadsheetId === 'string' ? extractSpreadsheetId(body.spreadsheetId) : '';
 
 	if (prefix === '' || prefix.length > MAX_PREFIX_LENGTH) {
 		return json(
@@ -141,16 +125,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			{ status: 400 },
 		);
 	}
-	if (
-		spreadsheetId === '' ||
-		spreadsheetId.length > MAX_SPREADSHEET_ID_LENGTH ||
-		!SPREADSHEET_ID.test(spreadsheetId)
-	) {
-		return json(
-			{ error: 'spreadsheetId must be a Google Sheets id, or the URL of one' },
-			{ status: 400 },
-		);
-	}
+	const checked = checkSpreadsheetId('spreadsheetId', body.spreadsheetId);
+	if (!checked.ok) return json({ error: checked.error }, { status: 400 });
+	const spreadsheetId = checked.value;
 
 	await saveVanSheetTarget(
 		db,

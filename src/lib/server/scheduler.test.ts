@@ -10,6 +10,7 @@ import {
 	latestSlot,
 	localCaller,
 	nextSlot,
+	utcHoursAt,
 	type Caller,
 	type Job,
 } from './scheduler.js';
@@ -172,6 +173,68 @@ describe('the van-sync job', () => {
 			'campaign 1: HTTP 500',
 		);
 		expect(calls).toEqual(['1', '2']);
+	});
+});
+
+describe('the door report job', () => {
+	const report = job('van-daily-report');
+	const withSpreadsheet = () =>
+		client.execute(
+			"UPDATE van_campaigns SET daily_report_spreadsheet_id = 'sheet-abc' WHERE id = 1",
+		);
+	const reportCalls = (calls: Array<{ path: string; params: Record<string, string> }>) =>
+		calls.filter((c) => c.path === '/api/internal/van-daily-report').map((c) => c.params);
+
+	// Detroit: 10pm is 02:00 UTC in summer and 03:00 in winter; 8am is 12:00 and 13:00.
+	it('is scheduled on both UTC hours each of its local hours can be', () => {
+		expect(utcHoursAt([22, 8])).toEqual([2, 3, 12, 13]);
+		expect(report.schedule).toEqual([{ hours: [2, 3, 12, 13], minutes: [0] }]);
+	});
+
+	it('at 10pm syncs VAN, then reports the day and posts it', async () => {
+		await withSpreadsheet();
+		const { calls, call } = recorder();
+		await report.run(new Date('2026-10-08T02:00:00Z'), call, db);
+		expect(calls.map((c) => c.path)).toEqual([
+			'/api/internal/van-sync',
+			'/api/internal/van-daily-report',
+		]);
+		expect(reportCalls(calls)).toEqual([{ day: '2026-10-07', slack: '1' }]);
+	});
+
+	it('at 8am rewrites the day before, quietly, without a sync of its own', async () => {
+		await withSpreadsheet();
+		const { calls, call } = recorder();
+		await report.run(new Date('2026-10-08T12:00:00Z'), call, db);
+		expect(calls).toEqual([
+			{ path: '/api/internal/van-daily-report', params: { day: '2026-10-07' } },
+		]);
+	});
+
+	it("does nothing on the slot that is not this season's hour", async () => {
+		await withSpreadsheet();
+		const { calls, call } = recorder();
+		await report.run(new Date('2026-10-08T03:00:00Z'), call, db); // 11pm EDT
+		await report.run(new Date('2026-10-08T13:00:00Z'), call, db); // 9am EDT
+		expect(calls).toEqual([]);
+	});
+
+	it('does nothing when no campaign has a report spreadsheet', async () => {
+		const { calls, call } = recorder();
+		await report.run(new Date('2026-10-08T02:00:00Z'), call, db);
+		expect(calls).toEqual([]);
+	});
+
+	it('still reports when the sync before it fails', async () => {
+		await withSpreadsheet();
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { calls, call } = recorder();
+		const failing: Caller = async (path, params, timeout) => {
+			if (path === '/api/internal/van-sync') throw new Error('HTTP 500');
+			return call(path, params, timeout);
+		};
+		await report.run(new Date('2026-10-08T02:00:00Z'), failing, db);
+		expect(reportCalls(calls)).toEqual([{ day: '2026-10-07', slack: '1' }]);
 	});
 });
 
