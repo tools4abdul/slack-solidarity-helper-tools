@@ -878,6 +878,13 @@ export const vanCampaigns = sqliteTable(
 		 *  creates it. Null or '' means DEFAULT_SHEET_TAB_NAME in
 		 *  $lib/van/packet-tracker.ts. Moved here from app_config. */
 		sheetTabName: text('sheet_tab_name'),
+		/** The spreadsheet the nightly door report writes to: one new tab per
+		 *  campaign day (van/daily-door-report.ts). A spreadsheet rather than a
+		 *  Drive folder because the service account owns no Drive storage and so
+		 *  cannot create files in an ordinary folder; a tab added to a sheet an
+		 *  admin shared with it counts against the admin's storage. Null means no
+		 *  report for this campaign. */
+		dailyReportSpreadsheetId: text('daily_report_spreadsheet_id'),
 		disabledAt: text('disabled_at'),
 		disabledByName: text('disabled_by_name'),
 		lastEditedBy: text('last_edited_by').notNull(),

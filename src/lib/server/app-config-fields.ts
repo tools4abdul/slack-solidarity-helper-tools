@@ -30,6 +30,7 @@ import {
 } from '../van/checkout.js';
 import { parseOverrides } from '$lib/styles/theme-css.js';
 import { SITE_NAME_MAX_LENGTH } from '$lib/site-name.js';
+import { extractSpreadsheetId, isSpreadsheetId } from '$lib/google-sheet-id.js';
 
 export interface FieldContext {
 	slack: WebClient;
@@ -141,6 +142,26 @@ export function checkSheetTabName(label: string, value: unknown): FieldResult<st
 		return fail(`${label} cannot contain ' [ ] : \\ / ? * or a line break`);
 	}
 	return { ok: true, value: trimmed };
+}
+
+/**
+ * A Google Sheets id, or the URL of one — what an admin has on their clipboard
+ * is the URL, so the id is pulled out of it here. `''` clears it when
+ * `allowEmpty`. Exported for the Packet Tracker rules
+ * (/api/settings/van-sheet-targets) and the door report's spreadsheet
+ * (/api/settings/van-campaigns).
+ */
+export function checkSpreadsheetId(
+	label: string,
+	value: unknown,
+	options: { allowEmpty?: boolean } = {},
+): FieldResult<string> {
+	const message = `${label} must be a Google Sheets id, or the URL of one`;
+	if (typeof value !== 'string') return fail(message);
+	const id = extractSpreadsheetId(value);
+	if (id === '') return options.allowEmpty ? { ok: true, value: '' } : fail(message);
+	if (!isSpreadsheetId(id)) return fail(message);
+	return { ok: true, value: id };
 }
 
 /**

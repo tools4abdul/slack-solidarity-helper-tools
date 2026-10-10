@@ -1,4 +1,5 @@
-// Reading and writing the campaign's Packet Tracker tab, as a service account.
+// Reading and writing the campaign's spreadsheets, as a service account: the
+// Packet Tracker tab, and the nightly door report's tabs (replaceTab).
 //
 // Written like van/client.ts and geocode-batch.ts: config and `fetch` are
 // injected and nothing here imports `$env` or `$lib/server`, so it runs under
@@ -21,10 +22,12 @@
 // and PRIVACY.md must stay accurate about it.
 // ─────────────────────────────────────────────────────────────────────────
 //
-// The app only ever writes cells on rows the campaign already has: it never
-// adds, deletes or moves a row (see $lib/van/packet-tracker.ts). Writes are by
-// row number, so the caller re-reads the row first and checks it is still the
-// packet it means.
+// In the Packet Tracker the app only ever writes cells on rows the campaign
+// already has: it never adds, deletes or moves a row (see
+// $lib/van/packet-tracker.ts). Writes are by row number, so the caller re-reads
+// the row first and checks it is still the packet it means. replaceTab is the
+// exception, and only for a tab the app owns outright: the door report
+// (van/daily-door-report.ts) writes a whole tab of its own each night.
 //
 // Never throws. A Google outage must not fail a sync whose rows are already
 // written — every call returns a result the caller can act on, and the ledger
@@ -163,6 +166,30 @@ export interface SheetsClient {
 		rowIndex: number;
 		deadline?: number;
 	}): Promise<SheetsResult<true>>;
+	/**
+	 * Make the tab hold exactly `rows`, creating it as the spreadsheet's first
+	 * tab when it is not there. Everything already on it — values and
+	 * formatting — is cleared first, so a rerun overwrites rather than leaving
+	 * the tail of a longer earlier write. Only for a tab the app owns.
+	 *
+	 * `ownedPrefix` is how the app knows the tab is its own: an existing tab
+	 * whose A1 does not start with it is somebody else's, and is refused (409)
+	 * rather than wiped. `columnWidths`, in pixels, sets the columns' widths;
+	 * without it they are fitted to their contents, which a long note in one
+	 * cell would stretch across the screen.
+	 *
+	 * Four requests at most: the lookup, the ownership read or the add, and one
+	 * batch that clears, writes, bolds and sizes the columns. Returns the tab's
+	 * numeric id, for a `#gid=` link straight to it.
+	 */
+	replaceTab(input: {
+		spreadsheetId: string;
+		tabName: string;
+		rows: ReadonlyArray<{ cells: ReadonlyArray<string | number>; bold?: boolean }>;
+		ownedPrefix?: string;
+		columnWidths?: readonly number[];
+		deadline?: number;
+	}): Promise<SheetsResult<{ sheetId: number }>>;
 	/** Whether the spreadsheet is reachable and whether it already has the tab.
 	 *  Read-only — what `sheets:check` uses to tell "never shared with us" from
 	 *  "shared, no tab" without writing anything. */
@@ -628,6 +655,122 @@ export function createSheetsClient(
 					text: v.effectiveValue?.stringValue !== undefined,
 				}));
 			return { ok: true, value: options };
+		},
+
+		async replaceTab({ spreadsheetId, tabName, rows, ownedPrefix, columnWidths, deadline }) {
+			// Looked up afresh: a tab someone deleted since the last run would
+			// otherwise be written to by a cached id that no longer exists.
+			tabs.delete(tabKey(spreadsheetId, tabName));
+			const width = Math.max(1, columnWidths?.length ?? 0, ...rows.map((r) => r.cells.length));
+			let info = await tabInfo(spreadsheetId, tabName, deadline);
+			if (!info.ok && info.status === 404) {
+				const added = await request(
+					`${base(spreadsheetId)}:batchUpdate`,
+					{
+						method: 'POST',
+						body: JSON.stringify({
+							requests: [
+								{
+									addSheet: {
+										properties: {
+											title: tabName,
+											index: 0,
+											gridProperties: {
+												rowCount: Math.max(rows.length, 1),
+												columnCount: width,
+											},
+										},
+									},
+								},
+							],
+						}),
+					},
+					deadline,
+				);
+				if (!added.ok) return added;
+				const sheetId = parseJson<{
+					replies?: Array<{ addSheet?: { properties?: { sheetId?: number } } }>;
+				}>(added.value)?.replies?.[0]?.addSheet?.properties?.sheetId;
+				if (typeof sheetId !== 'number') {
+					return { ok: false, status: 0, error: 'addSheet answered without a sheet id' };
+				}
+				const value = { id: sheetId, rowCount: Math.max(rows.length, 1) };
+				tabs.set(tabKey(spreadsheetId, tabName), value);
+				info = { ok: true, value };
+			} else if (info.ok && ownedPrefix !== undefined) {
+				// Already there: clear it only if it is the app's own.
+				const a1 = await request(
+					`${base(spreadsheetId)}/values/${encodeURIComponent(`${tabRange(tabName)}!A1`)}`,
+					{ method: 'GET' },
+					deadline,
+				);
+				if (!a1.ok) return a1;
+				const first = String(parseJson<{ values?: unknown[][] }>(a1.value)?.values?.[0]?.[0] ?? '');
+				if (first !== '' && !first.startsWith(ownedPrefix)) {
+					return {
+						ok: false,
+						status: 409,
+						error: `the spreadsheet already has a "${tabName}" tab that this app did not write`,
+					};
+				}
+			}
+			if (!info.ok) return info;
+			const sheetId = info.value.id;
+
+			const requests: unknown[] = [];
+			if (rows.length > info.value.rowCount) {
+				requests.push({
+					appendDimension: {
+						sheetId,
+						dimension: 'ROWS',
+						length: rows.length - info.value.rowCount,
+					},
+				});
+			}
+			requests.push(
+				{
+					updateCells: {
+						range: { sheetId },
+						fields: 'userEnteredValue,userEnteredFormat',
+					},
+				},
+				{
+					updateCells: {
+						start: { sheetId, rowIndex: 0, columnIndex: 0 },
+						rows: rows.map((row) => ({
+							values: row.cells.map((cell) => ({
+								userEnteredValue:
+									typeof cell === 'number' ? { numberValue: cell } : { stringValue: cell },
+								...(row.bold ? { userEnteredFormat: { textFormat: { bold: true } } } : {}),
+							})),
+						})),
+						fields: 'userEnteredValue,userEnteredFormat.textFormat.bold',
+					},
+				},
+				...(columnWidths
+					? columnWidths.map((pixelSize, i) => ({
+							updateDimensionProperties: {
+								range: { sheetId, dimension: 'COLUMNS', startIndex: i, endIndex: i + 1 },
+								properties: { pixelSize },
+								fields: 'pixelSize',
+							},
+						}))
+					: [
+							{
+								autoResizeDimensions: {
+									dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: width },
+								},
+							},
+						]),
+			);
+			const res = await request(
+				`${base(spreadsheetId)}:batchUpdate`,
+				{ method: 'POST', body: JSON.stringify({ requests }) },
+				deadline,
+			);
+			if (!res.ok) return forgetTab(res, spreadsheetId, tabName);
+			info.value.rowCount = Math.max(info.value.rowCount, rows.length);
+			return { ok: true, value: { sheetId } };
 		},
 
 		async describe({ spreadsheetId, tabName, deadline }) {

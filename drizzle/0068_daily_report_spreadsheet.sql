@@ -1,0 +1,1 @@
+ALTER TABLE `van_campaigns` ADD `daily_report_spreadsheet_id` text;
