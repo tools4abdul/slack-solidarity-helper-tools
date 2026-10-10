@@ -994,10 +994,12 @@ main {
 
 /* --- Sort bar ------------------------------------------------------------ */
 
-/* Both ways of ordering the list, on one line. `wrap` is the escape hatch for
+/* Every way of ordering the list, on one line. `wrap` is the escape hatch for
    a screen too narrow to hold them, not the layout: what actually keeps the
    row to one line on a phone is the heading dropping out below 430px. The ZIP
-   field cannot give the width back — it has a five-digit floor.
+   field cannot give the width back — it has a five-digit floor, which is why
+   its label is just "ZIP" and its button "Go": with Densest beside Nearest me,
+   the longer wording put the form on a second line at full width.
 
    The ZIP form is the path that works when geolocation is declined,
    unavailable, or blocked — and, being a plain GET form, when JavaScript is
@@ -1008,7 +1010,7 @@ main {
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
-	gap: var(--space-2);
+	gap: 6px;
 	margin-bottom: var(--space-3);
 }
 
@@ -1024,7 +1026,7 @@ main {
 }
 
 .sort-btn {
-	padding: 7px 14px;
+	padding: 7px 10px;
 	background: var(--color-surface);
 	color: var(--color-text);
 	border: 1px solid var(--color-border);
@@ -1046,8 +1048,13 @@ main {
 	outline-offset: 1px;
 }
 
+/* Just a button, to the eye; a form only so it works without JavaScript. */
+.sort-form {
+	display: contents;
+}
+
 /* Label, field and button wrap as one: a ZIP box on a line by itself with its
-   Sort button on the next is not a control any more. */
+   Go button on the next is not a control any more. */
 .zip-form {
 	display: flex;
 	align-items: center;
@@ -1094,10 +1101,10 @@ main {
 	color: var(--color-text-muted);
 }
 
-/* The heading is what costs the row its second line — roughly 60px of the
-   ~330px the two controls need. Below 430px of COLUMN it goes to the screen
-   reader only, which keeps the region named while the controls, one of which
-   says "Sort", stay legible on their own.
+/* The heading is what costs the row its second line — roughly 80px of the
+   ~430px the row needs with it. Below 430px of COLUMN it goes to the screen
+   reader only, which keeps the region named while the controls stay legible
+   on their own.
 
    A container query because the constraint is this column, not the window: at
    full width it is about 450px, and the same window narrowed to 1024px leaves

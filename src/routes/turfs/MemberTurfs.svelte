@@ -9,8 +9,9 @@
 	import '$lib/components/turfs/turf-page.css';
 	import { tick } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { formatDistance, haversineMeters, type LatLng } from '$lib/van/geometry.js';
+	import { coarseNear } from '$lib/van/turf-paging.js';
 	import { statusLabel } from '$lib/van/turf-status.js';
 	import { rampStyle, turfShade } from '$lib/van/turf-shade.js';
 	import { describeAge, oldestRefreshMinutes } from '$lib/van/turf-freshness.js';
@@ -18,6 +19,7 @@
 	import HolderName from '$lib/components/turfs/HolderName.svelte';
 	import {
 		campaignStoppedNote,
+		doorDensity,
 		mappableTurfs,
 		type CampaignBadges,
 		type TurfView,
@@ -51,6 +53,27 @@
 	/** Live geolocation when we have it, otherwise whatever the server resolved
 	 *  from a submitted ZIP. Both are just a point to measure distance from. */
 	const location = $derived<LatLng | null>(geoLocation ?? data.location ?? null);
+
+	/** What orders turf within each band of the list: distance from `location`,
+	 *  or doors per area of hull — the least walking per door. From `?sort=`,
+	 *  because in a chapter larger than one payload the server has to pick the
+	 *  densest turf before it cuts; re-sorting here alone would only rank
+	 *  whichever 600 it happened to send. */
+	const sortMode = $derived(data.sort);
+
+	/** Back to distance order. A navigation, not a re-sort, for the reason
+	 *  above: the payload has to be picked by distance again too. */
+	async function sortNearest() {
+		if (sortMode === 'densest' && data.chapter) {
+			const zip = data.zip ? `&zip=${encodeURIComponent(data.zip)}` : '';
+			// eslint-disable-next-line svelte/no-navigation-without-resolve -- the base path IS resolved; the rule can't see through the template literal
+			await goto(`${resolve('/turfs')}?chapter=${data.chapter.chapterId}${zip}`, {
+				keepFocus: true,
+				noScroll: true,
+			});
+		}
+		if (locationState === 'idle') askForLocation();
+	}
 
 	function askForLocation() {
 		if (!navigator.geolocation) {
@@ -112,6 +135,14 @@
 		pagedBadges = {};
 		totalNow = null;
 		lastBbox = '';
+		lastNear = '';
+	});
+
+	// A new sort picks different turf for the same viewport, so the box last
+	// fetched under the old one has to be fetchable again.
+	$effect(() => {
+		void sortMode;
+		lastBbox = '';
 	});
 
 	const turfs = $derived.by<TurfView[]>(() => {
@@ -143,6 +174,74 @@
 	const total = $derived(totalNow ?? data.total ?? 0);
 	const shown = $derived(turfs.length);
 
+	/** Fold an /api/turfs answer into `paged`. */
+	function mergeFetched(body: {
+		turfs: TurfView[];
+		total: number;
+		campaignBadges: CampaignBadges | null;
+	}) {
+		// Only reassign when something genuinely new arrived. A fresh object
+		// every time would re-trigger every downstream derived — including
+		// the map's own framing — for no change in content.
+		const added = body.turfs.filter((t) => !(t.turfId in paged));
+		if (added.length > 0) {
+			const next = { ...paged };
+			for (const turf of added) next[turf.turfId] = turf;
+			paged = next;
+		}
+		const newBadges = Object.entries(body.campaignBadges ?? {}).filter(
+			([id]) => !(id in pagedBadges),
+		);
+		if (newBadges.length > 0) {
+			pagedBadges = { ...pagedBadges, ...Object.fromEntries(newBadges) };
+		}
+		totalNow = body.total;
+	}
+
+	/** The chapter and rounded point last asked for by `loadNearMe`, so a
+	 *  repeat of the same question is not sent again. */
+	let lastNear = '';
+
+	/**
+	 * Fetch the turf nearest the device, once location is granted.
+	 *
+	 * The page load could only pick its 600 by ZIP or by name, because the
+	 * device's position never reaches it — and in a chapter of 2,000 turf, the
+	 * nearest may be in neither set. Sent as an API call rather than a `?lat=`
+	 * in the address bar, so it stays out of history and shared links; rounded
+	 * to about a kilometre (coarseNear), which picks the right 600 while the
+	 * list still sorts by the exact fix. Silent on failure, like loadViewport:
+	 * the list on screen is still valid.
+	 */
+	async function loadNearMe(chapterId: number, point: LatLng) {
+		const coarse = coarseNear(point);
+		const near = `${coarse.lat},${coarse.lng}`;
+		const key = `${chapterId}:${near}`;
+		if (key === lastNear) return;
+		lastNear = key;
+		try {
+			const res = await fetch(`/api/turfs?chapter=${chapterId}&near=${encodeURIComponent(near)}`);
+			if (!res.ok) {
+				lastNear = '';
+				return;
+			}
+			// A chapter switch while this was in flight: these rows are not
+			// the chapter on screen.
+			if (shownChapterId !== chapterId) return;
+			mergeFetched(await res.json());
+		} catch {
+			lastNear = '';
+		}
+	}
+
+	// Only while sorting by distance: under Densest the page load already
+	// picked by density, and nearness is just a tie-break.
+	$effect(() => {
+		if (geoLocation && sortMode === 'nearest' && shownChapterId !== null) {
+			void loadNearMe(shownChapterId, geoLocation);
+		}
+	});
+
 	/** Fetch turf for the area the map settled on. Failures are silent by
 	 *  design: the rows already on screen are still valid and still claimable,
 	 *  and an error banner for a background top-up would be noise. */
@@ -165,7 +264,8 @@
 			// value, not reactive state, and the lint rule that would otherwise
 			// push it to SvelteURLSearchParams exists for the latter.
 			const res = await fetch(
-				`/api/turfs?chapter=${data.chapter.chapterId}&bbox=${encodeURIComponent(bbox)}`,
+				`/api/turfs?chapter=${data.chapter.chapterId}&bbox=${encodeURIComponent(bbox)}` +
+					(sortMode === 'densest' ? '&sort=densest' : ''),
 			);
 			if (!res.ok) {
 				// Let the same viewport be retried once the user moves back to it,
@@ -173,27 +273,7 @@
 				lastBbox = '';
 				return;
 			}
-			const body = (await res.json()) as {
-				turfs: TurfView[];
-				total: number;
-				campaignBadges: CampaignBadges | null;
-			};
-			// Only reassign when something genuinely new arrived. A fresh object
-			// every time would re-trigger every downstream derived — including
-			// the map's own framing — for no change in content.
-			const added = body.turfs.filter((t) => !(t.turfId in paged));
-			if (added.length > 0) {
-				const next = { ...paged };
-				for (const turf of added) next[turf.turfId] = turf;
-				paged = next;
-			}
-			const newBadges = Object.entries(body.campaignBadges ?? {}).filter(
-				([id]) => !(id in pagedBadges),
-			);
-			if (newBadges.length > 0) {
-				pagedBadges = { ...pagedBadges, ...Object.fromEntries(newBadges) };
-			}
-			totalNow = body.total;
+			mergeFetched(await res.json());
 		} catch {
 			// Offline or a dropped request. Keep what we have — but forget the
 			// box, for the same reason the !res.ok branch above does: otherwise
@@ -216,10 +296,25 @@
 		return out;
 	});
 
+	/** Doors left per km² of hull, for the order under Densest. Never shown as
+	 *  a figure: a hull drawn tight around a few geocodes can rank a turf far
+	 *  denser than the street is, and a number on the card would state that as
+	 *  fact. */
+	const densities = $derived.by(() => {
+		const out: Record<number, number> = {};
+		if (sortMode !== 'densest') return out;
+		for (const turf of turfs) {
+			const density = doorDensity(turf);
+			if (density !== null) out[turf.turfId] = density;
+		}
+		return out;
+	});
+
 	// Yours first, then available, then turf still waiting on a list number,
 	// then everything else — checked out by someone, or with no doors left to
-	// knock; within a band, nearest first when we know where you are. A
-	// volunteer opening this wants the closest thing they can actually take.
+	// knock; within a band, nearest first when we know where you are, or
+	// densest first when that's the sort chosen. A volunteer opening this wants
+	// the closest thing they can actually take.
 	const sortedTurfs = $derived(
 		[...turfs].sort((a, b) => {
 			const rank = (t: TurfView) =>
@@ -232,6 +327,9 @@
 							: 1;
 			return (
 				rank(a) - rank(b) ||
+				(sortMode === 'densest'
+					? (densities[b.turfId] ?? -Infinity) - (densities[a.turfId] ?? -Infinity)
+					: 0) ||
 				(distances[a.turfId] ?? Infinity) - (distances[b.turfId] ?? Infinity) ||
 				a.name.localeCompare(b.name)
 			);
@@ -608,8 +706,22 @@
 				     what the ZIP field is still for. -->
 				<section class="sort-bar" aria-labelledby="sort-by">
 					<h2 class="sort-title" id="sort-by">Sort by</h2>
-					{#if locationState === 'idle'}
-						<button type="button" class="sort-btn" onclick={askForLocation}>Nearest me</button>
+					{#if locationState === 'idle' || (sortMode === 'densest' && location)}
+						<button type="button" class="sort-btn" onclick={sortNearest}>Nearest me</button>
+					{/if}
+					<!-- A plain GET form, like the ZIP one below, so it works without
+					     JavaScript: the server picks the densest turf before the
+					     payload cut. The ZIP rides along to keep distance as the
+					     tie-break. -->
+					{#if sortMode !== 'densest'}
+						<form class="sort-form" method="GET" action={resolve('/turfs')}>
+							<input type="hidden" name="chapter" value={data.chapter.chapterId} />
+							{#if data.zip}
+								<input type="hidden" name="zip" value={data.zip} />
+							{/if}
+							<input type="hidden" name="sort" value="densest" />
+							<button type="submit" class="sort-btn">Densest</button>
+						</form>
 					{/if}
 
 					<!-- The ZIP fallback (6.4). A plain GET form, so it works with the
@@ -620,7 +732,7 @@
 						<form class="zip-form" method="GET" action={resolve('/turfs')}>
 							<input type="hidden" name="chapter" value={data.chapter.chapterId} />
 							<span>|</span>
-							<label for="zip">Nearest my ZIP</label>
+							<label for="zip">ZIP</label>
 							<input
 								id="zip"
 								name="zip"
@@ -630,13 +742,21 @@
 								placeholder="48104"
 								value={data.zip ?? ''}
 							/>
-							<button type="submit" class="sort-btn">Sort</button>
+							<button type="submit" class="sort-btn" aria-label="Sort nearest this ZIP first"
+								>Go</button
+							>
 						</form>
 					{/if}
 
 					<!-- Whichever sort is in force, said once. The note wraps to its own
 					     line; the controls above it stay on one. -->
-					{#if locationState === 'granted'}
+					{#if sortMode === 'densest'}
+						<p class="sort-note">
+							Most doors per area first — the least walking between doors. Turf smaller than a
+							block, like a single apartment building, isn't ranked and comes last, as does turf
+							without map data.
+						</p>
+					{:else if locationState === 'granted'}
 						<p class="sort-note">Nearest turf first, from where you are now.</p>
 					{:else if data.zip}
 						<p class="sort-note">Nearest turf first, from {data.zip}.</p>

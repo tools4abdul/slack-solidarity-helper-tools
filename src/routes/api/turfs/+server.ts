@@ -12,12 +12,15 @@ import {
 	pruneRateLimitStores,
 	turfRequests,
 } from '$lib/server/van/rate-limit-store.js';
-import { parseBounds } from '$lib/van/turf-paging.js';
+import { parseBounds, parseNear, parseTurfSort } from '$lib/van/turf-paging.js';
 import { loadChapterTurfs } from '$lib/server/van/turf-query.js';
 import { foldersForChapter } from '$lib/server/van/chapter-visibility.js';
 
 // Turf inside a map viewport, for paging a chapter too large to serialise in
-// one payload (plan.md 6.2b — a 1,000-turf chapter is ~800 KB).
+// one payload (plan.md 6.2b — a 1,000-turf chapter is ~800 KB). Or, with
+// `near` in place of `bbox`, the turf nearest the volunteer's device: the page
+// load only knows a ZIP, so without this "Nearest me" could rank only the
+// first 600 turf by name.
 //
 // Every gate the page load applies is applied again here, in the same order,
 // AND against the same shared counters. This endpoint returns the same data
@@ -40,7 +43,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const session = locals.session;
 	if (!session) return json({ error: 'Not signed in' }, { status: 401 });
 
-	const bounds = parseBounds(url.searchParams.get('bbox'));
+	const rawBbox = url.searchParams.get('bbox');
+	const bounds = parseBounds(rawBbox);
+	const near = parseNear(url.searchParams.get('near'));
 
 	const now = Date.now();
 	pruneRateLimitStores(now);
@@ -111,12 +116,20 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// A bad box must 400 rather than silently matching the whole world — that
 	// would hand back the entire chapter in one request and undo the paging
 	// this endpoint exists to provide.
-	if (!bounds) return json({ error: 'Invalid bbox' }, { status: 400 });
+	// A request needs one or the other. A bbox that was sent but is bad still
+	// 400s even beside a good `near`, rather than being quietly dropped.
+	if (rawBbox !== null ? !bounds : !near) {
+		return json({ error: 'Invalid bbox' }, { status: 400 });
+	}
 
 	const { turfs, total, campaignBadges } = await loadChapterTurfs(db, {
 		chapterId,
 		viewer: { slackUserId: session.slackUserId, isAdmin: session.isAdmin },
 		bounds,
+		location: near,
+		// The page's sort, so a viewport with more turf than one payload holds
+		// sends its densest rather than its first by name.
+		sort: parseTurfSort(url.searchParams.get('sort')),
 		now: new Date(now),
 		// Same claim options as the page load. An endpoint that skipped them
 		// would mark turf claimable on pan that the page had greyed out — and

@@ -42,8 +42,20 @@ import {
 	type ClaimSnapshot,
 } from '../../van/checkout.js';
 import type { BoundingBox, LatLng } from '../../van/geometry.js';
-import { selectNearest, TURFS_PER_PAYLOAD, withinBounds } from '../../van/turf-paging.js';
-import { toTurfView, turfSnapshot, type TurfView } from '../../van/turf-view.js';
+import {
+	selectNearest,
+	TURFS_PER_PAYLOAD,
+	withinBounds,
+	type TurfSort,
+} from '../../van/turf-paging.js';
+import {
+	doorDensity,
+	doorsLeft,
+	parseHull,
+	toTurfView,
+	turfSnapshot,
+	type TurfView,
+} from '../../van/turf-view.js';
 import { visibleToChapter } from './chapter-visibility.js';
 import { loadHolderAccounts } from '../outside-volunteers.js';
 import type { VanTurfRow } from '../schema.js';
@@ -55,6 +67,10 @@ export interface TurfQueryInput {
 	viewer: { slackUserId: string; isAdmin: boolean };
 	/** Where the volunteer is, when we know. Null means name-ordered. */
 	location?: LatLng | null;
+	/** `densest` puts the most doors per area first, ahead of distance — and
+	 *  before the payload cut, so the densest turf in a large chapter is in
+	 *  the payload at all. Nearest (or by name) when omitted. */
+	sort?: TurfSort;
 	limit?: number;
 	/** Where in the ordering this page starts, counting unpinned rows only.
 	 *  The Slack command's "Show next 5"; both web callers leave it at zero.
@@ -128,6 +144,7 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		chapterId,
 		viewer,
 		location = null,
+		sort = 'nearest',
 		limit = TURFS_PER_PAYLOAD,
 		offset = 0,
 		bounds = null,
@@ -217,6 +234,12 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 		limit,
 		offset,
 		alwaysInclude: myRouteIds,
+		// From the same hull and doors-left the browser ranks by, so the turf
+		// picked here is the turf the list puts first.
+		density:
+			sort === 'densest'
+				? (row) => doorDensity({ hull: parseHull(row.hullJson), doorsRemaining: doorsLeft(row) })
+				: undefined,
 	});
 
 	const selectedIds = selected.map((r) => r.turfId);

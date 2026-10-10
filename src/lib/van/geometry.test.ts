@@ -7,6 +7,7 @@ import {
 	dropOutliers,
 	formatDistance,
 	haversineMeters,
+	hullAreaSquareMeters,
 	padBounds,
 	unionBounds,
 	type LatLng,
@@ -235,5 +236,24 @@ describe('formatDistance', () => {
 
 	it('handles zero without inventing a distance', () => {
 		expect(formatDistance(0)).toBe('0 ft');
+	});
+});
+
+describe('hullAreaSquareMeters', () => {
+	it('is zero for a degenerate hull', () => {
+		expect(hullAreaSquareMeters([])).toBe(0);
+		expect(hullAreaSquareMeters([at(42, -71), at(42.01, -71)])).toBe(0);
+	});
+
+	it('measures a 0.01° square at 42°N as ~1.11 km by ~0.83 km', () => {
+		const square = [at(42, -71), at(42, -70.99), at(42.01, -70.99), at(42.01, -71)];
+		const area = hullAreaSquareMeters(square);
+		expect(area).toBeGreaterThan(915_000);
+		expect(area).toBeLessThan(925_000);
+	});
+
+	it('does not depend on winding order', () => {
+		const ccw = [at(42, -71), at(42, -70.99), at(42.01, -70.99)];
+		expect(hullAreaSquareMeters([...ccw].reverse())).toBeCloseTo(hullAreaSquareMeters(ccw));
 	});
 });
