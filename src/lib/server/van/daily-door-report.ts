@@ -32,7 +32,7 @@ import { and, eq, isNotNull, ne, sql } from 'drizzle-orm';
 import type { LibSQLDatabase } from 'drizzle-orm/libsql';
 import { vanCampaigns, vanContactSyncState, type VanCampaignRow } from '../schema.js';
 import type { SheetsClient } from '../google/sheets.js';
-import { errMessage } from '../../err-message.js';
+import { errChainText, errMessage } from '../../err-message.js';
 import { escapeMrkdwn } from '../../slack-mrkdwn.js';
 import { campaignDayBounds, campaignDayLabel, campaignSheetStamp } from '../../campaign-time.js';
 import {
@@ -93,9 +93,11 @@ export async function countDoorsByTurf(
 		AND (t.retired_at IS NULL OR t.retired_at > c.last_in_person_at)`;
 	// The day's checkouts, with their knock windows: only those can make a
 	// door "through the app", and there are few, where a door's hits are many.
+	// MATERIALIZED builds that short list once; inlined, every hit re-scanned
+	// every checkout ever made, which was most of this query's time.
 	const window = checkoutKnockWindow('k');
 	const rows = (await db.all(sql`
-		WITH windows AS (
+		WITH windows AS MATERIALIZED (
 			SELECT k.turf_id AS turf_id, ${window.from} AS knock_from,
 				coalesce(${window.until}, '9999-12-31') AS knock_until
 			FROM van_turf_checkouts k
@@ -119,9 +121,12 @@ export async function countDoorsByTurf(
 						coalesce(t.cut_at, t.first_seen_at) DESC,
 						t.turf_id DESC
 				) AS pick
+			-- CROSS JOIN pins this order: the day's contacts, each person's roster
+			-- rows by person_hash, each turf by its id. Turso's planner otherwise
+			-- walks all of the campaign's turfs for every contact.
 			FROM van_person_contacts c
-			JOIN van_turf_roster r ON r.person_hash = c.person_hash
-			JOIN van_turfs t ON t.turf_id = r.turf_id AND t.campaign_id = c.campaign_id
+			CROSS JOIN van_turf_roster r ON r.person_hash = c.person_hash
+			CROSS JOIN van_turfs t ON t.turf_id = r.turf_id AND t.campaign_id = c.campaign_id
 			WHERE c.campaign_id = ${options.campaignId}
 				AND c.last_in_person_at >= ${from}
 				AND c.last_in_person_at < ${to}
@@ -148,6 +153,9 @@ export async function countDoorsByTurf(
 		GROUP BY t.turf_id
 	`)) as Array<Omit<TurfDoors, 'checkedOut'> & { checkedOut: number }>;
 
+	// CROSS JOIN pins the join order here too: otherwise the subquery walks all
+	// of the campaign's turfs and probes each roster per person, turfs × the
+	// day's contacts, which failed in production.
 	const [outside] = (await db.all(sql`
 		SELECT count(*) AS n
 		FROM van_person_contacts c
@@ -156,7 +164,7 @@ export async function countDoorsByTurf(
 			AND c.last_in_person_at < ${to}
 			AND NOT EXISTS (
 				SELECT 1 FROM van_turf_roster r
-				JOIN van_turfs t ON t.turf_id = r.turf_id
+				CROSS JOIN van_turfs t ON t.turf_id = r.turf_id
 				WHERE r.person_hash = c.person_hash AND t.campaign_id = c.campaign_id
 			)
 	`)) as Array<{ n: number }>;
@@ -319,6 +327,8 @@ export async function runDailyDoorReport(
 		}
 		return result;
 	} catch (err) {
-		return { ...result, error: errMessage(err) };
+		// The chain: Drizzle's message is only the failed SQL, the driver's
+		// reason is on its cause.
+		return { ...result, error: errChainText(err) };
 	}
 }
