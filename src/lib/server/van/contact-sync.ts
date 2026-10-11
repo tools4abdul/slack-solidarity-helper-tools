@@ -34,7 +34,7 @@
 // $env, so scripts/ can run it under tsx. Configuration is resolved in
 // contact-live.ts.
 
-import { and, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 import { errMessage } from '../../err-message.js';
 import { campaignWallClockToUtc } from '../../campaign-time.js';
@@ -129,6 +129,19 @@ export async function replaceRoster(
 	savedListId: number,
 	entries: readonly RosterEntry[],
 ): Promise<void> {
+	await db.batch(
+		rosterStatements(db, turfId, savedListId, entries) as unknown as Parameters<typeof db.batch>[0],
+	);
+}
+
+/** replaceRoster's statements, unrun, for a caller that batches them with its
+ *  own writes. They must run together and in order. */
+export function rosterStatements(
+	db: Db,
+	turfId: number,
+	savedListId: number,
+	entries: readonly RosterEntry[],
+) {
 	const inserts = chunked(entries, ROSTER_BATCH).map((batch) =>
 		db
 			.insert(vanTurfRoster)
@@ -136,12 +149,11 @@ export async function replaceRoster(
 			// A person listed twice in one saved list is still one person.
 			.onConflictDoNothing(),
 	);
-	const statements = [
+	return [
 		db.delete(vanTurfRoster).where(eq(vanTurfRoster.turfId, turfId)),
 		...inserts,
 		db.update(vanTurfs).set({ rosterSavedListId: savedListId }).where(eq(vanTurfs.turfId, turfId)),
 	];
-	await db.batch(statements as unknown as Parameters<typeof db.batch>[0]);
 }
 
 /** Record contacts, keeping the later date where one is already stored. */
@@ -281,11 +293,22 @@ export async function recomputeUncontacted(
 				.from(vanTurfs)
 				.where(and(eq(vanTurfs.campaignId, options.campaignId), countedTurfs(options.now)))
 		).map((r) => r.id);
-	const nowIso = options.now.toISOString();
 	let updated = 0;
 	for (const batch of chunked(ids, RECOMPUTE_BATCH)) {
-		const current = sql`(van_turfs.roster_saved_list_id IS NOT NULL AND van_turfs.roster_saved_list_id = van_turfs.saved_list_id)`;
-		const result = await db.run(sql`
+		const result = await recountStatement(db, batch, options.now);
+		updated += Number(result.rowsAffected ?? 0);
+	}
+	return updated;
+}
+
+/** recomputeUncontacted for one batch of turfs, unrun, for a caller that
+ *  batches it with its own writes. It reads the roster, so it goes after
+ *  rosterStatements for the same turf. Keep `turfIds` to RECOMPUTE_BATCH or
+ *  fewer. */
+export function recountStatement(db: Db, turfIds: readonly number[], now: Date) {
+	const nowIso = now.toISOString();
+	const current = sql`(van_turfs.roster_saved_list_id IS NOT NULL AND van_turfs.roster_saved_list_id = van_turfs.saved_list_id)`;
+	return db.run(sql`
 			UPDATE van_turfs SET
 				uncontacted_doors = CASE WHEN ${current} THEN (
 					SELECT count(DISTINCT r.door_hash) - count(DISTINCT CASE
@@ -298,13 +321,10 @@ export async function recomputeUncontacted(
 				) ELSE NULL END,
 				uncontacted_doors_at = CASE WHEN ${current} THEN ${nowIso} ELSE NULL END
 			WHERE van_turfs.turf_id IN (${sql.join(
-				batch.map((id) => sql`${id}`),
+				turfIds.map((id) => sql`${id}`),
 				sql`, `,
 			)})
 		`);
-		updated += Number(result.rowsAffected ?? 0);
-	}
-	return updated;
 }
 
 /** How long after a completion its percentage keeps being re-derived. A
@@ -385,6 +405,32 @@ const KNOCK_LEAD_MS = 30 * 60 * 1000;
  *  stamped a little after the volunteer taps the button. */
 const KNOCK_TRAIL_MS = 60 * 60 * 1000;
 
+/** ISO strings compare correctly as text, and this strftime shape matches
+ *  toISOString's, milliseconds included. */
+function shifted(column: SQL, ms: number): SQL {
+	return sql`strftime('%Y-%m-%dT%H:%M:%fZ', ${column}, ${`${ms / 1000} seconds`})`;
+}
+
+/**
+ * The span a checkout's doors are knocked in, as SQL over the checkouts table
+ * named `checkout` (its name or an alias): from KNOCK_LEAD_MS before the claim
+ * to KNOCK_TRAIL_MS after it was marked walked, or to its release when it was
+ * given back or lapsed. `until` is NULL while the claim is live.
+ *
+ * One definition for every count of a volunteer's doors: stampDoorsKnocked,
+ * and the door report's split between doors knocked through this app and
+ * outside it (daily-door-report.ts), so the two never disagree.
+ */
+export function checkoutKnockWindow(checkout: string): { from: SQL; until: SQL } {
+	const col = (name: string) => sql.raw(`${checkout}.${name}`);
+	return {
+		from: shifted(col('claimed_at'), -KNOCK_LEAD_MS),
+		until: sql`CASE WHEN ${col('completed_at')} IS NOT NULL
+			THEN ${shifted(col('completed_at'), KNOCK_TRAIL_MS)}
+			ELSE ${col('released_at')} END`,
+	};
+}
+
 /**
  * Derive `doorsKnocked` for recent completions: the turf's doors with an
  * in-person contact between the claim and the completion. What the dashboard's
@@ -423,21 +469,15 @@ export async function stampDoorsKnocked(
 						options.turfIds.map((id) => sql`${id}`),
 						sql`, `,
 					)})`;
-	// ISO strings compare correctly as text, and this strftime shape matches
-	// toISOString's, milliseconds included.
-	const shifted = (column: ReturnType<typeof sql>, ms: number) =>
-		sql`strftime('%Y-%m-%dT%H:%M:%fZ', ${column}, ${`${ms / 1000} seconds`})`;
-	const until = sql`CASE WHEN van_turf_checkouts.completed_at IS NOT NULL
-		THEN ${shifted(sql`van_turf_checkouts.completed_at`, KNOCK_TRAIL_MS)}
-		ELSE van_turf_checkouts.released_at END`;
+	const window = checkoutKnockWindow('van_turf_checkouts');
 	const knocked = sql`(
 		SELECT count(DISTINCT r.door_hash)
 		FROM van_turf_roster r
 		JOIN van_person_contacts c
 			ON c.campaign_id = ${options.campaignId} AND c.person_hash = r.person_hash
 		WHERE r.turf_id = van_turf_checkouts.turf_id
-			AND c.last_in_person_at >= ${shifted(sql`van_turf_checkouts.claimed_at`, -KNOCK_LEAD_MS)}
-			AND c.last_in_person_at <= ${until}
+			AND c.last_in_person_at >= ${window.from}
+			AND c.last_in_person_at <= ${window.until}
 	)`;
 	const nowIso = options.now.toISOString();
 	const lapsedBefore = new Date(options.now.getTime() - KNOCK_TRAIL_MS).toISOString();
@@ -493,6 +533,23 @@ export interface ContactSyncResult {
 	doorsKnockedStamped: number;
 	contactsPruned: number;
 	error: string | null;
+}
+
+/**
+ * Whether a caller pulling in a loop — the drain script — has caught up, given
+ * the last run's result and when the loop began. Not "nothing applied": each
+ * run reads up to its own start and takes over a minute, so the next one
+ * always finds a fresh window and the loop would chase "now" for as long as
+ * it was allowed. Caught up is the cursor reaching the loop's start, or a run
+ * with nothing to apply — and in both cases no export job left waiting.
+ */
+export function contactPullDone(
+	result: Pick<ContactSyncResult, 'windowsApplied' | 'cursor' | 'pending'>,
+	pullStartedAt: number,
+): boolean {
+	if (result.pending) return false;
+	const reachedStart = result.cursor !== null && Date.parse(result.cursor) >= pullStartedAt;
+	return result.windowsApplied === 0 || reachedStart;
 }
 
 function isStatus(job: VanChangedEntityExportJob, wanted: string): boolean {
@@ -865,13 +922,22 @@ export async function runContactSync(
 }
 
 /** Live turfs, and how many have a roster for their current saved list. */
-export async function rosterProgress(db: Db): Promise<{ live: number; rostered: number }> {
+/** Every campaign's live turfs by default; one campaign's when given. */
+export async function rosterProgress(
+	db: Db,
+	campaignId?: number,
+): Promise<{ live: number; rostered: number }> {
 	const [row] = await db
 		.select({
 			live: sql<number>`count(*)`,
 			rostered: sql<number>`sum(case when ${vanTurfs.rosterSavedListId} = ${vanTurfs.savedListId} then 1 else 0 end)`,
 		})
 		.from(vanTurfs)
-		.where(isNull(vanTurfs.retiredAt));
+		.where(
+			and(
+				isNull(vanTurfs.retiredAt),
+				campaignId === undefined ? undefined : eq(vanTurfs.campaignId, campaignId),
+			),
+		);
 	return { live: Number(row?.live ?? 0), rostered: Number(row?.rostered ?? 0) };
 }

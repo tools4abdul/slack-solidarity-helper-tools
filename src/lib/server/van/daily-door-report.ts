@@ -41,11 +41,13 @@ import {
 	REPORT_COLUMN_WIDTHS,
 	REPORT_TITLE_PREFIX,
 	reportSlackText,
+	totals,
 	type DoorReport,
 	type ReportRow,
 	type TurfDoors,
 } from '../../van/daily-door-report.js';
 import { campaignName } from './campaigns.js';
+import { checkoutKnockWindow } from './contact-sync.js';
 
 type Db = LibSQLDatabase<Record<string, unknown>>;
 
@@ -73,6 +75,13 @@ export async function dailyReportCampaigns(db: Db): Promise<VanCampaignRow[]> {
 /**
  * Doors contacted per turf in `[start, end)`, and the people contacted then
  * who are on no turf's roster. Turfs with none are not returned.
+ *
+ * Each turf's doors are split: `appDoors` were knocked while the turf was
+ * checked out through this app — inside a checkout's knock window, the same
+ * window a volunteer's own doors-knocked count uses — and the rest were
+ * knocked outside it. `checkedOut` says whether the turf was checked out here
+ * at any point of the day, which a turf can be with none of its doors in the
+ * window (claimed and given back, say).
  */
 export async function countDoorsByTurf(
 	db: Db,
@@ -82,9 +91,26 @@ export async function countDoorsByTurf(
 	const to = options.end.toISOString();
 	const liveAtContact = sql`coalesce(t.cut_at, t.first_seen_at) <= c.last_in_person_at
 		AND (t.retired_at IS NULL OR t.retired_at > c.last_in_person_at)`;
-	const turfs = (await db.all(sql`
-		WITH hits AS (
-			SELECT r.turf_id AS turf_id,
+	// The day's checkouts, with their knock windows: only those can make a
+	// door "through the app", and there are few, where a door's hits are many.
+	const window = checkoutKnockWindow('k');
+	const rows = (await db.all(sql`
+		WITH windows AS (
+			SELECT k.turf_id AS turf_id, ${window.from} AS knock_from,
+				coalesce(${window.until}, '9999-12-31') AS knock_until
+			FROM van_turf_checkouts k
+			JOIN van_turfs kt ON kt.turf_id = k.turf_id AND kt.campaign_id = ${options.campaignId}
+			WHERE k.claimed_at < ${to}
+				AND coalesce(${window.until}, '9999-12-31') >= ${from}
+		),
+		hits AS (
+			SELECT r.door_hash AS door_hash, r.turf_id AS turf_id,
+				EXISTS (
+					SELECT 1 FROM windows w
+					WHERE w.turf_id = r.turf_id
+						AND c.last_in_person_at >= w.knock_from
+						AND c.last_in_person_at <= w.knock_until
+				) AS in_app,
 				row_number() OVER (
 					PARTITION BY r.door_hash
 					ORDER BY (${liveAtContact}) DESC,
@@ -99,14 +125,28 @@ export async function countDoorsByTurf(
 			WHERE c.campaign_id = ${options.campaignId}
 				AND c.last_in_person_at >= ${from}
 				AND c.last_in_person_at < ${to}
+		),
+		-- One row per door, on its chosen turf. Through the app when any of its
+		-- people contacted on that turf were knocked inside a checkout there.
+		doors AS (
+			SELECT p.turf_id AS turf_id, max(h.in_app) AS in_app
+			FROM hits p
+			JOIN hits h ON h.door_hash = p.door_hash AND h.turf_id = p.turf_id
+			WHERE p.pick = 1
+			GROUP BY p.door_hash, p.turf_id
 		)
 		SELECT t.turf_id AS turfId, t.folder_id AS folderId, t.name AS turfName,
-			t.region_name AS regionName, count(*) AS doors
-		FROM hits h
-		JOIN van_turfs t ON t.turf_id = h.turf_id
-		WHERE h.pick = 1
+			t.region_name AS regionName, count(*) AS doors, sum(d.in_app) AS appDoors,
+			EXISTS (
+				SELECT 1 FROM van_turf_checkouts k
+				WHERE k.turf_id = t.turf_id
+					AND k.claimed_at < ${to}
+					AND coalesce(k.completed_at, k.released_at, '9999-12-31') >= ${from}
+			) AS checkedOut
+		FROM doors d
+		JOIN van_turfs t ON t.turf_id = d.turf_id
 		GROUP BY t.turf_id
-	`)) as TurfDoors[];
+	`)) as Array<Omit<TurfDoors, 'checkedOut'> & { checkedOut: number }>;
 
 	const [outside] = (await db.all(sql`
 		SELECT count(*) AS n
@@ -122,7 +162,12 @@ export async function countDoorsByTurf(
 	`)) as Array<{ n: number }>;
 
 	return {
-		turfs: turfs.map((t) => ({ ...t, doors: Number(t.doors) })),
+		turfs: rows.map((t) => ({
+			...t,
+			doors: Number(t.doors),
+			appDoors: Number(t.appDoors),
+			checkedOut: Boolean(t.checkedOut),
+		})),
 		peopleOutsideTurfs: Number(outside?.n ?? 0),
 	};
 }
@@ -149,6 +194,8 @@ export interface DailyReportResult {
 	campaignId: number;
 	day: string;
 	doors: number;
+	/** Of `doors`, knocked through this app. */
+	appDoors: number;
 	turfs: number;
 	folders: number;
 	peopleOutsideTurfs: number;
@@ -176,6 +223,7 @@ export async function runDailyDoorReport(
 		campaignId: campaign.id,
 		day: options.day,
 		doors: 0,
+		appDoors: 0,
 		turfs: 0,
 		folders: 0,
 		peopleOutsideTurfs: 0,
@@ -226,8 +274,10 @@ export async function runDailyDoorReport(
 			peopleOutsideTurfs: counts.peopleOutsideTurfs,
 		};
 		const folders = groupByFolder(report);
-		result.doors = folders.reduce((sum, f) => sum + f.doors, 0);
-		result.turfs = folders.reduce((sum, f) => sum + f.turfs.length, 0);
+		const all = totals(folders.flatMap((f) => f.turfs));
+		result.doors = all.doors;
+		result.appDoors = all.appDoors;
+		result.turfs = all.turfs;
 		result.folders = folders.length;
 		result.peopleOutsideTurfs = counts.peopleOutsideTurfs;
 		const rows = buildReportRows(report);

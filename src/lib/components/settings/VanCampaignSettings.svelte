@@ -239,9 +239,10 @@
 		aria-label="Nightly door report spreadsheet"
 	/>
 	<p class="app-config-note">
-		At 10pm, a new tab in this spreadsheet lists every turf with doors contacted that day — through
-		this app or not — by VAN folder, with totals, and the turf channel gets the totals and a link.
-		The tab is rewritten at 8am with anything MiniVAN synced overnight. Share the spreadsheet with
+		At 10pm, a new tab in this spreadsheet lists every turf with doors contacted that day by VAN
+		folder, marks the turf checked out through this app, and splits its doors into those knocked
+		through the app and outside it, with totals. The turf channel gets the totals and a link. The
+		tab is rewritten at 8am with anything MiniVAN synced overnight. Share the spreadsheet with
 		{#if serviceAccountEmail}<code>{serviceAccountEmail}</code>{:else}the app's Google service
 			account{/if} as an Editor, and keep it for this report alone: the app will not overwrite a tab it
 		did not write, so a tab of someone else's named for a date stops that day's report. Empty means no

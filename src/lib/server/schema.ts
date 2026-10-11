@@ -1113,6 +1113,17 @@ export const vanTurfs = sqliteTable(
 		 *  older cut, which is what queues a fresh export. Written only by the
 		 *  geometry worker. */
 		rosterSavedListId: integer('roster_saved_list_id'),
+		/** When an admin hid this turf from volunteers, from its card on /turfs.
+		 *  Hidden turf is left out of every volunteer list and refused at claim
+		 *  time; admins still see it, marked. A volunteer already holding it
+		 *  keeps it until the claim ends, like a disabled campaign's turf. NOT
+		 *  part of the catalog upsert, so a sync never un-hides it — but it
+		 *  belongs to this route id, so a re-cut's replacement routes start
+		 *  visible. */
+		hiddenAt: text('hidden_at'),
+		/** The display name of the admin who hid it, for /turfs/organizer. Their
+		 *  id is in the log line setTurfHidden writes. */
+		hiddenBy: text('hidden_by'),
 		/** Stamped, never deleted, so a live checkout pointing at a vanished
 		 *  route still renders. */
 		retiredAt: text('retired_at'),

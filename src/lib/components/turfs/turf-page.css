@@ -311,6 +311,22 @@ main {
 	accent-color: var(--color-border-focus);
 }
 
+/* An admin's "Hide from volunteers" box, at the foot of an open card. */
+.hide-check {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	margin-top: var(--space-3);
+	font-size: var(--font-size-sm);
+	cursor: pointer;
+}
+
+.hide-check input {
+	width: 1.125rem;
+	height: 1.125rem;
+	accent-color: var(--color-border-focus);
+}
+
 /* --- Map + list --------------------------------------------------------- */
 
 .turf-layout {
@@ -920,6 +936,13 @@ main {
 	max-width: 12em;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+/* Admins only. Dashed and unfilled: it is about who can see the turf, not
+   its state, so it must not read as another status chip. */
+.badge-hidden {
+	border: 1px dashed var(--color-text-muted);
+	color: var(--color-text);
 }
 
 /* Amber text, no rule and no fill: it is a caveat inside an open row, not a

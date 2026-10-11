@@ -24,7 +24,7 @@ import { inCampaign } from './campaigns.js';
 
 /** `doorsLeft` (turf-view.ts) in SQL: the uncontacted count when there is one
  *  built from the turf's current saved list, VAN's doorCount otherwise. */
-const doorsLeftColumn = sql<number>`case when ${vanTurfs.rosterSavedListId} = ${vanTurfs.savedListId}
+export const doorsLeftColumn = sql<number>`case when ${vanTurfs.rosterSavedListId} = ${vanTurfs.savedListId}
 	then coalesce(${vanTurfs.uncontactedDoors}, ${vanTurfs.doorCount})
 	else ${vanTurfs.doorCount} end`;
 

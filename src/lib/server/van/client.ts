@@ -164,6 +164,20 @@ export interface VanClient {
 	contactTypes(): Promise<VanContactType[]>;
 	/** Escape hatch for one-off reads (scripts/van-check.ts). */
 	get<T>(path: string): Promise<T>;
+	/** Cumulative counters since the client was made, for a script to report
+	 *  where its VAN time went. Optional so test doubles need not supply it. */
+	stats?(): VanClientStats;
+}
+
+export interface VanClientStats {
+	/** Time callers spent queued for one of the MAX_CONCURRENCY slots. High
+	 *  means our own limiter, not VAN, is what the caller waited on. */
+	slotWaitMs: number;
+	/** Time spent sleeping between retries of a 429, 5xx or network failure —
+	 *  while holding a slot. High means VAN is pushing back. */
+	retryWaitMs: number;
+	/** Retries of any kind. */
+	retries: number;
 }
 
 function authHeader(config: VanConfig): string {
@@ -213,6 +227,12 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	// requests in flight.
 	let active = 0;
 	const waiting: Array<() => void> = [];
+	const stats: VanClientStats = { slotWaitMs: 0, retryWaitMs: 0, retries: 0 };
+	const retryWait = async (ms: number): Promise<void> => {
+		stats.retries++;
+		stats.retryWaitMs += ms;
+		await new Promise((r) => setTimeout(r, ms));
+	};
 
 	/**
 	 * At most MAX_CONCURRENCY calls in flight.
@@ -226,7 +246,9 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	async function withSlot<T>(run: () => Promise<T>): Promise<T> {
 		if (active >= MAX_CONCURRENCY) {
 			// Resuming here means a slot was handed over, already counted.
+			const queuedAt = Date.now();
 			await new Promise<void>((resolve) => waiting.push(resolve));
+			stats.slotWaitMs += Date.now() - queuedAt;
 		} else {
 			active++;
 		}
@@ -254,7 +276,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 				} catch (err) {
 					// Network-level failure (DNS, reset, timeout). Retryable.
 					lastError = err;
-					if (!isLast) await new Promise((r) => setTimeout(r, backoffMs(attempt, null)));
+					if (!isLast) await retryWait(backoffMs(attempt, null));
 					continue;
 				}
 				if (res.ok) return res;
@@ -269,7 +291,7 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 					if (!isLast) {
 						const wait = backoffMs(attempt, res.headers.get('Retry-After'));
 						console.warn(`[van] ${path} ${res.status} — retrying in ${Math.round(wait / 1000)}s`);
-						await new Promise((r) => setTimeout(r, wait));
+						await retryWait(wait);
 					}
 					continue;
 				}
@@ -347,6 +369,8 @@ export function createVanClient(config: VanConfig, fetchFn: FetchFn = fetch): Va
 	}
 
 	return {
+		stats: () => ({ ...stats }),
+
 		folders: () => paginate<VanFolder>('/folders'),
 
 		mapRegions: (folderId) => paginate<VanMapRegion>(`/folders/${folderId}/mapRegions`),

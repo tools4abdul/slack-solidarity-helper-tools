@@ -18,9 +18,11 @@
  *
  * With VAN_ID_HASH_SECRET set, each export also builds the turf's roster for
  * the uncontacted-door count; `npm run van:sync` first queues every turf that
- * lacks one. The run then ends by pulling VAN's ContactHistory up to now and
- * recounting every turf — even when nothing was queued — so `van:sync` then
- * `van:drain` leaves the doors-left numbers current.
+ * lacks one. Each slice recounts the turfs it rostered in one go at its end,
+ * rather than one query per turf. The run then ends by pulling VAN's
+ * ContactHistory up to now — even when nothing was queued — which recounts
+ * the turfs whose people it saw contacted, so `van:sync` then `van:drain`
+ * leaves the doors-left numbers current.
  *
  * Usage (from project root):
  *   npm run van:drain                      # 30 minutes, 2 at a time
@@ -46,7 +48,8 @@ import { createClient } from '@libsql/client';
 import { drizzle } from 'drizzle-orm/libsql';
 import { dbConfig } from '../bin/db-config.js';
 import { createVanClient } from '../src/lib/server/van/client.js';
-import { runGeometryQueue } from '../src/lib/server/van/geometry-worker.js';
+import { runGeometryQueue, type GeometryTimings } from '../src/lib/server/van/geometry-worker.js';
+import type { VanClientStats } from '../src/lib/server/van/client.js';
 import { vanContactLock, vanSyncLock } from '../src/lib/server/van/locks.js';
 import { PRIMARY_CAMPAIGN_KEY } from '../src/lib/server/van/campaign-credentials.js';
 import {
@@ -55,10 +58,15 @@ import {
 	campaignKeyArg,
 	campaignRow,
 } from './campaign-arg.js';
-import { acquireSyncLock, releaseSyncLock } from '../src/lib/server/sync-lock.js';
+import { acquireSyncLock, extendSyncLock, releaseSyncLock } from '../src/lib/server/sync-lock.js';
 import { exportCallbackUrl } from '../src/lib/server/van/webhook-token.js';
 import { createPersonHasher } from '../src/lib/server/van/person-hash.js';
-import { rosterProgress, runContactSync } from '../src/lib/server/van/contact-sync.js';
+import {
+	contactPullDone,
+	recomputeUncontacted,
+	rosterProgress,
+	runContactSync,
+} from '../src/lib/server/van/contact-sync.js';
 import { loadGeometryProgress } from '../src/lib/server/van/geometry-progress-store.js';
 import { percentShaped } from '../src/lib/van/geometry-progress.js';
 
@@ -106,12 +114,135 @@ const client = createVanClient({
 /** Set by main() once the campaign row is read. */
 let campaignId = 0;
 
-/** Lock TTL for one slice, with room for the slice to overrun a little. */
-const LOCK_TTL_MS = 3 * SLICE_MS;
+/** How long turfs already under way at the end of a slice may keep going.
+ *  Without it the slice's deadline aborts their downloads, which counts as a
+ *  failed attempt and discards the export job — every slice, for every turf in
+ *  flight. Long enough for a download plus a couple of Census batches. */
+const FINISH_GRACE_MS = 2 * 60 * 1000;
+/** Lock TTL, kept alive by a heartbeat for as long as a slice runs. A slice
+ *  has no fixed length — the grace bounds downloads, not a VAN call stuck in
+ *  429 backoff — so no fixed TTL is safe: one that lapsed mid-slice would let
+ *  the scheduled sync take a row this run is in the middle of submitting, and
+ *  export it a second time. Short, so a crashed run frees the lock soon. */
+const LOCK_TTL_MS = 2 * 60 * 1000;
+const LOCK_HEARTBEAT_MS = 30 * 1000;
 /** Pause after each slice, longer than the sync route's lock poll. */
 const SLICE_GAP_MS = 10 * 1000;
 /** How long to wait for a scheduled sync to let go of the lock. */
 const LOCK_RETRY_MS = 15 * 1000;
+
+/** "1h 05m" / "12m" / "<1m". */
+function formatDuration(ms: number): string {
+	const minutes = Math.round(ms / 60_000);
+	if (minutes < 1) return '<1m';
+	const h = Math.floor(minutes / 60);
+	const m = minutes % 60;
+	return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
+/**
+ * When the queue should be empty, at the rate it has drained so far this run.
+ *
+ * The rate is over the run's working time: wall clock less the time spent
+ * waiting for a scheduled sync to give up the lock. Those waits come in
+ * minutes-long lumps every half hour, so counting them would swing the
+ * estimate by however recently one happened — a wait in the first slice made
+ * the whole run look several times slower than it was. The cost is that the
+ * estimate leaves out the syncs still to come, which is a few percent. Slice
+ * gaps do count: they are steady, and part of the real speed.
+ *
+ * Net of rows a scheduled sync queued meanwhile, which is the number that
+ * matters. Empty until something has cleared.
+ */
+function eta(workingMs: number, startPending: number, pending: number, deadline: number): string {
+	const cleared = startPending - pending;
+	if (cleared <= 0 || pending === 0 || workingMs <= 0) return '';
+	const leftMs = (pending * workingMs) / cleared;
+	const at = new Date(Date.now() + leftMs).toLocaleTimeString([], {
+		hour: 'numeric',
+		minute: '2-digit',
+	});
+	const pastBudget = Date.now() + leftMs > deadline ? ' (past this run’s budget)' : '';
+	return ` · done ~${at}, in ${formatDuration(leftMs)}${pastBudget}`;
+}
+
+const ZERO_STATS: VanClientStats = { slotWaitMs: 0, retryWaitMs: 0, retries: 0 };
+const clientStats = (): VanClientStats => client.stats?.() ?? ZERO_STATS;
+
+/** "1.2s" — per-turf stage times are seconds, not minutes. */
+const secs = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
+
+/**
+ * Where a turf's time went, on average: the stages from the worker, and from
+ * the VAN client how much of the VAN time was queueing behind its own limit of
+ * two calls or backing off from VAN — the two readings that say whether the
+ * limiter or VAN is what to change. `share` adds each stage's percentage, for
+ * the end-of-run summary.
+ */
+function formatTimings(t: GeometryTimings, van: VanClientStats, share = false): string {
+	if (t.turfs === 0) return 'no turfs';
+	const total = t.vanMs + t.pollWaitMs + t.downloadMs + t.geocodeMs + t.dbMs;
+	const stage = (label: string, ms: number) =>
+		`${label} ${secs(ms / t.turfs)}${share && total > 0 ? ` (${Math.round((100 * ms) / total)}%)` : ''}`;
+	return [
+		`${stage('van', t.vanMs)} [queued ${secs(van.slotWaitMs / t.turfs)}, ` +
+			`backoff ${secs(van.retryWaitMs / t.turfs)}${van.retries ? `, ${van.retries} retries` : ''}]`,
+		stage('poll', t.pollWaitMs),
+		stage('download+parse', t.downloadMs),
+		stage('geocode', t.geocodeMs),
+		stage('db', t.dbMs),
+	].join(' · ');
+}
+
+/** Fewest batches worth fitting a line to. */
+const MIN_FIT_WRITES = 10;
+
+/**
+ * What the db stage is made of: each finished turf's one batch of writes, per
+ * finished turf; then per turf picked up, the end-of-slice recount and the
+ * rest — the job id stored after each POST, a resumed turf's claim, a failed
+ * turf's record, and the time of any batch that failed. Then a line fitted through the batches, write time against
+ * roster rows: a big fixed part says each transaction costs the same whatever
+ * it carries, so writing a slice's turfs in one batch would pay; a big per-row
+ * part says the rows are the cost, and it would not.
+ *
+ * Several turfs writing at once each wait behind the others, which lands in
+ * the fixed part. For a clean reading run a few minutes at --concurrency 1.
+ */
+function formatDbBreakdown(t: GeometryTimings): string {
+	if (t.turfs === 0) return 'no turfs';
+	const other = Math.max(0, t.dbMs - t.writeMs - t.recountMs);
+	const parts = [
+		t.writes > 0
+			? `write ${secs(t.writeMs / t.writes)} per finished turf (${Math.round(t.writeRows / t.writes)} roster rows)`
+			: 'no writes',
+		`recount ${secs(t.recountMs / t.turfs)}`,
+		`other ${secs(other / t.turfs)}`,
+	];
+	const n = t.writes;
+	const spread = n * t.writeRowsSq - t.writeRows * t.writeRows;
+	if (n >= MIN_FIT_WRITES && spread > 0) {
+		const perRow = (n * t.writeRowsMs - t.writeRows * t.writeMs) / spread;
+		const fixed = (t.writeMs - perRow * t.writeRows) / n;
+		parts.push(`fit: ${secs(fixed)} + ${secs(perRow * 100)} per 100 rows`);
+	}
+	return parts.join(' · ');
+}
+
+const timingTotals: GeometryTimings = {
+	turfs: 0,
+	vanMs: 0,
+	pollWaitMs: 0,
+	downloadMs: 0,
+	geocodeMs: 0,
+	dbMs: 0,
+	writeMs: 0,
+	writes: 0,
+	writeRows: 0,
+	writeRowsSq: 0,
+	writeRowsMs: 0,
+	recountMs: 0,
+};
 
 const totals = {
 	attempted: 0,
@@ -127,25 +258,58 @@ const totals = {
 };
 
 /**
- * Pull VAN's ContactHistory up to now and recompute every turf's uncontacted
- * doors — what the scheduled sync does ~45 seconds at a time, done here in one
- * sitting so that van:sync followed by van:drain leaves the counts current.
- * Takes the contact pull's own lock, not the sync lock, per call.
+ * Retry the recounts slices could not finish. Outside the sync lock, as the
+ * contact pull's recounts are: it rewrites only counts. A failure here is
+ * reported, not thrown, so the contact pull still runs.
+ */
+async function recountMissed(turfIds: number[]): Promise<void> {
+	if (turfIds.length === 0) return;
+	try {
+		await recomputeUncontacted(db, { now: new Date(), campaignId, turfIds });
+		console.log(`\n  Recounted the ${turfIds.length} turf(s) a slice could not.`);
+	} catch (err) {
+		console.error(
+			`\n  ! Could not recount ${turfIds.length} turf(s); they show VAN's door count:`,
+			err,
+		);
+	}
+}
+
+/**
+ * Pull VAN's ContactHistory up to now and recount the turfs whose people it
+ * saw contacted — every counted turf on the campaign's first pull, only those
+ * after (runContactSync). What the scheduled sync does ~45 seconds at a time,
+ * done here in one sitting so that van:sync followed by van:drain leaves the
+ * counts current. Takes the contact pull's own lock, not the sync lock, per
+ * call.
  */
 async function pullContacts(deadline: number, isStopping: () => boolean): Promise<void> {
 	if (!roster) return;
 	console.log('\nContacts — pulling VAN ContactHistory up to now');
 	// Always leave room for this, even if the drain used the whole budget.
 	const until = Math.max(deadline, Date.now() + 15 * 60 * 1000);
+	// See contactPullDone: without it this chases "now" until `until`.
+	const pullStartedAt = Date.now();
 	let windows = 0;
 	let contacts = 0;
 	while (!isStopping() && Date.now() < until) {
-		const token = await acquireSyncLock(db, vanContactLock(campaignId), 3 * SLICE_MS);
+		const lock = vanContactLock(campaignId);
+		const token = await acquireSyncLock(db, lock, LOCK_TTL_MS);
 		if (!token) {
 			console.log('  … a scheduled sync is pulling contacts; waiting for it');
 			await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
 			continue;
 		}
+		// Kept alive like the slice's: a pass runs well past its time budget
+		// — the recount and stamping come after it — and one that outlived a
+		// fixed TTL would let the scheduled pull read the same window too.
+		const heartbeat = setInterval(() => {
+			extendSyncLock(db, lock, token, LOCK_TTL_MS)
+				.then((held) => {
+					if (!held) console.warn('  ! lost the contact lock mid-pass — a sync may overlap');
+				})
+				.catch((err) => console.warn('  ! could not extend the contact lock:', err));
+		}, LOCK_HEARTBEAT_MS);
 		let result: Awaited<ReturnType<typeof runContactSync>>;
 		try {
 			result = await runContactSync(db, client, {
@@ -154,7 +318,8 @@ async function pullContacts(deadline: number, isStopping: () => boolean): Promis
 				timeBudgetMs: Math.min(SLICE_MS, until - Date.now()),
 			});
 		} finally {
-			await releaseSyncLock(db, vanContactLock(campaignId), token);
+			clearInterval(heartbeat);
+			await releaseSyncLock(db, lock, token);
 		}
 		windows += result.windowsApplied;
 		contacts += result.contactsRead;
@@ -163,8 +328,7 @@ async function pullContacts(deadline: number, isStopping: () => boolean): Promis
 				`${result.contactsRead} contacts · ${result.turfsRecomputed} turfs recounted` +
 				(result.error ? ` · ${result.error}` : ''),
 		);
-		// Caught up: nothing applied, and no export job left waiting on VAN.
-		if (result.windowsApplied === 0 && !result.pending) {
+		if (contactPullDone(result, pullStartedAt)) {
 			if (result.error) console.log('  Stopped on the error above; the scheduled sync will retry.');
 			break;
 		}
@@ -195,7 +359,9 @@ async function main(): Promise<void> {
 		`Budget: ${MINUTES} min · ${CONCURRENCY} at a time${MAX_ITEMS ? ` · max ${MAX_ITEMS} item(s)` : ''}\n`,
 	);
 
-	const before = await loadGeometryProgress(db);
+	// This campaign's turf only: the queue this run works, and nothing another
+	// campaign — or another drain running on it — does to its own.
+	const before = await loadGeometryProgress(db, campaignId);
 	console.log(
 		`  Starting at ${percentShaped(before)}% — ${before.shaped} shaped, ${before.pending} queued, ${before.failed} failed\n`,
 	);
@@ -208,26 +374,72 @@ async function main(): Promise<void> {
 
 	// Ctrl-C releases the lock rather than leaving it to expire; whatever row is
 	// mid-flight keeps its export job id and resumes on the next run.
+	//
+	// The first press lets the slice finish, which with its grace can be a few
+	// minutes. A second quits at once, releasing the lock on the way out. Rows
+	// in flight are left `running`: one with a job id resumes by polling, and
+	// one caught mid-POST resubmits — at worst one orphaned export in VAN.
+	// The slice's end-of-slice recount is skipped too, so turfs it rostered
+	// show VAN's door count instead of doors left until a recount reaches them.
 	let stopping = false;
+	/** The sync lock while a slice holds it, for a forced quit to release. */
+	let heldToken: string | null = null;
 	const onSignal = () => {
-		if (stopping) return;
-		stopping = true;
-		console.log('\n  Stopping after this slice…');
+		if (!stopping) {
+			stopping = true;
+			console.log('\n  Stopping after this slice… (Ctrl-C again to quit now)');
+			return;
+		}
+		console.log('\n  Quitting now.');
+		const release = heldToken
+			? releaseSyncLock(db, vanSyncLock(campaignId), heldToken).catch(() => {})
+			: Promise.resolve();
+		// Bounded: a database that is not answering must not hold the exit up.
+		void Promise.race([release, new Promise((r) => setTimeout(r, 3000))]).then(() =>
+			process.exit(130),
+		);
 	};
 	process.on('SIGINT', onSignal);
 	process.on('SIGTERM', onSignal);
 
-	const deadline = Date.now() + MINUTES * 60 * 1000;
+	const startedAt = Date.now();
+	const deadline = startedAt + MINUTES * 60 * 1000;
+	let geometryVanStats: VanClientStats;
+	/** Time spent waiting for a scheduled sync to let go of the lock — kept
+	 *  out of the ETA's rate; see eta(). */
+	let syncWaitMs = 0;
+	let syncWaitStarted: number | null = null;
+	/** Turfs a slice's end-of-slice recount failed for, retried once at the
+	 *  end — nothing else would reach them. */
+	const unrecounted: number[] = [];
 	try {
 		let slice = 0;
 		while (!stopping && Date.now() < deadline) {
 			const remaining = deadline - Date.now();
 			const token = await acquireSyncLock(db, vanSyncLock(campaignId), LOCK_TTL_MS);
 			if (!token) {
-				console.log('  … a scheduled sync holds the lock; waiting for it');
+				if (syncWaitStarted === null) {
+					syncWaitStarted = Date.now();
+					console.log('  … a scheduled sync holds the lock; waiting for it');
+				}
 				await new Promise((r) => setTimeout(r, LOCK_RETRY_MS));
 				continue;
 			}
+			if (syncWaitStarted !== null) {
+				const waited = Date.now() - syncWaitStarted;
+				syncWaitMs += waited;
+				syncWaitStarted = null;
+				console.log(`  … the sync finished after ${formatDuration(waited)}; carrying on`);
+			}
+			heldToken = token;
+			const heartbeat = setInterval(() => {
+				extendSyncLock(db, vanSyncLock(campaignId), token, LOCK_TTL_MS)
+					.then((held) => {
+						if (!held) console.warn('  ! lost the sync lock mid-slice — another run may overlap');
+					})
+					.catch((err) => console.warn('  ! could not extend the sync lock:', err));
+			}, LOCK_HEARTBEAT_MS);
+			const vanBefore = clientStats();
 			let result: Awaited<ReturnType<typeof runGeometryQueue>>;
 			try {
 				result = await runGeometryQueue(db, client, {
@@ -235,6 +447,9 @@ async function main(): Promise<void> {
 					exportJobTypeId,
 					webhookUrlFor: (turfId) => exportCallbackUrl(appUrl, cronSecret, turfId),
 					timeBudgetMs: Math.min(SLICE_MS, remaining),
+					finishGraceMs: FINISH_GRACE_MS,
+					// The database is most of a turf's time; see batchRecount.
+					batchRecount: true,
 					concurrency: CONCURRENCY,
 					maxItems: MAX_ITEMS,
 					roster,
@@ -242,6 +457,8 @@ async function main(): Promise<void> {
 					// channel does not need a line per dead letter from a backfill.
 				});
 			} finally {
+				clearInterval(heartbeat);
+				heldToken = null;
 				await releaseSyncLock(db, vanSyncLock(campaignId), token);
 			}
 			// Let a scheduled sync in. It polls for the lock while this holds it,
@@ -262,27 +479,51 @@ async function main(): Promise<void> {
 			totals.hullsTooLarge += result.hullsTooLarge;
 
 			slice += 1;
-			const progress = await loadGeometryProgress(db);
+			const progress = await loadGeometryProgress(db, campaignId);
 			console.log(
 				`  [${String(slice).padStart(3)}] +${String(result.hullsStored).padStart(3)} hulls · ` +
 					`${percentShaped(progress)}% · ${progress.shaped}/${progress.eligible} shaped · ` +
 					`${progress.pending} left · +${result.rostersStored} rosters` +
-					`${result.deadLettered > 0 ? ` · ${result.deadLettered} dead-lettered` : ''}`,
+					`${result.deadLettered > 0 ? ` · ${result.deadLettered} dead-lettered` : ''}` +
+					eta(Date.now() - startedAt - syncWaitMs, before.pending, progress.pending, deadline),
 			);
 			for (const line of result.deadLetters) console.log(`        ${line}`);
+			if (result.unrecounted.length > 0) {
+				unrecounted.push(...result.unrecounted);
+				console.log(
+					`        ! ${result.unrecounted.length} turf(s) not recounted; retrying at the end`,
+				);
+			}
+			const vanAfter = clientStats();
+			console.log(
+				`        per turf: ${formatTimings(result.timings, {
+					slotWaitMs: vanAfter.slotWaitMs - vanBefore.slotWaitMs,
+					retryWaitMs: vanAfter.retryWaitMs - vanBefore.retryWaitMs,
+					retries: vanAfter.retries - vanBefore.retries,
+				})}`,
+			);
+			console.log(`        db: ${formatDbBreakdown(result.timings)}`);
+			for (const key of Object.keys(timingTotals) as Array<keyof GeometryTimings>) {
+				timingTotals[key] += result.timings[key];
+			}
 
 			// Nothing attempted means the queue is empty — or every row left is
 			// one this run already failed, which retrying now will not fix.
 			if (result.attempted === 0 || progress.pending === 0) break;
 			if (MAX_ITEMS) break;
 		}
+		// A run that ended while still waiting on a sync still waited.
+		if (syncWaitStarted !== null) syncWaitMs += Date.now() - syncWaitStarted;
+		// Before the contact pull, whose VAN calls are not the turfs'.
+		geometryVanStats = clientStats();
+		await recountMissed(unrecounted);
 		await pullContacts(deadline, () => stopping);
 	} finally {
 		process.off('SIGINT', onSignal);
 		process.off('SIGTERM', onSignal);
 	}
 
-	const after = await loadGeometryProgress(db);
+	const after = await loadGeometryProgress(db, campaignId);
 	console.log('\nDone');
 	console.log(`  turfs attempted     ${totals.attempted}`);
 	console.log(`  hulls stored        ${totals.hullsStored}`);
@@ -300,12 +541,18 @@ async function main(): Promise<void> {
 	if (totals.hullsTooLarge > 0) {
 		console.log(`  implausibly large   ${totals.hullsTooLarge}   (stored, but worth a look)`);
 	}
+	if (syncWaitMs > 0) {
+		console.log(`  waited for syncs    ${formatDuration(syncWaitMs)}`);
+	}
+	console.log(`\n  Time per turf, averaged over ${timingTotals.turfs}:`);
+	console.log(`    ${formatTimings(timingTotals, geometryVanStats, true)}`);
+	console.log(`    db: ${formatDbBreakdown(timingTotals)}`);
 	console.log(
 		`\n  Now at ${percentShaped(after)}% — ${after.shaped}/${after.eligible} shaped, ` +
 			`${after.pending} queued, ${after.failed} failed.`,
 	);
 	if (roster) {
-		const rosters = await rosterProgress(db);
+		const rosters = await rosterProgress(db, campaignId);
 		console.log(`  Rosters: ${rosters.rostered}/${rosters.live} live turfs.`);
 	}
 	console.log('  npm run van:geometry shows this any time.\n');

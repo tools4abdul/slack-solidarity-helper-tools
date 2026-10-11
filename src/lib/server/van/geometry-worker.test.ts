@@ -35,10 +35,24 @@ function makeDb(queueRows: Record<string, unknown>[], turfRows: Record<string, u
 	const updates: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
 	function thenableFor(table: unknown) {
+		let joined = false;
+		const rows = () => {
+			const own = (tables.get(table) ?? []).map((row) => ({ ...row }));
+			if (!joined) return own;
+			// The join brings each queue row its turf's columns, as SQL would.
+			return own.map((row) => ({
+				...turfRows.find((turf) => turf.turfId === row.turfId),
+				...row,
+			}));
+		};
 		const chain: Record<string, unknown> = {
 			// The worker joins the queue to van_turfs to keep to one campaign;
-			// every row here is that campaign's, so the stub reads the queue.
-			innerJoin: () => chain,
+			// every row here is that campaign's, so the stub reads the queue
+			// and only folds the turf's columns in.
+			innerJoin: () => {
+				joined = true;
+				return chain;
+			},
 			where: () => chain,
 			orderBy: () => chain,
 			limit: () => chain,
@@ -46,8 +60,7 @@ function makeDb(queueRows: Record<string, unknown>[], turfRows: Record<string, u
 			// rows. Returning the stored objects would let an update silently
 			// mutate a row the caller is still holding — which real code would
 			// never see, so a test must not either.
-			then: (resolve: (v: unknown) => unknown) =>
-				Promise.resolve((tables.get(table) ?? []).map((row) => ({ ...row }))).then(resolve),
+			then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows()).then(resolve),
 		};
 		return chain;
 	}
@@ -63,6 +76,9 @@ function makeDb(queueRows: Record<string, unknown>[], turfRows: Record<string, u
 				return { where: () => Promise.resolve(undefined) };
 			},
 		}),
+		// The stub's updates apply as they are built, so a batch has nothing
+		// left to do but wait for them.
+		batch: (statements: unknown[]) => Promise.all(statements),
 	};
 	return { db: db as never, updates, queueRows, turfRows };
 }
@@ -266,6 +282,60 @@ describe('runGeometryQueue', () => {
 		// The attempt must not count against it, or a busy run would dead-letter
 		// a turf it never actually tried.
 		expect(last.attempts).toBe(0);
+	});
+
+	// The drain script's slices: a turf already under way when the slice's
+	// budget runs out finishes inside the grace instead of being cut off.
+	it('finishes a turf already under way when given a grace period', async () => {
+		const fetchFn = vi.fn(okCsv());
+		const { db, updates } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
+		const result = await runGeometryQueue(
+			db,
+			makeClient({
+				createExportJob: async () => {
+					await new Promise((r) => setTimeout(r, 60));
+					return job();
+				},
+			}),
+			{ ...OPTIONS, fetchFn, timeBudgetMs: 30, finishGraceMs: 30_000 },
+		);
+
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(fetchFn.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+		expect(result.hullsStored).toBe(1);
+		expect(result.stillRunning).toBe(0);
+		expect(patchesFor(updates, vanGeometryQueue).at(-1)!.status).toBe('done');
+	});
+
+	it('times each stage of a turf separately', async () => {
+		const csv = okCsv();
+		const fetchFn = vi.fn(async (...args: Parameters<typeof fetch>) => {
+			await new Promise((r) => setTimeout(r, 40));
+			return csv(...args);
+		});
+		const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 76 }]);
+		const started = Date.now();
+		const result = await runGeometryQueue(
+			db,
+			makeClient({
+				createExportJob: async () => {
+					await new Promise((r) => setTimeout(r, 40));
+					return job();
+				},
+			}),
+			{ ...OPTIONS, fetchFn },
+		);
+		const wall = Date.now() - started;
+
+		const t = result.timings;
+		expect(t.turfs).toBe(1);
+		expect(t.vanMs).toBeGreaterThanOrEqual(35);
+		expect(t.downloadMs).toBeGreaterThanOrEqual(35);
+		expect(t.geocodeMs).toBe(0);
+		expect(t.pollWaitMs).toBe(0);
+		// One turf alone: its stages cannot add up to more than the run took,
+		// which is what counting any stretch of time twice would do.
+		expect(t.vanMs + t.pollWaitMs + t.downloadMs + t.geocodeMs + t.dbMs).toBeLessThanOrEqual(wall);
 	});
 
 	it('resumes a running job by polling instead of submitting a second one', async () => {
@@ -611,6 +681,30 @@ describe('runGeometryQueue', () => {
 		expect(patchesFor(updates, vanGeometryQueue).at(-1)!.status).toBe('failed');
 	});
 
+	// A fresh row is first written after its POST, so a POST that fails has
+	// only the failure write to count the attempt in. Without it, a list VAN
+	// refuses to export would retry forever instead of dead-lettering.
+	it('counts the attempt when the POST itself fails', async () => {
+		const { db, updates } = makeDb(
+			[pendingRow({ attempts: MAX_ATTEMPTS - 1 })],
+			[{ turfId: 100, routeSize: 76 }],
+		);
+		const result = await runGeometryQueue(
+			db,
+			makeClient({
+				createExportJob: async () => {
+					throw new VanError('/exportJobs', 503, [], 'unavailable');
+				},
+			}),
+			{ ...OPTIONS, fetchFn: okCsv() },
+		);
+
+		expect(result.deadLettered).toBe(1);
+		const patches = patchesFor(updates, vanGeometryQueue);
+		expect(patches).toHaveLength(1);
+		expect(patches[0]).toMatchObject({ status: 'failed', attempts: MAX_ATTEMPTS });
+	});
+
 	it('keeps at most two turfs in flight', async () => {
 		let active = 0;
 		let peak = 0;
@@ -716,6 +810,37 @@ describe('runGeometryQueue', () => {
 			expect(result.geocodedFromAddress).toBe(3);
 			expect(result.hullsStored).toBe(1);
 			expect(JSON.parse(patchesFor(updates, vanTurfs)[0]!.hullJson as string)).toHaveLength(3);
+		});
+
+		// The geocoder runs inside the download-and-extract timer, so it has to be
+		// taken back out — or a Census-bound run would read as a slow download.
+		it('counts geocoding apart from the download it runs inside', async () => {
+			const geocode = vi.fn(async (rows: readonly { id: string }[]) => {
+				await new Promise((r) => setTimeout(r, 100));
+				const points = [
+					{ lat: 28.5, lng: -81.4 },
+					{ lat: 28.503, lng: -81.4 },
+					{ lat: 28.503, lng: -81.397 },
+				];
+				return new Map(rows.map((row, i) => [row.id, points[i]!]));
+			});
+			const { db } = makeDb([pendingRow()], [{ turfId: 100, routeSize: 3 }]);
+			const started = Date.now();
+			const result = await runGeometryQueue(db, makeClient(), {
+				...OPTIONS,
+				geocode,
+				fetchFn: okCsv(UNGEOCODED),
+			});
+			const wall = Date.now() - started;
+
+			const t = result.timings;
+			expect(geocode).toHaveBeenCalledOnce();
+			expect(t.geocodeMs).toBeGreaterThanOrEqual(95);
+			// The download itself is instant here; the geocoder's 100ms is not in it.
+			expect(t.downloadMs).toBeLessThan(60);
+			expect(t.vanMs + t.pollWaitMs + t.downloadMs + t.geocodeMs + t.dbMs).toBeLessThanOrEqual(
+				wall,
+			);
 		});
 
 		// An explicit null is the only way to turn it off, and it must stop the

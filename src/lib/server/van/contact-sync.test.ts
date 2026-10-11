@@ -5,6 +5,7 @@ import { migrate } from 'drizzle-orm/libsql/migrator';
 import type { VanClient } from './client.js';
 import {
 	clearUncontacted,
+	contactPullDone,
 	contactTimestamp,
 	JOB_STALE_MS,
 	MAX_BACKFILL_MS,
@@ -91,6 +92,47 @@ describe('contactTimestamp', () => {
 	it('is null for anything else', () => {
 		expect(contactTimestamp('')).toBeNull();
 		expect(contactTimestamp('yesterday')).toBeNull();
+	});
+});
+
+describe('contactPullDone', () => {
+	const started = Date.parse('2026-10-10T22:26:00.000Z');
+	const after = (ms: number) => new Date(started + ms).toISOString();
+
+	// The drain's log: every pass applied a window ending at its own start,
+	// two minutes after the last, so "nothing applied" never came.
+	it('stops once a window reaches the pull’s start, though one was applied', () => {
+		expect(
+			contactPullDone({ windowsApplied: 1, cursor: after(36_000), pending: false }, started),
+		).toBe(true);
+		expect(contactPullDone({ windowsApplied: 1, cursor: after(0), pending: false }, started)).toBe(
+			true,
+		);
+	});
+
+	it('keeps going while the cursor is still behind the start', () => {
+		// More than a day behind: one pass reads a 24-hour window, not to now.
+		expect(
+			contactPullDone({ windowsApplied: 1, cursor: after(-WINDOW_MS), pending: false }, started),
+		).toBe(false);
+	});
+
+	it('stops when a pass has nothing to apply', () => {
+		expect(
+			contactPullDone({ windowsApplied: 0, cursor: after(-30_000), pending: false }, started),
+		).toBe(true);
+		expect(contactPullDone({ windowsApplied: 0, cursor: null, pending: false }, started)).toBe(
+			true,
+		);
+	});
+
+	it('waits for an export job VAN has not finished', () => {
+		expect(
+			contactPullDone({ windowsApplied: 0, cursor: after(-60_000), pending: true }, started),
+		).toBe(false);
+		expect(contactPullDone({ windowsApplied: 1, cursor: after(0), pending: true }, started)).toBe(
+			false,
+		);
 	});
 });
 

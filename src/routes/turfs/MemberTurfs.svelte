@@ -34,6 +34,9 @@
 	let selectedId = $state<number | null>(null);
 	let copied = $state<Record<number, boolean>>({});
 	let busy = $state<Record<number, boolean>>({});
+	/** Turf whose "Hide from volunteers" change is in flight. Apart from
+	 *  `busy`, which the claim button reads as "Checking out…". */
+	let hiding = $state<Record<number, boolean>>({});
 	let error = $state<string | null>(null);
 	/** List numbers handed back by a successful claim this session. The load
 	 *  function only issues one for turf you already held when the page
@@ -426,6 +429,33 @@
 			error = "Couldn't reach the server. Check your signal and try again.";
 		} finally {
 			delete busy[turf.turfId];
+		}
+	}
+
+	/** An admin's "Hide from volunteers" box. Its own request rather than
+	 *  `act`, which would clear the claim state kept for the turf. */
+	async function setHidden(turf: TurfView, box: HTMLInputElement) {
+		const hidden = box.checked;
+		hiding[turf.turfId] = true;
+		error = null;
+		let saved = false;
+		try {
+			const res = await fetch(`/api/turfs/${turf.turfId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: hidden ? 'hide' : 'unhide' }),
+			});
+			const body = await res.json().catch(() => ({}));
+			if (res.ok) saved = true;
+			else error = body.error ?? 'Something went wrong. Try again.';
+		} catch {
+			error = "Couldn't reach the server. Check your signal and try again.";
+		} finally {
+			// By hand: `checked` is one-way, and a refusal reloads the same
+			// `turf.hidden`, which Svelte will not write back to the box.
+			if (!saved) box.checked = !hidden;
+			await invalidateAll().catch(() => {});
+			delete hiding[turf.turfId];
 		}
 	}
 
@@ -867,6 +897,13 @@
 											     borrowing the wrong colour. -->
 												<span class="badge badge-{turf.status}">{statusLabel(turf.status)}</span>
 											</span>
+											{#if turf.hidden}
+												<!-- Admins only: the server sends hidden turf to nobody
+												     else but its holder, and never the flag. -->
+												<span class="badge badge-hidden" title="Volunteers can't see this turf"
+													>Hidden</span
+												>
+											{/if}
 											{#if badgeFor(turf)}
 												<!-- Which campaign's VAN the turf is from, while there is
 												     more than one. Neutral and outlined: it names a source,
@@ -982,6 +1019,20 @@
 											Someone's already walking this turf. Check back later, or pick another turf
 											nearby.
 										</p>
+									{/if}
+									{#if data.isAdmin}
+										<!-- Last, under the volunteer's view of the card, so an admin
+										     reads the turf as a volunteer would before changing who
+										     sees it. The API refuses anyone else. -->
+										<label class="hide-check admin-only">
+											<input
+												type="checkbox"
+												checked={turf.hidden === true}
+												disabled={hiding[turf.turfId]}
+												onchange={(e) => setHidden(turf, e.currentTarget)}
+											/>
+											Hide from volunteers
+										</label>
 									{/if}
 								</div>
 							{/if}

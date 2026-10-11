@@ -87,6 +87,26 @@ async function contact(vanId: string, at: string, campaignId = 1) {
 
 const count = () => countDoorsByTurf(db, { campaignId: 1, ...BOUNDS });
 
+async function checkout(
+	turfId: number,
+	claimedAt: string,
+	ended: { completedAt?: string; releasedAt?: string } = {},
+) {
+	await client.execute({
+		sql: `INSERT INTO van_turf_checkouts
+		        (turf_id, slack_user_id, slack_user_name, claimed_at, expires_at, completed_at, released_at)
+		      VALUES (?, 'U1', 'Dana', ?, '2026-10-09T00:00:00.000Z', ?, ?)`,
+		args: [turfId, claimedAt, ended.completedAt ?? null, ended.releasedAt ?? null],
+	});
+}
+
+/** turfId → [doors in app, doors in all, checked out]. */
+async function split() {
+	return Object.fromEntries(
+		(await count()).turfs.map((t) => [t.turfId, [t.appDoors, t.doors, t.checkedOut]]),
+	);
+}
+
 describe('countDoorsByTurf', () => {
 	it('counts a door once however many of its people were contacted', async () => {
 		await turf(1);
@@ -97,7 +117,15 @@ describe('countDoorsByTurf', () => {
 
 		const { turfs } = await count();
 		expect(turfs).toEqual([
-			{ turfId: 1, folderId: 10, turfName: 'Turf 1', regionName: 'R01A_Alger', doors: 2 },
+			{
+				turfId: 1,
+				folderId: 10,
+				turfName: 'Turf 1',
+				regionName: 'R01A_Alger',
+				doors: 2,
+				appDoors: 0,
+				checkedOut: false,
+			},
 		]);
 	});
 
@@ -167,6 +195,52 @@ describe('countDoorsByTurf', () => {
 	});
 });
 
+describe('doors through the app', () => {
+	beforeEach(async () => {
+		await turf(1);
+		await turf(2);
+		await roster(1, { a: '1 Main St', b: '2 Main St', c: '3 Main St' });
+		await roster(2, { d: '4 Main St' });
+	});
+
+	// Claimed at 2pm, marked walked at 4pm (EDT).
+	it("counts doors knocked inside a checkout as the app's, the rest as outside", async () => {
+		await checkout(1, '2026-10-07T18:00:00.000Z', { completedAt: '2026-10-07T20:00:00.000Z' });
+		await contact('a', '2026-10-07T19:00:00.000Z'); // during the claim
+		await contact('b', '2026-10-07T17:45:00.000Z'); // within the 30 min lead
+		await contact('c', '2026-10-07T23:00:00.000Z'); // hours after walked
+		await contact('d', '2026-10-07T19:00:00.000Z'); // a turf never checked out
+
+		expect(await split()).toEqual({ 1: [2, 3, true], 2: [0, 1, false] });
+	});
+
+	it('ends a given-back claim at its release, and a live one not at all', async () => {
+		await checkout(1, '2026-10-07T18:00:00.000Z', { releasedAt: '2026-10-07T19:00:00.000Z' });
+		await checkout(2, '2026-10-07T20:00:00.000Z');
+		await contact('a', '2026-10-07T18:30:00.000Z');
+		await contact('b', '2026-10-07T19:30:00.000Z'); // after it was given back
+		await contact('d', '2026-10-08T01:00:00.000Z'); // late, claim still held
+
+		expect(await split()).toEqual({ 1: [1, 2, true], 2: [1, 1, true] });
+	});
+
+	it("counts a door once, as the app's when any of its people were knocked in the claim", async () => {
+		await roster(1, { a: '1 Main St', b: '1 Main St' });
+		await checkout(1, '2026-10-07T18:00:00.000Z', { completedAt: '2026-10-07T19:00:00.000Z' });
+		await contact('a', '2026-10-07T18:30:00.000Z');
+		await contact('b', '2026-10-07T23:30:00.000Z');
+
+		expect(await split()).toEqual({ 1: [1, 1, true] });
+	});
+
+	it('ignores a checkout from another day', async () => {
+		await checkout(1, '2026-10-05T18:00:00.000Z', { completedAt: '2026-10-05T20:00:00.000Z' });
+		await contact('a', '2026-10-07T18:30:00.000Z');
+
+		expect(await split()).toEqual({ 1: [0, 1, false] });
+	});
+});
+
 describe('dailyReportCampaigns', () => {
 	it('is the enabled campaigns with a spreadsheet', async () => {
 		expect(await dailyReportCampaigns(db)).toEqual([]);
@@ -219,9 +293,11 @@ describe('runDailyDoorReport', () => {
 		expect(result).toMatchObject({ doors: 2, turfs: 1, folders: 1, written: true, posted: true });
 		const [{ spreadsheetId, tabName, rows }] = replaceTab.mock.calls[0]!;
 		expect({ spreadsheetId, tabName }).toEqual({ spreadsheetId: 'sheet-abc', tabName: DAY });
-		expect(rows).toContainEqual({ cells: ['Alger County', 'Turf 1', 'R01A_Alger', 2] });
+		expect(rows).toContainEqual({
+			cells: ['Alger County', 'Turf 1', 'R01A_Alger', '', 0, 2, 2],
+		});
 		const text = post.mock.calls[0]![0] as string;
-		expect(text).toContain('*2* doors on 1 turf in 1 folder');
+		expect(text).toContain('*2* doors on 1 turf in 1 folder: *0* through the app, *2* outside it.');
 		expect(text).toContain('https://docs.google.com/spreadsheets/d/sheet-abc/edit#gid=42');
 	});
 
@@ -238,7 +314,7 @@ describe('runDailyDoorReport', () => {
 			{ day: DAY, announce: false },
 		);
 		expect(replaceTab.mock.calls[0]![0].rows).toContainEqual({
-			cells: ['Folder 10', 'Turf 1', 'R01A_Alger', 2],
+			cells: ['Folder 10', 'Turf 1', 'R01A_Alger', '', 0, 2, 2],
 		});
 	});
 
@@ -277,7 +353,7 @@ describe('runDailyDoorReport', () => {
 		await runDailyDoorReport(deps(), campaign, { day: DAY, announce: true });
 		expect(replaceTab.mock.calls[0]![0]).toMatchObject({
 			ownedPrefix: 'Doors contacted · ',
-			columnWidths: [220, 220, 200, 120],
+			columnWidths: [200, 200, 180, 130, 100, 120, 100],
 		});
 		expect(post.mock.calls[0]![0]).toContain('could not be written');
 		// Not an access problem, so no advice about sharing.

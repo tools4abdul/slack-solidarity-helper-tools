@@ -88,10 +88,11 @@ export async function loadNearbySummary(
 	const dLat = reach / 69.05;
 	const dLng = reach / (69.17 * Math.max(0.05, Math.cos((point.lat * Math.PI) / 180)));
 
-	// Each turf with whether it is on offer: its campaign enabled, and a chapter
-	// /turfs lists able to see it. Turf that is not adds no doors and is not
-	// drawn — the signed-in map hides it the same way — but anyone still
-	// walking it is still out canvassing, and still counted.
+	// Each turf with whether it is on offer: its campaign enabled, not hidden
+	// by an admin, and a chapter /turfs lists able to see it. Turf that is not
+	// adds no doors and is not drawn — the signed-in map hides it the same
+	// way — but anyone still walking it is still out canvassing, and still
+	// counted.
 	const reachable =
 		turfChapterIds === null
 			? sql<number>`1`
@@ -115,7 +116,7 @@ export async function loadNearbySummary(
 		const centre = { lat: turf.centroidLat!, lng: turf.centroidLng! };
 		return {
 			...turf,
-			offered: campaignEnabled && Number(reachable) === 1,
+			offered: campaignEnabled && Number(reachable) === 1 && turf.hiddenAt === null,
 			centre,
 			nearby: haversineMeters(point, centre) <= nearbyLimit,
 		};
@@ -187,6 +188,7 @@ export async function loadTurfCentre(
 		.where(
 			and(
 				isNull(vanTurfs.retiredAt),
+				isNull(vanTurfs.hiddenAt),
 				turfCampaignEnabled(),
 				turfChapterIds === null ? undefined : visibleToAnyChapter(turfChapterIds),
 				isNotNull(vanTurfs.centroidLat),

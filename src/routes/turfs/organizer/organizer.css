@@ -329,3 +329,17 @@ tr:hover td {
 	line-height: 1.4;
 	max-width: 34ch;
 }
+
+/* --- Hidden from volunteers ---------------------------------------------- */
+
+.section-note.is-error {
+	color: var(--color-error);
+}
+
+.unhide-check {
+	width: 1.125rem;
+	height: 1.125rem;
+	margin: 0;
+	accent-color: var(--color-border-focus);
+	cursor: pointer;
+}
