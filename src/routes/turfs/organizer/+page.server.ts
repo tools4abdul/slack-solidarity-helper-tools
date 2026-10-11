@@ -32,6 +32,11 @@ import type { HolderAccount } from '$lib/holder-account.js';
 import { INTERNAL_CRON_SECRET, PORT } from '$lib/server/env.js';
 import { localCaller } from '$lib/server/scheduler.js';
 import {
+	loadHiddenTurfs,
+	setTurfHidden,
+	type HiddenTurfRow,
+} from '$lib/server/van/turf-hide-store.js';
+import {
 	lastVanSyncs,
 	startManualVanSync,
 	type CampaignLastSync,
@@ -75,6 +80,11 @@ export interface SuspectView extends SuspectCompletion {
 	completedAgoLabel: string;
 }
 
+export interface HiddenTurfView extends HiddenTurfRow {
+	/** "2 days ago", against this load's `now`. See HoldingView.claimedAgoLabel. */
+	hiddenAgoLabel: string;
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
 	// Checked here, not just in +layout.server.ts — layout and page loads run
 	// concurrently, so an unauthenticated request still reaches this function.
@@ -113,6 +123,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		driftVisibility,
 		geometry,
 		lastSyncs,
+		hiddenRows,
 	] = await Promise.all([
 		loadCurrentHoldings(db, query),
 		loadRecentCompletions(db, { ...query, limit: COMPLETION_LOOKBACK }),
@@ -124,6 +135,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		// report a different denominator than the work actually left.
 		loadGeometryProgress(db),
 		lastVanSyncs(db),
+		loadHiddenTurfs(db, query),
 	]);
 
 	// Story 8.2. Both sides of the comparison are our own columns — the sync
@@ -153,6 +165,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		completedAgoLabel: relativeSince(c.completedAt, now),
 	}));
 
+	const hidden: HiddenTurfView[] = hiddenRows.map((t) => ({
+		...t,
+		hiddenAgoLabel: relativeSince(t.hiddenAt, now),
+	}));
+
 	return {
 		pageTitle: 'Turf right now',
 		drift: {
@@ -171,6 +188,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		holdings,
 		summary: summarise(holdings),
 		suspects,
+		// Turf an admin hid from volunteers on its /turfs card, to show again.
+		hidden,
 		// Why the map is part shapes and part pins after a big sync — the line is
 		// only shown while there is something to explain (see the page).
 		geometry: {
@@ -222,6 +241,32 @@ function lastSyncSummary(
 }
 
 export const actions: Actions = {
+	/**
+	 * Show hidden turf to volunteers again — the organizer-page side of the
+	 * "Hide from volunteers" box on a /turfs card.
+	 */
+	unhide: async ({ locals, request }) => {
+		const session = locals.session;
+		if (!session?.isAdmin) return fail(403, { unhideError: 'Organizers only.' });
+		const turfId = Number((await request.formData()).get('turfId'));
+		if (!Number.isInteger(turfId)) return fail(400, { unhideError: 'Unknown turf.' });
+		try {
+			const found = await setTurfHidden(
+				db,
+				turfId,
+				false,
+				{ id: session.slackUserId, name: session.slackUserName },
+				new Date(),
+			);
+			// Gone since the page loaded — the board reloads without it.
+			if (!found) return fail(404, { unhideError: 'That turf no longer exists.' });
+		} catch (err) {
+			console.error('[van] could not unhide turf:', err);
+			return fail(500, { unhideError: 'Could not show that turf again. Please try again.' });
+		}
+		return { unhidden: turfId };
+	},
+
 	/**
 	 * Run the VAN sync now rather than at the next slot — for turf an organizer
 	 * has just cut to answer a request. Started, not awaited: a pass takes

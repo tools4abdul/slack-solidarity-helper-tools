@@ -4,7 +4,9 @@
 //
 // Every in-person contact VAN has counts, whether the turf was claimed here,
 // handed out by an organizer, or walked off a list printed in VAN: the counts
-// come from ContactHistory, not from this app's checkouts.
+// come from ContactHistory, not from this app's checkouts. Each count is then
+// split into doors knocked through this app — on a turf checked out here,
+// inside that checkout's knock window — and doors knocked outside it.
 
 import { escapeMrkdwn, mrkdwnLink } from '../slack-mrkdwn.js';
 
@@ -15,6 +17,12 @@ export interface TurfDoors {
 	turfName: string;
 	regionName: string;
 	doors: number;
+	/** Of `doors`, those knocked while the turf was checked out through this
+	 *  app. The rest were knocked outside it. */
+	appDoors: number;
+	/** Whether the turf was checked out through this app at any point of the
+	 *  day — even with none of its doors knocked inside the checkout. */
+	checkedOut: boolean;
 }
 
 export interface DoorReport {
@@ -41,7 +49,29 @@ export interface FolderDoors {
 	folderId: number;
 	name: string;
 	doors: number;
+	appDoors: number;
 	turfs: TurfDoors[];
+}
+
+/** Doors, through the app and outside it, and turfs, for a total row. */
+export interface DoorTotals {
+	doors: number;
+	appDoors: number;
+	outsideDoors: number;
+	turfs: number;
+	checkedOutTurfs: number;
+}
+
+export function totals(turfs: readonly TurfDoors[]): DoorTotals {
+	const doors = turfs.reduce((sum, t) => sum + t.doors, 0);
+	const appDoors = turfs.reduce((sum, t) => sum + t.appDoors, 0);
+	return {
+		doors,
+		appDoors,
+		outsideDoors: doors - appDoors,
+		turfs: turfs.length,
+		checkedOutTurfs: turfs.filter((t) => t.checkedOut).length,
+	};
 }
 
 const byName = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
@@ -62,11 +92,13 @@ export function groupByFolder(report: Pick<DoorReport, 'turfs' | 'folderNames'>)
 				folderId: turf.folderId,
 				name: folderName(report.folderNames, turf.folderId),
 				doors: 0,
+				appDoors: 0,
 				turfs: [],
 			};
 			folders.set(turf.folderId, folder);
 		}
 		folder.doors += turf.doors;
+		folder.appDoors += turf.appDoors;
 		folder.turfs.push(turf);
 	}
 	const sorted = [...folders.values()].sort(
@@ -83,10 +115,18 @@ export interface ReportRow {
 	bold?: boolean;
 }
 
-export const REPORT_COLUMNS = ['VAN folder', 'Turf', 'Region', 'Doors contacted'] as const;
+export const REPORT_COLUMNS = [
+	'VAN folder',
+	'Turf',
+	'Region',
+	'Checked out in app',
+	'Doors in app',
+	'Doors outside app',
+	'Total doors',
+] as const;
 /** Pixel widths for REPORT_COLUMNS. Fixed rather than fitted: the title and the
  *  notes run long in column A and would stretch it across the screen. */
-export const REPORT_COLUMN_WIDTHS = [220, 220, 200, 120] as const;
+export const REPORT_COLUMN_WIDTHS = [200, 200, 180, 130, 100, 120, 100] as const;
 /** What A1 of every report tab starts with — how the app tells its own tab
  *  from one somebody else made with the same date for a name. */
 export const REPORT_TITLE_PREFIX = 'Doors contacted · ';
@@ -101,8 +141,6 @@ export const REPORT_TITLE_PREFIX = 'Doors contacted · ';
  */
 export function buildReportRows(report: DoorReport): ReportRow[] {
 	const folders = groupByFolder(report);
-	const total = folders.reduce((sum, f) => sum + f.doors, 0);
-	const turfCount = folders.reduce((sum, f) => sum + f.turfs.length, 0);
 
 	const rows: ReportRow[] = [
 		{ cells: [`${REPORT_TITLE_PREFIX}${report.campaignName} · ${report.dayLabel}`], bold: true },
@@ -122,67 +160,85 @@ export function buildReportRows(report: DoorReport): ReportRow[] {
 	}
 	for (const folder of folders) {
 		for (const turf of folder.turfs) {
-			rows.push({ cells: [folder.name, turf.turfName, turf.regionName, turf.doors] });
+			rows.push({
+				cells: [
+					folder.name,
+					turf.turfName,
+					turf.regionName,
+					turf.checkedOut ? 'Yes' : '',
+					turf.appDoors,
+					turf.doors - turf.appDoors,
+					turf.doors,
+				],
+			});
 		}
-		rows.push({
-			cells: [
-				`${folder.name} total`,
-				`${folder.turfs.length} ${folder.turfs.length === 1 ? 'turf' : 'turfs'}`,
-				'',
-				folder.doors,
-			],
-			bold: true,
-		});
+		rows.push({ cells: totalCells(`${folder.name} total`, totals(folder.turfs)), bold: true });
 		rows.push({ cells: [] });
 	}
 	if (folders.length === 0) rows.push({ cells: [] });
 
+	const all = totals(folders.flatMap((f) => f.turfs));
 	rows.push({
-		cells: [
+		cells: totalCells(
 			'Grand total',
-			`${turfCount} ${turfCount === 1 ? 'turf' : 'turfs'} in ${folders.length} ${
-				folders.length === 1 ? 'folder' : 'folders'
-			}`,
-			'',
-			total,
-		],
+			all,
+			` in ${folders.length} ${folders.length === 1 ? 'folder' : 'folders'}`,
+		),
 		bold: true,
 	});
 	rows.push({ cells: [] });
 	rows.push({
-		cells: ['People contacted on no synced turf', '', '', report.peopleOutsideTurfs],
+		cells: ['People contacted on no synced turf', '', '', '', '', '', report.peopleOutsideTurfs],
 	});
 	rows.push({ cells: [] });
 	for (const note of REPORT_NOTES) rows.push({ cells: [note] });
 	return rows;
 }
 
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+function totalCells(label: string, t: DoorTotals, where = ''): Array<string | number> {
+	return [
+		label,
+		`${plural(t.turfs, 'turf', 'turfs')}${where}`,
+		'',
+		`${t.checkedOutTurfs} checked out`,
+		t.appDoors,
+		t.outsideDoors,
+		t.doors,
+	];
+}
+
 export const REPORT_NOTES = [
 	'Counts every in-person door contact in VAN that day, including not home and refused, whether or not the turf was checked out through this app.',
 	'A door counts once, however many people there were contacted.',
+	'Doors in app were knocked on a turf while it was checked out through this app: from 30 minutes before the claim until an hour after it was marked walked, or until it was given back or lapsed. Doors outside app are all the rest: turf handed out in VAN, lists printed there, or knocks outside a checkout.',
+	'Checked out in app: the turf was checked out through this app at some point that day, even if none of its doors were knocked during the checkout.',
 	"Only turf in VAN folders mapped to a chapter in this app's settings is listed. People contacted elsewhere are counted as people on the line above, not as doors.",
 	'This tab is written at 10pm and rewritten at 8am the next day, to take in canvassers who synced MiniVAN late.',
 ];
 
-/** The turf channel's message: the totals, the biggest folders, and a link to
- *  the tab. mrkdwn. */
+/** The turf channel's message: the totals, split by whether the doors were
+ *  knocked through the app, the biggest folders, and a link to the tab. mrkdwn. */
 export function reportSlackText(report: DoorReport, link: string): string {
 	const folders = groupByFolder(report);
-	const total = folders.reduce((sum, f) => sum + f.doors, 0);
-	const turfCount = folders.reduce((sum, f) => sum + f.turfs.length, 0);
+	const all = totals(folders.flatMap((f) => f.turfs));
+	const n = (value: number) => value.toLocaleString('en-US');
 	const heading = `*Doors contacted · ${escapeMrkdwn(report.campaignName)} · ${escapeMrkdwn(report.dayLabel)}*`;
-	if (total === 0) {
+	if (all.doors === 0) {
 		return `${heading}\nNo doors contacted on synced turf. ${mrkdwnLink(link, 'Report')}`;
 	}
 	const top = [...folders]
 		.sort((a, b) => b.doors - a.doors)
 		.slice(0, 5)
-		.map((f) => `• ${escapeMrkdwn(f.name)}: ${f.doors.toLocaleString('en-US')}`);
+		.map((f) => `• ${escapeMrkdwn(f.name)}: ${n(f.doors)} (${n(f.appDoors)} in app)`);
 	return [
 		heading,
-		`*${total.toLocaleString('en-US')}* doors on ${turfCount} ${
-			turfCount === 1 ? 'turf' : 'turfs'
-		} in ${folders.length} ${folders.length === 1 ? 'folder' : 'folders'}.`,
+		`*${n(all.doors)}* doors on ${plural(all.turfs, 'turf', 'turfs')} in ${plural(
+			folders.length,
+			'folder',
+			'folders',
+		)}: *${n(all.appDoors)}* through the app, *${n(all.outsideDoors)}* outside it.`,
 		...top,
 		...(folders.length > top.length ? [`…and ${folders.length - top.length} more`] : []),
 		mrkdwnLink(link, 'Full report by turf'),

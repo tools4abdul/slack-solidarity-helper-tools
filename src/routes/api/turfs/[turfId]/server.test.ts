@@ -6,6 +6,7 @@ const mockClaim = vi.hoisted(() => vi.fn());
 const mockEndClaim = vi.hoisted(() => vi.fn());
 
 const mockLoadSettings = vi.hoisted(() => vi.fn());
+const mockSetHidden = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/server/db.js', () => ({ db: {} }));
 vi.mock('$lib/server/env.js', () => ({ SLACK_SUPERUSER_ID: 'U_SUPER' }));
@@ -17,6 +18,7 @@ vi.mock('$lib/server/van/checkout-store.js', () => ({
 	claimTurf: mockClaim,
 	endClaim: mockEndClaim,
 }));
+vi.mock('$lib/server/van/turf-hide-store.js', () => ({ setTurfHidden: mockSetHidden }));
 
 const VOLUNTEER = { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false };
 
@@ -137,6 +139,31 @@ describe('POST /api/turfs/[turfId]', () => {
 		expect(res.status).toBe(400);
 		expect(mockClaim).not.toHaveBeenCalled();
 		expect(mockEndClaim).not.toHaveBeenCalled();
+	});
+
+	it('refuses hide and unhide from anyone but an admin', async () => {
+		for (const action of ['hide', 'unhide']) {
+			const res = await POST(event(VOLUNTEER, { action }));
+			expect(res.status).toBe(403);
+		}
+		expect(mockSetHidden).not.toHaveBeenCalled();
+	});
+
+	it('lets an admin hide and unhide turf, under their own name', async () => {
+		mockSetHidden.mockResolvedValue(true);
+		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', slackUserName: 'Alex', isAdmin: true };
+		expect((await POST(event(admin, { action: 'hide' }))).status).toBe(200);
+		expect((await POST(event(admin, { action: 'unhide' }))).status).toBe(200);
+		expect(mockSetHidden.mock.calls.map((c) => [c[1], c[2], c[3]])).toEqual([
+			[100, true, { id: 'U_ADMIN', name: 'Alex' }],
+			[100, false, { id: 'U_ADMIN', name: 'Alex' }],
+		]);
+	});
+
+	it('returns 404 when an admin hides turf that is gone', async () => {
+		mockSetHidden.mockResolvedValue(false);
+		const admin = { ...VOLUNTEER, slackUserId: 'U_ADMIN', isAdmin: true };
+		expect((await POST(event(admin, { action: 'hide' }))).status).toBe(404);
 	});
 
 	it('rejects a non-numeric route id with 400', async () => {

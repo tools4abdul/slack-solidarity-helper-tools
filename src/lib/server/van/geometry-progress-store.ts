@@ -17,8 +17,12 @@ type Db = ReturnType<typeof drizzle>;
 
 const count = sql<number>`count(*)`;
 
-export async function loadGeometryProgress(db: Db): Promise<GeometryProgress> {
-	const live = and(isNull(vanTurfs.retiredAt), isNotNull(vanTurfs.savedListId));
+/** Every campaign's turf by default; one campaign's when `campaignId` is
+ *  given — the drain script, which works one campaign's queue and would
+ *  otherwise count another's rows as its own work left. */
+export async function loadGeometryProgress(db: Db, campaignId?: number): Promise<GeometryProgress> {
+	const inCampaign = campaignId === undefined ? undefined : eq(vanTurfs.campaignId, campaignId);
+	const live = and(isNull(vanTurfs.retiredAt), isNotNull(vanTurfs.savedListId), inCampaign);
 
 	const [eligibleRow] = await db.select({ n: count }).from(vanTurfs).where(live);
 	const [shapedRow] = await db
@@ -36,7 +40,7 @@ export async function loadGeometryProgress(db: Db): Promise<GeometryProgress> {
 		.select({ status: vanGeometryQueue.status, n: count })
 		.from(vanGeometryQueue)
 		.innerJoin(vanTurfs, eq(vanGeometryQueue.turfId, vanTurfs.turfId))
-		.where(isNull(vanTurfs.retiredAt))
+		.where(and(isNull(vanTurfs.retiredAt), inCampaign))
 		.groupBy(vanGeometryQueue.status);
 
 	const byStatus = new Map(queue.map((row) => [row.status, Number(row.n)]));

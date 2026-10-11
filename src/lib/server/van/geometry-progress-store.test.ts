@@ -112,6 +112,26 @@ describe('loadGeometryProgress', () => {
 		expect(await loadGeometryProgress(db)).toMatchObject({ eligible: 1, shaped: 1 });
 	});
 
+	it('counts one campaign alone when asked', async () => {
+		await turf(100, { hull_json: '[{"lat":42,"lng":-83}]' });
+		await turf(200);
+		await queued(200, 'pending');
+		await turf(300, { campaign_id: 2 });
+		await queued(300, 'pending');
+		await turf(400, { campaign_id: 2 });
+		await queued(400, 'failed');
+
+		expect(await loadGeometryProgress(db, 1)).toEqual({
+			eligible: 2,
+			shaped: 1,
+			centroidOnly: 0,
+			pending: 1,
+			failed: 0,
+		});
+		expect(await loadGeometryProgress(db, 2)).toMatchObject({ eligible: 2, pending: 1, failed: 1 });
+		expect(await loadGeometryProgress(db)).toMatchObject({ eligible: 4, pending: 2, failed: 1 });
+	});
+
 	it('reports zeroes on an empty database rather than throwing', async () => {
 		expect(await loadGeometryProgress(db)).toEqual({
 			eligible: 0,

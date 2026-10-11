@@ -24,6 +24,9 @@ export interface TurfSnapshot {
 	 *  generated its printed list — see `canClaim`. */
 	printedListNumber: string | null;
 	retiredAt: string | null;
+	/** An admin has hidden it from volunteers. Optional so snapshots that
+	 *  predate it need not name it. */
+	hidden?: boolean;
 	/** Who has this turf when it was handed out outside this app — canvassers
 	 *  VAN reports, or the campaign's Packet Tracker. Non-null = already in
 	 *  someone's hands. */
@@ -225,6 +228,7 @@ export function turfStatus(
 
 export type ClaimRefusalReason =
 	| 'retired'
+	| 'hidden'
 	| 'no-list-number'
 	| 'no-doors-left'
 	| 'already-held'
@@ -284,6 +288,18 @@ export function canClaim(
 			reason: 'no-list-number',
 			message:
 				"This turf doesn't have a MiniVAN list number yet. Reach out to an organizer to get one for it.",
+		};
+	}
+
+	// Volunteers never see hidden turf, so this is a page left open from
+	// before it was hidden — or an admin, who must un-hide it to hand it out.
+	// After the list number, so a hidden turf without one still reads as
+	// such on the admin's card.
+	if (turf.hidden === true) {
+		return {
+			ok: false,
+			reason: 'hidden',
+			message: "This turf isn't being handed out right now. Pick another turf nearby.",
 		};
 	}
 

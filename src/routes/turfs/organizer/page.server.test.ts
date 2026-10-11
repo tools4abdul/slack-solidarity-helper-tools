@@ -12,6 +12,8 @@ const mockDriftVisibility = vi.hoisted(() => vi.fn());
 const mockGeometryProgress = vi.hoisted(() => vi.fn());
 const mockLastVanSync = vi.hoisted(() => vi.fn());
 const mockStartSync = vi.hoisted(() => vi.fn());
+const mockHidden = vi.hoisted(() => vi.fn());
+const mockSetHidden = vi.hoisted(() => vi.fn());
 const mockEnv = vi.hoisted(() => ({ INTERNAL_CRON_SECRET: 'secret', PORT: 3000 }));
 const mockRefreshSwitches = vi.hoisted(() =>
 	vi.fn(async () => ({ on: [] as string[], off: ['One Team Michigan'] })),
@@ -38,6 +40,10 @@ vi.mock('$lib/server/van/drift-store.js', () => ({
 // "nothing outstanding" answer unless it says otherwise.
 vi.mock('$lib/server/van/geometry-progress-store.js', () => ({
 	loadGeometryProgress: mockGeometryProgress,
+}));
+vi.mock('$lib/server/van/turf-hide-store.js', () => ({
+	loadHiddenTurfs: mockHidden,
+	setTurfHidden: mockSetHidden,
 }));
 vi.mock('$lib/server/van/holdings-store.js', () => ({
 	COMPLETION_LOOKBACK: 200,
@@ -127,6 +133,7 @@ beforeEach(() => {
 	mockDriftTurfs.mockResolvedValue([]);
 	mockDriftClaims.mockResolvedValue([]);
 	mockDriftVisibility.mockResolvedValue('visible');
+	mockHidden.mockResolvedValue([]);
 });
 
 describe('/turfs/organizer access', () => {
@@ -642,5 +649,79 @@ describe('/turfs/organizer VAN sync', () => {
 		mockEnv.INTERNAL_CRON_SECRET = '';
 		await expect(press(ADMIN)).resolves.toMatchObject({ status: 500 });
 		expect(mockStartSync).not.toHaveBeenCalled();
+	});
+});
+
+describe('/turfs/organizer hidden turf', () => {
+	const hiddenRow = {
+		turfId: 300,
+		turfName: 'Turf 30',
+		regionName: 'Saline',
+		chapterName: 'Washtenaw County',
+		campaignId: 1,
+		doorCount: 120,
+		hiddenAt: iso(NOW.getTime() - 2 * HOUR),
+		hiddenBy: 'Alex',
+	};
+
+	it('lists hidden turf in the page’s scope, with when it was hidden', async () => {
+		mockHidden.mockResolvedValueOnce([hiddenRow]);
+		const data = await run(event(ADMIN, 'chapter=71'));
+		expect(mockHidden).toHaveBeenCalledWith(expect.anything(), {
+			chapterId: 71,
+			campaignId: null,
+		});
+		expect(data.hidden).toEqual([{ ...hiddenRow, hiddenAgoLabel: expect.any(String) }]);
+	});
+
+	const untick = (session: unknown, turfId: string) => {
+		const body = new FormData();
+		body.set('turfId', turfId);
+		return actions.unhide({
+			locals: { session },
+			request: new Request('https://app.example/turfs/organizer?/unhide', {
+				method: 'POST',
+				body,
+			}),
+		} as never);
+	};
+
+	it.each([
+		['no session', null],
+		['a non-admin', { slackUserId: 'U_VOL', slackUserName: 'Dana', isAdmin: false }],
+	])('refuses %s', async (_label, session) => {
+		await expect(untick(session, '300')).resolves.toMatchObject({ status: 403 });
+		expect(mockSetHidden).not.toHaveBeenCalled();
+	});
+
+	it('shows the turf again, under the organizer’s name', async () => {
+		mockSetHidden.mockResolvedValueOnce(true);
+		await expect(untick(ADMIN, '300')).resolves.toEqual({ unhidden: 300 });
+		expect(mockSetHidden).toHaveBeenCalledWith(
+			expect.anything(),
+			300,
+			false,
+			{ id: 'U_ADMIN', name: 'Admin' },
+			expect.any(Date),
+		);
+	});
+
+	it('rejects a turf id that is not a number', async () => {
+		await expect(untick(ADMIN, 'abc')).resolves.toMatchObject({ status: 400 });
+		expect(mockSetHidden).not.toHaveBeenCalled();
+	});
+
+	it('says so when the turf is gone', async () => {
+		mockSetHidden.mockResolvedValueOnce(false);
+		await expect(untick(ADMIN, '300')).resolves.toMatchObject({ status: 404 });
+	});
+
+	it('answers on the form when the write fails', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mockSetHidden.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
+		await expect(untick(ADMIN, '300')).resolves.toMatchObject({
+			status: 500,
+			data: { unhideError: expect.stringContaining('Could not') },
+		});
 	});
 });

@@ -57,6 +57,9 @@ export interface TurfRowInput {
 	 *  predating the tracker need not name it. */
 	sheetAssignedTo?: string | null;
 	retiredAt: string | null;
+	/** When an admin hid it from volunteers. Optional so fixtures predating
+	 *  it need not name it. */
+	hiddenAt?: string | null;
 	lastRefreshedAt: string | null;
 	/** Doors with no in-person contact since the cut, from ContactHistory
 	 *  (van/contact-sync.ts). Optional so fixtures predating it need not name
@@ -264,6 +267,12 @@ export interface TurfView {
 	 * the card. Omitted when it does not apply.
 	 */
 	campaignDisabled?: true;
+	/**
+	 * True when an admin has hidden the turf from volunteers. Admins only:
+	 * nobody else is sent hidden turf, except a volunteer still holding it, and
+	 * their card has nothing to say about it. Omitted when it does not apply.
+	 */
+	hidden?: true;
 }
 
 /** A walk report as the view needs it: the percentage, and when. `percent`
@@ -426,6 +435,7 @@ export function turfSnapshot(
 		turfId: row.turfId,
 		printedListNumber: row.printedListNumber,
 		retiredAt: row.retiredAt,
+		hidden: row.hiddenAt != null,
 		// Handed out outside this app — through VAN, or written into the
 		// campaign's Packet Tracker by an organizer. VAN's lapses after the
 		// admin's hand-out TTL and the sheet only counts while no uncontacted
@@ -500,7 +510,14 @@ export function toTurfView(
 		claimable: decision.ok,
 		...(decision.ok || visible.status !== 'available'
 			? {}
-			: { claimBlockedReason: decision.message }),
+			: {
+					// canClaim's wording is for a volunteer. An admin is the one
+					// person who sees hidden turf, and the fix is theirs to make.
+					claimBlockedReason:
+						decision.reason === 'hidden' && viewer.isAdmin
+							? 'Hidden from volunteers. Untick the box below to hand it out.'
+							: decision.message,
+				}),
 		...(options.refreshingRegions?.has(regionRefreshKey(row.campaignId, row.mapRegionId))
 			? { updating: true as const }
 			: {}),
@@ -513,5 +530,6 @@ export function toTurfView(
 			: {}),
 		...(options.showCampaign ? { campaignId: row.campaignId } : {}),
 		...(options.disabledCampaigns?.has(row.campaignId) ? { campaignDisabled: true as const } : {}),
+		...(viewer.isAdmin && row.hiddenAt != null ? { hidden: true as const } : {}),
 	};
 }

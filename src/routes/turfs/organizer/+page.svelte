@@ -11,6 +11,10 @@
 	 *  the background long after; this only covers starting it. */
 	let syncStarting = $state(false);
 
+	/** Hidden turf whose "show again" is in flight, so its box cannot be
+	 *  ticked back mid-request. */
+	let unhiding = $state<Record<number, boolean>>({});
+
 	// No `ago()` here, and no clock of any kind: the "ago" labels arrive from the
 	// load function as `claimedAgoLabel` / `completedAgoLabel`. This file used to
 	// compute them from `Date.now()` during render, which stamped the server's
@@ -362,6 +366,82 @@
 									{/if}
 								</td>
 								<td class="drift-advice">{driftAdvice(item.kind)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+	</section>
+
+	<section class="board">
+		<h2>Hidden from volunteers</h2>
+		{#if form?.unhideError}
+			<p class="section-note is-error" role="alert">{form.unhideError}</p>
+		{/if}
+		{#if data.hidden.length === 0}
+			<p class="empty">
+				No turf is hidden in {scope}. An organizer can hide turf from the bottom of its card on the
+				turf page.
+			</p>
+		{:else}
+			<p class="section-note">
+				Volunteers can't see or check out these. Untick one to put it back on the turf page.
+			</p>
+			<div class="table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th>Turf</th>
+							<th>Hidden by</th>
+							<th class="col-flag">Hidden</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each data.hidden as turf (turf.turfId)}
+							<tr>
+								<td>
+									<span class="turf-name">{turf.turfName}</span>
+									{#if turf.regionName}
+										<span class="turf-sub">{turf.regionName}</span>
+									{/if}
+									<span class="turf-sub">
+										{turf.doorCount.toLocaleString('en-US')} doors · {turf.chapterName}{campaignSuffix(
+											turf.campaignId,
+										)}
+									</span>
+								</td>
+								<td>
+									{turf.hiddenBy ?? '—'}
+									<span class="turf-sub">{turf.hiddenAgoLabel}</span>
+								</td>
+								<td class="col-flag">
+									<!-- One form per row, sent as soon as the box is unticked.
+									     A refusal resets the form, which ticks the box back:
+									     `checked` here is the box's default, not a binding. -->
+									<form
+										method="POST"
+										action="?/unhide"
+										use:enhance={() => {
+											unhiding[turf.turfId] = true;
+											return async ({ result, update, formElement }) => {
+												await update();
+												if (result.type !== 'success') formElement.reset();
+												delete unhiding[turf.turfId];
+											};
+										}}
+									>
+										<input type="hidden" name="turfId" value={turf.turfId} />
+										<input
+											class="unhide-check"
+											type="checkbox"
+											checked
+											disabled={unhiding[turf.turfId]}
+											aria-label="Hidden: untick to show {turf.turfName} to volunteers"
+											onchange={(e) => e.currentTarget.form?.requestSubmit()}
+										/>
+									</form>
+								</td>
 							</tr>
 						{/each}
 					</tbody>

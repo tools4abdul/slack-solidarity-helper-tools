@@ -106,7 +106,7 @@ export const POST: RequestHandler = async ({ url }) => {
 		}
 		const r = run.result;
 		console.log(
-			`${LOG} campaign ${campaign.id} ${day}: ${r.doors} doors on ${r.turfs} turfs in ${r.folders} folders, ` +
+			`${LOG} campaign ${campaign.id} ${day}: ${r.doors} doors (${r.appDoors} in app) on ${r.turfs} turfs in ${r.folders} folders, ` +
 				`${r.peopleOutsideTurfs} people off turf, written=${r.written}, posted=${r.posted}` +
 				(r.error ? `, error: ${r.error}` : ''),
 		);

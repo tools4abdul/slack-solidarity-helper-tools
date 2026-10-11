@@ -8,9 +8,33 @@ const REPORT: DoorReport = {
 	generatedAt: '2026-10-07 22:00',
 	contactsReadThrough: '2026-10-07 21:55',
 	turfs: [
-		{ turfId: 3, folderId: 20, turfName: 'Turf 10', regionName: 'R2', doors: 4 },
-		{ turfId: 2, folderId: 10, turfName: 'Turf 9', regionName: 'R1', doors: 5 },
-		{ turfId: 1, folderId: 20, turfName: 'Turf 2', regionName: 'R2', doors: 6 },
+		{
+			turfId: 3,
+			folderId: 20,
+			turfName: 'Turf 10',
+			regionName: 'R2',
+			doors: 4,
+			appDoors: 0,
+			checkedOut: false,
+		},
+		{
+			turfId: 2,
+			folderId: 10,
+			turfName: 'Turf 9',
+			regionName: 'R1',
+			doors: 5,
+			appDoors: 0,
+			checkedOut: true,
+		},
+		{
+			turfId: 1,
+			folderId: 20,
+			turfName: 'Turf 2',
+			regionName: 'R2',
+			doors: 6,
+			appDoors: 6,
+			checkedOut: true,
+		},
 	],
 	folderNames: new Map([
 		[10, 'Washtenaw'],
@@ -20,20 +44,36 @@ const REPORT: DoorReport = {
 };
 
 describe('buildReportRows', () => {
-	it('groups turfs by folder, by name, with folder and grand totals', () => {
+	it('groups turfs by folder, by name, splitting doors in and outside the app', () => {
 		const rows = buildReportRows(REPORT).map((r) => r.cells);
 		const body = rows.slice(4, rows.findIndex((r) => r[0] === 'Grand total') + 1);
 		expect(body).toEqual([
-			['Alger', 'Turf 2', 'R2', 6],
-			['Alger', 'Turf 10', 'R2', 4],
-			['Alger total', '2 turfs', '', 10],
+			['Alger', 'Turf 2', 'R2', 'Yes', 6, 0, 6],
+			['Alger', 'Turf 10', 'R2', '', 0, 4, 4],
+			['Alger total', '2 turfs', '', '1 checked out', 6, 4, 10],
 			[],
-			['Washtenaw', 'Turf 9', 'R1', 5],
-			['Washtenaw total', '1 turf', '', 5],
+			// Checked out, but every door knocked outside the checkout.
+			['Washtenaw', 'Turf 9', 'R1', 'Yes', 0, 5, 5],
+			['Washtenaw total', '1 turf', '', '1 checked out', 0, 5, 5],
 			[],
-			['Grand total', '3 turfs in 2 folders', '', 15],
+			['Grand total', '3 turfs in 2 folders', '', '2 checked out', 6, 9, 15],
 		]);
-		expect(rows).toContainEqual(['People contacted on no synced turf', '', '', 3]);
+		expect(rows).toContainEqual(['People contacted on no synced turf', '', '', '', '', '', 3]);
+	});
+
+	it('heads the columns', () => {
+		expect(buildReportRows(REPORT)[3]).toEqual({
+			cells: [
+				'VAN folder',
+				'Turf',
+				'Region',
+				'Checked out in app',
+				'Doors in app',
+				'Doors outside app',
+				'Total doors',
+			],
+			bold: true,
+		});
 	});
 
 	it('bolds the headings and totals only', () => {
@@ -52,18 +92,26 @@ describe('buildReportRows', () => {
 	it('still makes a tab on a day with no doors', () => {
 		const rows = buildReportRows({ ...REPORT, turfs: [] }).map((r) => r.cells);
 		expect(rows).toContainEqual(['No doors contacted on synced turf.']);
-		expect(rows).toContainEqual(['Grand total', '0 turfs in 0 folders', '', 0]);
+		expect(rows).toContainEqual([
+			'Grand total',
+			'0 turfs in 0 folders',
+			'',
+			'0 checked out',
+			0,
+			0,
+			0,
+		]);
 	});
 });
 
 describe('reportSlackText', () => {
-	it('gives the total, folders largest first, and the link', () => {
+	it('gives the total split by the app, folders largest first, and the link', () => {
 		expect(reportSlackText(REPORT, 'https://example.com/s?a=1&b=2')).toBe(
 			[
 				'*Doors contacted · Main · Wednesday, Oct 7, 2026*',
-				'*15* doors on 3 turfs in 2 folders.',
-				'• Alger: 10',
-				'• Washtenaw: 5',
+				'*15* doors on 3 turfs in 2 folders: *6* through the app, *9* outside it.',
+				'• Alger: 10 (6 in app)',
+				'• Washtenaw: 5 (0 in app)',
 				'<https://example.com/s?a=1&amp;b=2|Full report by turf>',
 			].join('\n'),
 		);

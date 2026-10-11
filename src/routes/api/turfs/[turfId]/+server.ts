@@ -5,13 +5,14 @@ import { SLACK_SUPERUSER_ID } from '$lib/server/env.js';
 import { loadSettings, loadVanBlockedIds } from '$lib/server/settings.js';
 import { turfAccess } from '$lib/van/access.js';
 import { claimTurf, endClaim } from '$lib/server/van/checkout-store.js';
+import { setTurfHidden } from '$lib/server/van/turf-hide-store.js';
 import { nudgePacketTracker, packetTrackerCheck } from '$lib/server/van/packet-tracker-live.js';
 import { nudgeContactCount } from '$lib/server/van/contact-live.js';
 import { recordRequest } from '$lib/van/request-budget.js';
 import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-store.js';
 
-// Claim, release, and complete, as one handler over an `action` body rather
-// than three sibling routes.
+// Claim, release, and complete — and, for admins, hide and unhide — as one
+// handler over an `action` body rather than sibling routes.
 //
 // Rate-limited on the same shared budget as the read endpoints, for a reason
 // that is not obvious: the refusals here are informative. A 404 means no such
@@ -25,9 +26,9 @@ import { pruneRateLimitStores, turfRequests } from '$lib/server/van/rate-limit-s
 // is consulted on every one, per the plan's Principle I contract:
 // 401 unauthenticated, 403 unauthorized.
 
-type Action = 'claim' | 'release' | 'complete';
+type Action = 'claim' | 'release' | 'complete' | 'hide' | 'unhide';
 
-const ACTIONS = new Set<Action>(['claim', 'release', 'complete']);
+const ACTIONS = new Set<Action>(['claim', 'release', 'complete', 'hide', 'unhide']);
 
 export const POST: RequestHandler = async ({ locals, params, request }) => {
 	const session = locals.session;
@@ -70,6 +71,21 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 	if (typeof action !== 'string' || !ACTIONS.has(action as Action)) {
 		return json({ error: 'Unknown action' }, { status: 400 });
+	}
+
+	if (action === 'hide' || action === 'unhide') {
+		// The checkbox is only on an admin's card; this is what makes that more
+		// than cosmetic.
+		if (!session.isAdmin) return json({ error: 'Admins only' }, { status: 403 });
+		const found = await setTurfHidden(
+			db,
+			turfId,
+			action === 'hide',
+			{ id: session.slackUserId, name: session.slackUserName },
+			new Date(now),
+		);
+		if (!found) return json({ error: 'That turf no longer exists.' }, { status: 404 });
+		return json({ ok: true });
 	}
 
 	if (action === 'claim') {

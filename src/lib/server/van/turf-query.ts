@@ -193,6 +193,13 @@ export async function loadChapterTurfs(db: Db, input: TurfQueryInput): Promise<T
 				myRouteIds.length > 0
 					? or(turfCampaignEnabled(), inArray(vanTurfs.turfId, myRouteIds))
 					: turfCampaignEnabled(),
+				// Turf an admin hid is for admins alone, who un-hide it from the
+				// card. Like a disabled campaign, it stays with whoever holds it.
+				viewer.isAdmin
+					? undefined
+					: myRouteIds.length > 0
+						? or(isNull(vanTurfs.hiddenAt), inArray(vanTurfs.turfId, myRouteIds))
+						: isNull(vanTurfs.hiddenAt),
 			),
 		);
 
