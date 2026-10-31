@@ -1174,12 +1174,6 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_region').on(table.mapRegionId),
 		uniqueIndex('van_turfs_campaign_route').on(table.campaignId, table.vanMapRouteId),
 		index('van_turfs_campaign_folder').on(table.campaignId, table.folderId),
-		// Partial: most rows are retired routes from earlier cuts, kept for
-		// their checkouts, and the readers that want only live turf (the drift
-		// report on every organizer page load) would otherwise read them all.
-		index('van_turfs_live_campaign')
-			.on(table.campaignId)
-			.where(sql`${table.retiredAt} IS NULL`),
 		// Partial, and holding every column the catalog sync reads of a retired
 		// turf (sync.ts): the turf id comes with it, as the row's key. Retired
 		// routes outnumber live ones several times over and each row carries its
@@ -1191,6 +1185,28 @@ export const vanTurfs = sqliteTable(
 		index('van_turfs_drift_alerted')
 			.on(table.campaignId)
 			.where(sql`${table.driftAlertedKind} IS NOT NULL`),
+		// Partial: live turf, by campaign and folder. Most rows are retired
+		// routes from earlier cuts, kept for their checkouts, and the readers
+		// that want only live turf would otherwise read them all: /turfs on
+		// every load finds a chapter's turf by its folders, and the drift
+		// report and others a campaign's by its leading column. `retired_at`
+		// is in it, though always null, so those reads are answered from the
+		// index: SQLite checks a partial index's condition against the row
+		// unless the column is in the index.
+		index('van_turfs_live_folder')
+			.on(table.campaignId, table.folderId, table.retiredAt)
+			.where(sql`${table.retiredAt} IS NULL`),
+		// Partial: the few hidden turfs, for the organizer page.
+		index('van_turfs_hidden')
+			.on(table.hiddenAt)
+			.where(sql`${table.hiddenAt} IS NOT NULL`),
+		// The turf history search (turf-history-store.ts): a `LIKE '%…%'` on
+		// name or region can use no index to find its matches, so it reads
+		// every turf, retired ones included. This holds what it reads, so it
+		// reads these short entries rather than rows with outlines, in name
+		// order, which is the order it returns. Then each name's cuts by
+		// (name, campaign).
+		index('van_turfs_name_search').on(table.name, table.campaignId, table.regionName),
 	],
 );
 

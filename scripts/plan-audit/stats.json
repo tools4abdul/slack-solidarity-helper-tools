@@ -1,0 +1,451 @@
+{
+	"pulledAt": "2026-10-31T05:04:30.535Z",
+	"rows": [
+		{
+			"tbl": "__drizzle_migrations",
+			"idx": "sqlite_autoindex___drizzle_migrations_1",
+			"stat": "89 89"
+		},
+		{
+			"tbl": "allowed_slack_users",
+			"idx": "sqlite_autoindex_allowed_slack_users_1",
+			"stat": "31 1"
+		},
+		{
+			"tbl": "app_config",
+			"idx": null,
+			"stat": "1"
+		},
+		{
+			"tbl": "channel_welcome_flags",
+			"idx": "sqlite_autoindex_channel_welcome_flags_1",
+			"stat": "5 1"
+		},
+		{
+			"tbl": "chapter_channel_map",
+			"idx": "sqlite_autoindex_chapter_channel_map_1",
+			"stat": "52 2 1"
+		},
+		{
+			"tbl": "coalition_channel_map",
+			"idx": "sqlite_autoindex_coalition_channel_map_1",
+			"stat": "24 1"
+		},
+		{
+			"tbl": "door_knock_canvas_archive",
+			"idx": "sqlite_autoindex_door_knock_canvas_archive_1",
+			"stat": "41 1"
+		},
+		{
+			"tbl": "door_knock_canvasser_daily",
+			"idx": "sqlite_autoindex_door_knock_canvasser_daily_1",
+			"stat": "1945 115 5 1"
+		},
+		{
+			"tbl": "door_knock_code_ids",
+			"idx": "sqlite_autoindex_door_knock_code_ids_1",
+			"stat": "70 1"
+		},
+		{
+			"tbl": "door_knock_daily",
+			"idx": "sqlite_autoindex_door_knock_daily_1",
+			"stat": "2598 64 1"
+		},
+		{
+			"tbl": "door_knock_refresh",
+			"idx": null,
+			"stat": "1"
+		},
+		{
+			"tbl": "google_volunteers",
+			"idx": "sqlite_autoindex_google_volunteers_1",
+			"stat": "4 1"
+		},
+		{
+			"tbl": "info_commands",
+			"idx": "sqlite_autoindex_info_commands_1",
+			"stat": "4 1"
+		},
+		{
+			"tbl": "member_account_links",
+			"idx": "member_account_links_solidarity_user_id",
+			"stat": "5 1"
+		},
+		{
+			"tbl": "member_account_links",
+			"idx": "sqlite_autoindex_member_account_links_1",
+			"stat": "5 1"
+		},
+		{
+			"tbl": "member_notes",
+			"idx": "member_notes_slack_user_created",
+			"stat": "41 2 1"
+		},
+		{
+			"tbl": "member_notes",
+			"idx": "member_notes_warning_rank",
+			"stat": "41 2 2 1"
+		},
+		{
+			"tbl": "mentor_walk_messages",
+			"idx": "mentor_walk_messages_event",
+			"stat": "14 7 1"
+		},
+		{
+			"tbl": "mentor_walk_messages",
+			"idx": "mentor_walk_messages_status",
+			"stat": "14 7"
+		},
+		{
+			"tbl": "mentor_walk_prompts",
+			"idx": "sqlite_autoindex_mentor_walk_prompts_1",
+			"stat": "62 1"
+		},
+		{
+			"tbl": "mentor_walk_seats",
+			"idx": "mentor_walk_seats_holder",
+			"stat": "4 2"
+		},
+		{
+			"tbl": "mentor_walk_seats",
+			"idx": "mentor_walk_seats_walk_holder",
+			"stat": "4 1 1"
+		},
+		{
+			"tbl": "mentor_walks",
+			"idx": "mentor_walks_chapter",
+			"stat": "8 3 2"
+		},
+		{
+			"tbl": "mentor_walks",
+			"idx": "mentor_walks_mentor",
+			"stat": "8 2 1"
+		},
+		{
+			"tbl": "mentor_walks",
+			"idx": "mentor_walks_public_id",
+			"stat": "8 1"
+		},
+		{
+			"tbl": "mentors",
+			"idx": "sqlite_autoindex_mentors_1",
+			"stat": "10 1"
+		},
+		{
+			"tbl": "mobilize_geocoded_zips",
+			"idx": "sqlite_autoindex_mobilize_geocoded_zips_1",
+			"stat": "40 1"
+		},
+		{
+			"tbl": "mobilize_imported_events",
+			"idx": null,
+			"stat": "24"
+		},
+		{
+			"tbl": "mobilize_imported_timeslots",
+			"idx": null,
+			"stat": "24"
+		},
+		{
+			"tbl": "mobilize_synced_events",
+			"idx": "sqlite_autoindex_mobilize_synced_events_1",
+			"stat": "818 1"
+		},
+		{
+			"tbl": "mobilize_synced_images",
+			"idx": "sqlite_autoindex_mobilize_synced_images_1",
+			"stat": "346 1"
+		},
+		{
+			"tbl": "mobilize_synced_rsvps",
+			"idx": null,
+			"stat": "12488"
+		},
+		{
+			"tbl": "mobilize_synced_timeslots",
+			"idx": null,
+			"stat": "1824"
+		},
+		{
+			"tbl": "outside_volunteers",
+			"idx": "sqlite_autoindex_outside_volunteers_1",
+			"stat": "415 1"
+		},
+		{
+			"tbl": "push_devices",
+			"idx": "push_devices_current_user",
+			"stat": "3 1"
+		},
+		{
+			"tbl": "push_devices",
+			"idx": "push_devices_endpoint_unique",
+			"stat": "3 1"
+		},
+		{
+			"tbl": "push_opt_ins",
+			"idx": "push_opt_ins_user",
+			"stat": "3 1"
+		},
+		{
+			"tbl": "push_opt_ins",
+			"idx": "sqlite_autoindex_push_opt_ins_1",
+			"stat": "3 1 1"
+		},
+		{
+			"tbl": "report_excluded_chapters",
+			"idx": null,
+			"stat": "3"
+		},
+		{
+			"tbl": "requests",
+			"idx": "sqlite_autoindex_requests_1",
+			"stat": "78 1"
+		},
+		{
+			"tbl": "sessions",
+			"idx": "sqlite_autoindex_sessions_1",
+			"stat": "3418 1"
+		},
+		{
+			"tbl": "slack_invite_sightings",
+			"idx": "slack_invite_sightings_page_location_url",
+			"stat": "49 5 5 1"
+		},
+		{
+			"tbl": "slack_invite_sightings",
+			"idx": "slack_invite_sightings_status",
+			"stat": "49 25 3"
+		},
+		{
+			"tbl": "slack_joins",
+			"idx": "slack_joins_slack_user_id_unique",
+			"stat": "5965 1"
+		},
+		{
+			"tbl": "slack_moderators",
+			"idx": "sqlite_autoindex_slack_moderators_1",
+			"stat": "88 1"
+		},
+		{
+			"tbl": "slack_user_tokens",
+			"idx": "sqlite_autoindex_slack_user_tokens_1",
+			"stat": "30 1"
+		},
+		{
+			"tbl": "solidarity_daily_snapshots",
+			"idx": "sqlite_autoindex_solidarity_daily_snapshots_1",
+			"stat": "3535 21 1"
+		},
+		{
+			"tbl": "sync_locks",
+			"idx": "sqlite_autoindex_sync_locks_1",
+			"stat": "9 1"
+		},
+		{
+			"tbl": "turf_custom_chapters",
+			"idx": "turf_custom_chapters_name_unique",
+			"stat": "1 1"
+		},
+		{
+			"tbl": "turf_hidden_chapters",
+			"idx": null,
+			"stat": "2"
+		},
+		{
+			"tbl": "turf_notices",
+			"idx": "turf_notices_user",
+			"stat": "304 3 1"
+		},
+		{
+			"tbl": "van_blocked_users",
+			"idx": "sqlite_autoindex_van_blocked_users_1",
+			"stat": "2 1"
+		},
+		{
+			"tbl": "van_campaigns",
+			"idx": "van_campaigns_credential_key_unique",
+			"stat": "2 1"
+		},
+		{
+			"tbl": "van_campaigns",
+			"idx": "van_campaigns_label_unique",
+			"stat": "2 1"
+		},
+		{
+			"tbl": "van_chapter_folders",
+			"idx": "sqlite_autoindex_van_chapter_folders_1",
+			"stat": "57 29 2 1"
+		},
+		{
+			"tbl": "van_contact_sync_state",
+			"idx": null,
+			"stat": "2"
+		},
+		{
+			"tbl": "van_geometry_queue",
+			"idx": "van_geometry_queue_status",
+			"stat": "14611 7306"
+		},
+		{
+			"tbl": "van_manual_sync_runs",
+			"idx": null,
+			"stat": "10"
+		},
+		{
+			"tbl": "van_minivan_exports",
+			"idx": "sqlite_autoindex_van_minivan_exports_1",
+			"stat": "97045 48523 1"
+		},
+		{
+			"tbl": "van_minivan_exports",
+			"idx": "van_minivan_exports_date_created",
+			"stat": "97045 48523 1"
+		},
+		{
+			"tbl": "van_minivan_exports",
+			"idx": "van_minivan_exports_list_number",
+			"stat": "97045 48523 2"
+		},
+		{
+			"tbl": "van_person_contacts",
+			"idx": "van_person_contacts",
+			"stat": "643858 321929 1"
+		},
+		{
+			"tbl": "van_person_contacts",
+			"idx": "van_person_contacts_campaign_at",
+			"stat": "643858 321929 29"
+		},
+		{
+			"tbl": "van_region_refreshes",
+			"idx": "sqlite_autoindex_van_region_refreshes_1",
+			"stat": "272 136 11 1"
+		},
+		{
+			"tbl": "van_sheet_health",
+			"idx": "sqlite_autoindex_van_sheet_health_1",
+			"stat": "37 1"
+		},
+		{
+			"tbl": "van_sheet_targets",
+			"idx": "sqlite_autoindex_van_sheet_targets_1",
+			"stat": "78 78 1"
+		},
+		{
+			"tbl": "van_sync_state",
+			"idx": null,
+			"stat": "2"
+		},
+		{
+			"tbl": "van_turf_checkouts",
+			"idx": "van_turf_checkouts_claimed_at",
+			"stat": "2762 1"
+		},
+		{
+			"tbl": "van_turf_checkouts",
+			"idx": "van_turf_checkouts_completed_at",
+			"stat": "2762 6"
+		},
+		{
+			"tbl": "van_turf_checkouts",
+			"idx": "van_turf_checkouts_holder",
+			"stat": "2762 6"
+		},
+		{
+			"tbl": "van_turf_checkouts",
+			"idx": "van_turf_checkouts_one_active",
+			"stat": "13 1"
+		},
+		{
+			"tbl": "van_turf_checkouts",
+			"idx": "van_turf_checkouts_released_at",
+			"stat": "2762 2"
+		},
+		{
+			"tbl": "van_turf_placements",
+			"idx": null,
+			"stat": "1872"
+		},
+		{
+			"tbl": "van_turf_roster",
+			"idx": "sqlite_autoindex_van_turf_roster_1",
+			"stat": "2553559 109 1"
+		},
+		{
+			"tbl": "van_turf_roster",
+			"idx": "van_turf_roster_person",
+			"stat": "2553559 2"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_campaign_folder",
+			"stat": "81769 40885 2726"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_campaign_route",
+			"stat": "81769 40885 1"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_chapter",
+			"stat": "81769 3717"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_drift_alerted",
+			"stat": "4 4"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_hidden",
+			"stat": "10 1"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_live_folder",
+			"stat": "14630 7315 500 500"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_name_search",
+			"stat": "81769 5 5 5"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_region",
+			"stat": "81769 40"
+		},
+		{
+			"tbl": "van_turfs",
+			"idx": "van_turfs_retired_routes",
+			"stat": "67139 33570 1 1"
+		},
+		{
+			"tbl": "van_zip_centroids",
+			"idx": "sqlite_autoindex_van_zip_centroids_1",
+			"stat": "258 1"
+		},
+		{
+			"tbl": "weekly_chapter_growth",
+			"idx": "sqlite_autoindex_weekly_chapter_growth_1",
+			"stat": "531 23 1"
+		},
+		{
+			"tbl": "weekly_growth_windows",
+			"idx": "sqlite_autoindex_weekly_growth_windows_1",
+			"stat": "24 1"
+		},
+		{
+			"tbl": "zip_chapter_map",
+			"idx": "sqlite_autoindex_zip_chapter_map_1",
+			"stat": "3489 1"
+		},
+		{
+			"tbl": "zip_excluded_chapters",
+			"idx": null,
+			"stat": "4"
+		}
+	],
+	"estimated": ["van_turfs_live_folder", "van_turfs_hidden", "van_turfs_name_search"]
+}
