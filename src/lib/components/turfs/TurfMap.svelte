@@ -51,6 +51,7 @@
 		turfShade,
 	} from '$lib/van/turf-shade.js';
 	import { swipePansMap, wheelZoomDelta, wheelZoomsMap } from '$lib/van/turf-gestures.js';
+	import { paintOrder } from '$lib/van/turf-paint-order.js';
 	import {
 		focusZoom,
 		isBoxVisible,
@@ -542,13 +543,18 @@
 	 * 2. **One pass.** Projection, pin-vs-polygon and labelling are decided
 	 *    together instead of in three functions each re-projecting the same
 	 *    bounds from the template.
+	 *
+	 * The output keeps the order of `painted`, so a smaller turf draws over a
+	 * larger one and stays tappable.
 	 */
+	const painted = $derived(paintOrder(turfs));
+
 	const rendered = $derived.by((): RenderedTurf[] => {
 		// A margin keeps turfs that straddle the edge from popping in and out.
 		const margin = 64;
 		const out: RenderedTurf[] = [];
 
-		for (const turf of turfs) {
+		for (const turf of painted) {
 			const nw = view.project({ lat: turf.bounds.maxLat, lng: turf.bounds.minLng });
 			const se = view.project({ lat: turf.bounds.minLat, lng: turf.bounds.maxLng });
 
