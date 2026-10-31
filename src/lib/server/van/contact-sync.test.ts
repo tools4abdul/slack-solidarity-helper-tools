@@ -589,6 +589,50 @@ describe('runContactSync', () => {
 		expect((await counts(1)).knocked_before_cut).toBe(0);
 	});
 
+	// The lookup starts from the people, through the person index. Started
+	// from the campaign's turf, the planner probes the roster once per turf
+	// per person, which on a production roster is tens of millions of rows.
+	it('finds the turfs a pull touched through the person index', async () => {
+		await contact('111', '2026-08-20T00:00:00.000Z');
+		await client.execute('UPDATE van_turfs SET knocked_before_cut = 1');
+		await client.execute(
+			`INSERT INTO van_contact_sync_state (campaign_id, full_recompute_at)
+			 VALUES (1, '2026-09-01T00:00:00.000Z')`,
+		);
+		const sent: InStatement[] = [];
+		const capturing = new Proxy(client, {
+			get(target, prop) {
+				const value: unknown = Reflect.get(target, prop, target);
+				if (prop === 'execute') {
+					return (stmt: InStatement) => {
+						sent.push(stmt);
+						return target.execute(stmt);
+					};
+				}
+				return typeof value === 'function' ? value.bind(target) : value;
+			},
+		});
+		const { van, fetchFn } = fakeVan(() => []);
+		await runContactSync(drizzle(capturing), van.client, {
+			campaignId: 1,
+			hasher,
+			now: NOW,
+			fetchFn,
+			sleep: noSleep,
+		});
+		const lookup = sent.find(
+			(stmt) => typeof stmt !== 'string' && /SELECT DISTINCT "van_turf_roster"/.test(stmt.sql),
+		);
+		if (!lookup || typeof lookup === 'string') throw new Error('no lookup captured');
+		const plan = await client.execute({
+			sql: `EXPLAIN QUERY PLAN ${lookup.sql}`,
+			args: lookup.args,
+		});
+		const details = plan.rows.map((row) => String(row.detail));
+		expect(details[0]).toContain('van_turf_roster_person');
+		expect(details.some((d) => d.includes('campaign_id=?'))).toBe(false);
+	});
+
 	describe('while a drain holds the person index down', () => {
 		let token: string;
 		beforeEach(async () => {

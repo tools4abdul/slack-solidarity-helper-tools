@@ -152,6 +152,15 @@ export function isEmptyWalkIn(row: readonly string[] | undefined, layout: WalkIn
 	return WALK_IN_COLUMNS.every((c) => cell(row, layout, c) === '');
 }
 
+/** The columns of ours with something in them. Names only, for a log line:
+ *  never the cells themselves. */
+export function filledWalkInColumns(
+	row: readonly string[] | undefined,
+	layout: WalkInLayout,
+): WalkInColumn[] {
+	return WALK_IN_COLUMNS.filter((c) => cell(row, layout, c) !== '');
+}
+
 /**
  * The first empty row below the header, skipping `taken` — rows this run has
  * already filled in or found in use, which the tab as read does not show.

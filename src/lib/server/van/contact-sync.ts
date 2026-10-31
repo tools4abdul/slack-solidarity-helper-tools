@@ -312,11 +312,18 @@ async function turfsWithPeople(
 	for (const batch of chunked(personHashes, TOUCHED_BATCH)) {
 		// This campaign's turf only: the same person can be on another
 		// campaign's roster, and that count is moved by that campaign's pull.
-		const rows = await db
-			.selectDistinct({ id: vanTurfRoster.turfId })
-			.from(vanTurfRoster)
-			.innerJoin(vanTurfs, eq(vanTurfs.turfId, vanTurfRoster.turfId))
-			.where(and(eq(vanTurfs.campaignId, campaignId), inArray(vanTurfRoster.personHash, batch)));
+		//
+		// CROSS JOIN pins the order: each person through the person index, then
+		// their turf by its key. Started from the campaign's turf instead, the
+		// planner probes the roster once per turf per person — tens of millions
+		// of rows read for one batch.
+		const rows = await db.all<{ id: number }>(sql`
+			SELECT DISTINCT ${vanTurfRoster.turfId} AS id
+			FROM ${vanTurfRoster}
+			CROSS JOIN ${vanTurfs} ON ${vanTurfs.turfId} = ${vanTurfRoster.turfId}
+			WHERE ${inArray(vanTurfRoster.personHash, batch)}
+				AND ${vanTurfs.campaignId} = ${campaignId}
+		`);
 		for (const row of rows) ids.add(row.id);
 	}
 	return [...ids];
