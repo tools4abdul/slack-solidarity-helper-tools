@@ -367,6 +367,14 @@ npm run db:migrate    # apply pending migrations to TURSO_DATABASE_URL
 
 In production, migrations run via Fly's `release_command` (`node bin/migrate.js`) — see `fly.toml`. Each deploy applies any pending migrations before the new image starts serving traffic.
 
+#### Query plans
+
+SQLite picks each query's plan from its planner statistics (`sqlite_stat1`), which the `planner-stats` job refreshes nightly in production. `npm run test:plans` runs the tests and plans every statement the app sends as production would, with a copy of production's statistics in `scripts/plan-audit/stats.json`, then lists each plan that reads every row of a large table. A scan the code means to make goes in `scripts/plan-audit/allow.ts` with its reason. Refresh the copy when the tables have grown a lot or an index has been added:
+
+```bash
+npx tsx --env-file=.env.local scripts/plan-audit/pull-stats.ts
+```
+
 ## Local development
 
 A minimal `.env.local` for local development — no real Slack credentials needed:

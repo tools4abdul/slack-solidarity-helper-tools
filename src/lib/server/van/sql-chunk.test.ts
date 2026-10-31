@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { chunked, SQL_BATCH_SIZE } from './sql-chunk.js';
+import { chunked, idRows, SQL_BATCH_SIZE } from './sql-chunk.js';
+import { createClient } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
 
 describe('chunked', () => {
 	it('returns nothing for an empty list', () => {
@@ -31,5 +33,19 @@ describe('chunked', () => {
 
 	it('honours an explicit size', () => {
 		expect(chunked([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+	});
+});
+
+describe('idRows', () => {
+	it('gives the ids back as rows, from one parameter', async () => {
+		const client = createClient({ url: ':memory:' });
+		const db = drizzle(client);
+		const rows = await db.all<{ value: number }>(idRows([3, 1, 2]));
+		expect(rows.map((r) => r.value)).toEqual([3, 1, 2]);
+		client.close();
+	});
+
+	it('refuses anything but integers', () => {
+		expect(() => idRows([1, 1.5])).toThrow('integer ids only');
 	});
 });

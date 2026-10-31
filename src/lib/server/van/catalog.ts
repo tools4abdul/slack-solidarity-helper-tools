@@ -41,9 +41,10 @@ export interface CatalogInput {
 	 *  campaign's rows must not be here: retirement is decided against this
 	 *  list, and VAN's route ids only mean something within one campaign. */
 	existing: VanTurfRow[];
-	/** Every turfId in use, across ALL campaigns. A new turf takes its VAN
-	 *  route id as its turfId unless that id is already taken; then it gets
-	 *  one above every id in use and every VAN id in this sync. */
+	/** The turfIds in use, across ALL campaigns, among this sync's route ids,
+	 *  and the highest in use. A new turf takes its VAN route id as its turfId
+	 *  unless that id is already taken; then it gets one above every id in
+	 *  use and every VAN id in this sync. */
 	takenTurfIds?: ReadonlySet<number>;
 	/** Optional — Tier 3, and a key without it should still sync a catalog. */
 	minivanExports?: VanMinivanExport[];

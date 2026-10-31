@@ -349,6 +349,16 @@ const mentorWalksSweep: Job = {
 	},
 };
 
+/** The query planner's statistics (planner-stats.ts), nightly in the small
+ *  hours of the campaign's day, on a minute no other job starts on. */
+const plannerStats: Job = {
+	name: 'planner-stats',
+	schedule: [{ hours: [8], minutes: [25] }],
+	run: async (_slot, call) => {
+		await call('/api/internal/planner-stats', {}, 5 * MINUTE);
+	},
+};
+
 export const JOBS: readonly Job[] = [
 	vanSync,
 	packetTrackerSync,
@@ -357,6 +367,7 @@ export const JOBS: readonly Job[] = [
 	slackInviteAudit,
 	vanDailyReport,
 	mentorWalksSweep,
+	plannerStats,
 ];
 
 /**

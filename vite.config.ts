@@ -30,6 +30,9 @@ export default defineConfig(({ mode }) => {
 						],
 						exclude: ['src/**/*.svelte.{test,spec}.{js,ts}'],
 						environment: 'node',
+						// The plan audit (scripts/plan-audit/run.ts) records every
+						// statement the tests send; nothing else loads it.
+						setupFiles: process.env.PLAN_AUDIT ? ['scripts/plan-audit/record.ts'] : [],
 					},
 				},
 				// Component tests mount into a DOM, which needs Svelte's browser

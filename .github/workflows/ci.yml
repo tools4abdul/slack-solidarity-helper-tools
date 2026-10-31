@@ -53,9 +53,12 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run check
 
-      - name: Tests
+      # The tests, with every statement they send planned as production's
+      # planner would and checked for reads of a whole large table (see
+      # scripts/plan-audit/run.ts). A failing test fails this step too.
+      - name: Tests and query plans
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: npm test
+        run: npm run test:plans
 
   deploy:
     # Gated on every check above. `needs` also means a failed or cancelled check

@@ -162,3 +162,72 @@ describe('campaign badges', () => {
 		expect(result.campaignBadges).toEqual({ 2: 'campaign2' });
 	});
 });
+
+// Which rows the turf read picks: the chapter's live turf by its folders and
+// its placements, and the viewer's own wherever the chapter can see it.
+describe('the turf a chapter sees', () => {
+	const load = (over: { includeHeldByViewer?: boolean; isAdmin?: boolean } = {}) =>
+		loadChapterTurfs(db, {
+			chapterId: 71,
+			viewer: { ...VIEWER, isAdmin: over.isAdmin ?? false },
+			now: NOW,
+			includeHeldByViewer: over.includeHeldByViewer,
+		});
+
+	async function placed(turfId: number, chapterId: number) {
+		// Folder 9 is mapped to no chapter: its turf is seen only where placed.
+		await client.execute({
+			sql: `INSERT INTO van_turfs
+			        (turf_id, campaign_id, van_map_route_id, map_region_id, folder_id, chapter_id,
+			         chapter_name, region_name, name, printed_list_number, route_size, door_count,
+			         first_seen_at, last_seen_at)
+			      VALUES (?1, 1, ?1, 1, 9, 0, '', 'R1', ?2, '1-1', 120, 50, 'x', 'x')`,
+			args: [turfId, `Turf ${turfId}`],
+		});
+		await client.execute({
+			sql: `INSERT INTO van_turf_placements (turf_id, chapter_id, chapter_name, source, placed_at)
+			      VALUES (?, ?, 'Wayne County', 'zip', 'x')`,
+			args: [turfId, chapterId],
+		});
+	}
+
+	it('includes turf placed in the chapter, and not turf placed in another', async () => {
+		await placed(300, 71);
+		await placed(301, 72);
+		expect(idsOf(await load())).toEqual([100, 300]);
+	});
+
+	it('leaves out retired turf, unless the viewer holds it', async () => {
+		await turf(101, 1);
+		await turf(102, 1);
+		await client.execute(`UPDATE van_turfs SET retired_at = 'x' WHERE turf_id IN (101, 102)`);
+		await claim(101);
+		expect(idsOf(await load())).toEqual([100]);
+		expect(idsOf(await load({ includeHeldByViewer: true }))).toEqual([100, 101]);
+	});
+
+	it('shows hidden turf to admins and to its holder alone', async () => {
+		await turf(101, 1);
+		await turf(102, 1);
+		await client.execute(`UPDATE van_turfs SET hidden_at = 'x' WHERE turf_id IN (101, 102)`);
+		await claim(101);
+		expect(idsOf(await load())).toEqual([100]);
+		expect(idsOf(await load({ includeHeldByViewer: true }))).toEqual([100, 101]);
+		expect(idsOf(await load({ isAdmin: true }))).toEqual([100, 101, 102]);
+	});
+
+	// Held turf is the viewer's wherever it is, but this chapter's page shows
+	// only what this chapter can see.
+	it('does not bring in turf the viewer holds in another chapter', async () => {
+		await placed(301, 72);
+		await claim(301);
+		expect(idsOf(await load({ includeHeldByViewer: true }))).toEqual([100]);
+	});
+
+	// Folder ids are VAN's, unique only within one campaign.
+	it('matches a folder by campaign as well as number', async () => {
+		await client.execute(`UPDATE van_campaigns SET enabled = 1 WHERE id = 2`);
+		await client.execute(`DELETE FROM van_chapter_folders WHERE campaign_id = 2`);
+		expect(idsOf(await load())).toEqual([100]);
+	});
+});

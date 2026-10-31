@@ -10,6 +10,7 @@
 		"preview": "vite preview",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"test:plans": "tsx scripts/plan-audit/run.ts",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"check": "svelte-check --tsconfig ./tsconfig.json && npm run check:migrator",

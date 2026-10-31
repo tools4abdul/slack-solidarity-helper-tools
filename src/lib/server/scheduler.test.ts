@@ -94,6 +94,14 @@ it('runs the Packet Tracker every 15 minutes, apart from the VAN sync', () => {
 	expect(times.some((t) => day(job('van-sync')).includes(t))).toBe(false);
 });
 
+// ANALYZE takes the write lock for its write to sqlite_stat1: alone on its
+// minute, so no job starts beside it.
+it('refreshes the planner statistics once a night, on a minute of its own', () => {
+	expect(day(job('planner-stats'))).toEqual(['08:25']);
+	const others = JOBS.filter((j) => j.name !== 'planner-stats').flatMap(day);
+	expect(others).not.toContain('08:25');
+});
+
 describe('latestSlot', () => {
 	const schedule = [{ hours: [11], minutes: [7] }];
 

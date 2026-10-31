@@ -12,7 +12,7 @@
 // we skipped — a partial sync is safe because retirement is scoped to the
 // folders actually fetched (see planCatalogSync).
 
-import { and, eq, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/libsql';
 // Relative, not `$lib/...`: scripts/van-sync-once.ts runs this under tsx,
 // outside the Vite bundle, where the alias does not resolve.
@@ -27,7 +27,7 @@ import {
 } from '../schema.js';
 import { UNPLACED_LABEL } from './turf-placement.js';
 import { planCatalogSync, vanTimestamp, type CatalogFolder, type CatalogPlan } from './catalog.js';
-import { chunked } from './sql-chunk.js';
+import { chunked, idRows } from './sql-chunk.js';
 import { RETIRED_ROSTER_KEEP_MS } from './contact-sync.js';
 import { VanError, type VanClient } from './client.js';
 import {
@@ -356,9 +356,23 @@ export async function runCatalogSync(
 	// elsewhere (catalog.ts, outsideAssignment).
 	const claims = await loadClaimsForExports(db, campaignId, now);
 
-	// Every campaign's ids, so a new turf never takes an id another one holds.
+	// What a new turf's id is checked against, across every campaign: whether
+	// its own route id is held already, and the highest id in use, which the
+	// ids for those that are start above. Each by key, in one request; not
+	// every id in the table.
+	const routeIds = [...routesRead].filter((id): id is number => typeof id === 'number');
 	const takenTurfIds = new Set(
-		(await db.select({ turfId: vanTurfs.turfId }).from(vanTurfs)).map((r) => r.turfId),
+		(
+			await db
+				.select({ turfId: vanTurfs.turfId })
+				.from(vanTurfs)
+				.where(
+					or(
+						sql`${vanTurfs.turfId} in (${idRows(routeIds)})`,
+						sql`${vanTurfs.turfId} = (select max(${vanTurfs.turfId}) from ${vanTurfs})`,
+					),
+				)
+		).map((r) => r.turfId),
 	);
 	const placements = new Map(
 		(
