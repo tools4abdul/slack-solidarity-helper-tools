@@ -1,5 +1,5 @@
 {
-	"pulledAt": "2026-10-31T05:04:30.535Z",
+	"pulledAt": "2026-10-31T05:47:30.689Z",
 	"rows": [
 		{
 			"tbl": "__drizzle_migrations",
@@ -379,17 +379,17 @@
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_campaign_folder",
-			"stat": "81769 40885 2726"
+			"stat": "81818 40909 2728"
 		},
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_campaign_route",
-			"stat": "81769 40885 1"
+			"stat": "81818 40909 1"
 		},
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_chapter",
-			"stat": "81769 3717"
+			"stat": "81818 3719"
 		},
 		{
 			"tbl": "van_turfs",
@@ -399,22 +399,22 @@
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_hidden",
-			"stat": "10 1"
+			"stat": "4 1"
 		},
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_live_folder",
-			"stat": "14630 7315 500 500"
+			"stat": "14679 7340 507 507"
 		},
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_name_search",
-			"stat": "81769 5 5 5"
+			"stat": "81818 6 6 6"
 		},
 		{
 			"tbl": "van_turfs",
 			"idx": "van_turfs_region",
-			"stat": "81769 40"
+			"stat": "81818 40"
 		},
 		{
 			"tbl": "van_turfs",
@@ -446,6 +446,5 @@
 			"idx": null,
 			"stat": "4"
 		}
-	],
-	"estimated": ["van_turfs_live_folder", "van_turfs_hidden", "van_turfs_name_search"]
+	]
 }
