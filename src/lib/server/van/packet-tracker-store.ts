@@ -62,6 +62,7 @@ import {
 	DEFAULT_SHIFT_STARTS,
 	WALK_IN_TAB_NAME,
 	findOurWalkIn,
+	filledWalkInColumns,
 	findWalkInLayout,
 	firstEmptyWalkInRow,
 	highlightSweepDay,
@@ -1057,6 +1058,22 @@ async function syncWalkIns(
 			const fresh = await readRow(rowIndex);
 			if (!fresh.ok) return fail(fresh, waiting);
 			if (!isEmptyWalkIn(fresh.value, layout)) {
+				// Which columns, never what is in them. Someone writing in the
+				// row between the two reads gives this, and so would two reads
+				// that disagree about the same row; the row number against the
+				// read's length, and how often it happens, tell them apart.
+				if (outcome.deferred === 0) {
+					const where =
+						rowIndex < read.value.length
+							? `blank in the tab read (${read.value.length} rows`
+							: `past the end of the tab read (${read.value.length} rows`;
+					console.warn(
+						`${LOG} ${spreadsheetId} ${WALK_IN_TAB_NAME} row ${rowIndex + 1}: ${where}, ` +
+							`header row ${layout.headerRowIndex + 1}), filled on re-read in ` +
+							`${filledWalkInColumns(fresh.value, layout).join(', ')}; ` +
+							`re-read has ${fresh.value.length} cells`,
+					);
+				}
 				outcome.deferred += 1;
 				continue;
 			}
@@ -1228,6 +1245,13 @@ async function syncWalkIns(
 			...(styled !== 'done' && state!.painted ? { yellowRow: rowIndex } : {}),
 		});
 		outcome.cleared += 1;
+	}
+	if (outcome.deferred > 1) {
+		const fills = jobs.filter((j) => j.work === 'fill').length;
+		console.warn(
+			`${LOG} ${spreadsheetId} ${WALK_IN_TAB_NAME}: ${outcome.deferred} of ${fills} new ` +
+				'row(s) found filled on re-read',
+		);
 	}
 	return outcome;
 }
