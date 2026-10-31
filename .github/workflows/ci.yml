@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # Matches ARG NODE_VERSION in the Dockerfile, so CI runs what deploys run.
-          node-version: '22.21.1'
+          node-version: '24.22.2'
           cache: 'npm'
 
       # `npm ci` on Linux matches how package-lock.json is expected to be
